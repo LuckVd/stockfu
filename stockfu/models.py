@@ -1,0 +1,148 @@
+"""数据模型（SQLModel / SQLite）。
+
+覆盖：资产、交易流水、聚合持仓、分红事件、行情天级快照、
+指数快照(三层:市场/板块/个股)、因子快照(可追溯)、ETF 资金流快照、新闻。
+"""
+from datetime import date, datetime
+from enum import Enum
+
+from sqlalchemy import UniqueConstraint
+from sqlmodel import Field, SQLModel
+
+
+class Side(str, Enum):
+    BUY = "buy"
+    SELL = "sell"
+    DIVIDEND = "dividend"
+
+
+def _now() -> datetime:
+    return datetime.now()
+
+
+class Asset(SQLModel, table=True):
+    __tablename__ = "asset"
+    code: str = Field(primary_key=True)           # 标准化代码 600519 / HK00700 / AAPL
+    name: str = ""
+    market: str = Field(default="cn", index=True)  # cn/hk/us/jp/kr/tw
+    asset_type: str = Field(default="stock")       # stock/fund_etf/fund_otc/index/bond
+    sector: str = ""                               # 板块/行业
+    currency: str = "CNY"
+    is_watch: bool = Field(default=False, index=True)
+    note: str = ""
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class Transaction(SQLModel, table=True):
+    __tablename__ = "transaction"
+    id: int | None = Field(default=None, primary_key=True)
+    asset_code: str = Field(foreign_key="asset.code", index=True)
+    side: str = Field(default=Side.BUY.value)
+    shares: float = 0.0
+    price: float = 0.0
+    amount: float = 0.0
+    fee: float = 0.0
+    trade_date: date = Field(default_factory=date.today, index=True)
+    note: str = ""
+
+
+class Holding(SQLModel, table=True):
+    """聚合持仓（可由 transactions 汇总，也可直接录入）。"""
+    __tablename__ = "holding"
+    asset_code: str = Field(foreign_key="asset.code", primary_key=True)
+    shares: float = 0.0
+    avg_cost: float = 0.0
+    total_cost: float = 0.0
+    first_buy_date: date | None = None
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class DividendEvent(SQLModel, table=True):
+    __tablename__ = "dividend_event"
+    id: int | None = Field(default=None, primary_key=True)
+    asset_code: str = Field(foreign_key="asset.code", index=True)
+    ex_date: date = Field(index=True)
+    record_date: date | None = None
+    announce_date: date | None = None
+    per_share_cash: float = 0.0
+    currency: str = "CNY"
+    source: str = ""
+
+
+class QuoteSnapshot(SQLModel, table=True):
+    """行情天级快照（历史落库，支撑历史分析 / 指数 / 因子分位）。"""
+    __tablename__ = "quote_snapshot"
+    id: int | None = Field(default=None, primary_key=True)
+    asset_code: str = Field(foreign_key="asset.code", index=True)
+    quote_date: date = Field(default_factory=date.today, index=True)
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float = 0.0
+    pct_chg: float | None = None
+    volume: float | None = None
+    amount: float | None = None
+    turnover: float | None = None                  # 换手率 %
+    pe: float | None = None
+    pb: float | None = None
+    market_cap: float | None = None
+    __table_args__ = (UniqueConstraint("asset_code", "quote_date", name="uq_quote_code_date"),)
+
+
+class IndexSnapshot(SQLModel, table=True):
+    """情绪指数天级快照，三层粒度：market / sector / stock。
+
+    scope: market→"MARKET"；sector→板块名；stock→股票 code。
+    components: JSON，记录各因子的分位明细（可追溯）。
+    """
+    __tablename__ = "index_snapshot"
+    id: int | None = Field(default=None, primary_key=True)
+    index_key: str = Field(index=True)             # fear / greed / heat
+    level: str = Field(default="market", index=True)
+    scope: str = Field(default="MARKET", index=True)
+    snap_date: date = Field(default_factory=date.today, index=True)
+    value: float = 0.0
+    components: str = ""                           # JSON 因子分位明细
+    note: str = ""
+    __table_args__ = (UniqueConstraint(
+        "index_key", "level", "scope", "snap_date", name="uq_idx_scope_date"),)
+
+
+class FactorSnapshot(SQLModel, table=True):
+    """单个因子的天级快照（原始值 + 历史分位 + 窗口），便于追溯和重算权重。"""
+    __tablename__ = "factor_snapshot"
+    id: int | None = Field(default=None, primary_key=True)
+    level: str = Field(index=True)                 # market/sector/stock
+    scope: str = Field(index=True)
+    factor: str = Field(index=True)                # volatility/turnover/pe/rs/...
+    snap_date: date = Field(default_factory=date.today, index=True)
+    raw_value: float | None = None
+    percentile: float | None = None                # 0-100
+    window_days: int = 250
+    sample_size: int = 0
+    __table_args__ = (UniqueConstraint(
+        "level", "scope", "factor", "snap_date", name="uq_factor_scope_date"),)
+
+
+class FundFlowSnapshot(SQLModel, table=True):
+    """ETF 份额资金流向天级快照（份额变化 ≈ 大资金净申赎）。"""
+    __tablename__ = "fundflow_snapshot"
+    id: int | None = Field(default=None, primary_key=True)
+    etf_code: str = Field(index=True)
+    snap_date: date = Field(default_factory=date.today, index=True)
+    shares_outstanding: float | None = None        # 份额（亿份）
+    nav: float | None = None                       # 净值/价格
+    net_inflow: float | None = None                # 估算净流入（亿元）
+    __table_args__ = (UniqueConstraint("etf_code", "snap_date", name="uq_fundflow_code_date"),)
+
+
+class NewsItem(SQLModel, table=True):
+    __tablename__ = "news_item"
+    id: int | None = Field(default=None, primary_key=True)
+    title: str
+    summary: str = ""
+    url: str = ""
+    source: str = ""
+    published_at: datetime | None = None
+    related_code: str = Field(default="", index=True)
+    sentiment: float | None = None                 # -1..1

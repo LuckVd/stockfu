@@ -1,0 +1,37 @@
+# ===== StockFu · 资产管理终端 =====
+# 安装: pip install -r requirements.txt  (国内可用代理或 -i https://pypi.tuna.tsinghua.edu.cn/simple)
+
+# Web / API
+fastapi
+uvicorn[standard]
+
+# 终端界面 (TUI)
+textual
+rich
+
+# ORM / 存储 (SQLite)
+sqlmodel
+sqlalchemy
+
+# ===== 数据源（免费公开，复用 daily_stock_analysis 的多源思想）=====
+akshare        # A股: 行情/分红(stock_fhps_detail_em)/基金/ETF份额/板块/龙虎榜
+efinance       # 东财: A股行情与分红补充（最高优先级源）
+yfinance       # 全球: 港美股行情与 dividends 分红历史
+pytdx          # 通达信TCP: A股日K独立 backup
+baostock       # A股日K backup + PE/PB 历史（免费替代 tushare）
+# tushare      # 可选: 配 TUSHARE_TOKEN 后作为高质量A股源（需注册）
+
+# 健壮性 / 网络
+tenacity       # 数据层重试
+httpx          # 异步 HTTP（新闻/推送）
+
+# 配置
+pydantic
+pydantic-settings
+
+# 定时任务（每日抓取/落库/推送）
+apscheduler
+
+# AI 决策报告（可选，按你用的模型二选一）
+# openai
+# anthropic
