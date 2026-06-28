@@ -1,4 +1,5 @@
 data/*.db*
+!data/stockfu.db
 __pycache__/
 *.pyc
 .venv/
