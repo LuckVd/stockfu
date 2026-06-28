@@ -122,8 +122,13 @@ def run_clean_quotes() -> None:
 
 
 def run_test_mail() -> None:
+    import time
+
+    from stockfu.scheduler.jobs import start_embedded_server
     from stockfu.services.mail import run_mail_job
 
+    start_embedded_server()          # 内嵌 web：--test-mail 自包含，无需另开 --serve
+    time.sleep(2.5)                  # 等 serve 就绪再渲染
     print(f"✓ 邮件任务结果: {run_mail_job()}")
 
 
@@ -153,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补 连板/涨停历史（默认365天，限速，慢，建议后台）")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
-    p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件（需 --serve 在跑）")
+    p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件")
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
     return p
 

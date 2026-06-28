@@ -283,9 +283,29 @@ def run_scheduled_fetch() -> dict:
             "fundflow_etfs": flows, "composite_levels": len(comp)}
 
 
+def start_embedded_server() -> str:
+    """后台线程起 uvicorn（daemon，随主进程退出），供 playwright 渲染本进程页面 →
+    单进程即可出图发信，无需另开 --serve。--schedule / --test-mail 复用。返回 base_url。"""
+    import threading
+
+    import uvicorn
+    from stockfu.config import settings
+
+    cfg = uvicorn.Config("stockfu.api.server:app", host=settings.api_host,
+                         port=settings.api_port, log_level="warning")
+    server = uvicorn.Server(cfg)
+    server.install_signal_handlers = lambda: None  # 非主线程禁用信号注册
+    threading.Thread(target=server.run, daemon=True, name="stockfu-web").start()
+    return f"http://{settings.api_host}:{settings.api_port}"
+
+
 def run_schedule() -> None:
-    """APScheduler 长驻：工作日 daily_fetch_time（北京时间，web 可改）跑 run_scheduled_fetch；
-    若邮件已启用且配置完整，另加 mail job（到点自动出图+发信，需 --serve 同跑）。"""
+    """APScheduler 长驻（单进程）：工作日 daily_fetch_time（北京，web 可改）抓行情+算指数；
+    邮件已启用且配置完整时，内嵌 uvicorn（无需另开 --serve）+ 到点自动出图发信。
+
+    一条 `python main.py --schedule` 即同时是 web 服务 + 调度器，可直接挂服务器常驻：
+    mail job 的 playwright 渲染分享卡片时，访问的就是本进程内嵌的 web 页面。
+    """
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
 
@@ -305,6 +325,7 @@ def run_schedule() -> None:
     print(f"✓ 抓取任务：工作日 {hhmm}（北京）抓行情 + 算指数")
 
     if get_mail_enabled() and is_mail_ready():
+        base_url = start_embedded_server()
         from stockfu.services.mail import run_mail_job
         mh, mm = (int(x) for x in get_mail_time().split(":"))
         sched.add_job(
@@ -312,7 +333,8 @@ def run_schedule() -> None:
             CronTrigger(hour=mh, minute=mm, day_of_week=get_mail_days(), timezone="Asia/Shanghai"),
             id="mail", max_instances=1, coalesce=True,
         )
-        print(f"✓ 邮件任务：{get_mail_days()} {get_mail_time()}（北京）自动发多图邮件（依赖 --serve 在跑）")
+        print(f"✓ 邮件任务：{get_mail_days()} {get_mail_time()}（北京）自动发信"
+              f"（内嵌 web {base_url}，无需另开 --serve）")
     else:
         print("· 邮件任务：未启用或未配置完整，跳过（面板配置后重启 --schedule 生效）")
 
