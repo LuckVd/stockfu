@@ -24,6 +24,11 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8787"
 def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str | None = None) -> list[bytes]:
     """无头浏览器渲染分享卡片多图，返回 PNG bytes 列表（每页一张）。
 
+    用 playwright 元素截图（chromium 原生渲染 → emoji 为彩色，与 webui 一致；html2canvas 会把
+    部分 emoji 退化成单色简笔画）。截图前：切「暖白·琥珀」主题；隐藏分享浮层以外的一切 DOM
+    （交易录入表单的价格/日期等会覆盖卡片被截进去）；视口高度 ≥ 单页 1458px，避免高元素截图
+    滚动拼接时混入其他元素。
+
     executable_path: 默认 None（用 playwright 标准安装的 chromium）；可用环境变量
       STOCKFU_CHROMIUM_PATH 覆盖（如本地缓存版本与包不匹配时指向具体 chrome 可执行文件）。
     """
@@ -34,11 +39,12 @@ def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str |
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=exe)
         try:
-            page = browser.new_page(viewport={"width": 1280, "height": 900}, device_scale_factor=2)
+            page = browser.new_page(viewport={"width": 1280, "height": 1500}, device_scale_factor=2)
             page.goto(f"{base_url}/", wait_until="domcontentloaded", timeout=30000)
             # 不等主页 loadAll（慢且与本任务无关）；openShare 自取 /share
             page.wait_for_function("typeof openShare === 'function'", timeout=15000)
             page.evaluate("""async () => {
+                if (typeof setTheme === 'function') setTheme('amber');     // 暖白·琥珀主题（邮件固定用此主题出图）
                 await window.openShare();                                   // 取 /share + 显示弹窗
                 document.querySelector('#share-mode .mode-opt[data-mode="multi"]').click();
                 await new Promise(r => {                                    // 等 .sc-page 渲染好
@@ -46,9 +52,17 @@ def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str |
                         if (document.querySelectorAll('#share-card .sc-page').length) { clearInterval(t); r(); }
                     }, 50);
                 });
+                // 隐藏分享浮层以外的一切：交易录入表单（价格/日期）等会覆盖卡片被截进去
+                const share = document.querySelector('#share-overlay');
+                [...document.body.children].forEach(el => { if (el !== share) el.style.display = 'none'; });
+                // emoji 强制彩色字体：卡片 .face 继承 --sans（无 emoji 字体），服务器回退到
+                // DejaVu Sans 会把部分 emoji 渲染成单色简笔画；显式指定 Noto Color Emoji 走彩色
+                document.querySelectorAll('#share-card .face').forEach(el => {
+                    el.style.fontFamily = '"Noto Color Emoji","Apple Color Emoji","Segoe UI Emoji"';
+                });
             }""")
             for el in page.query_selector_all('#share-card .sc-page'):
-                imgs.append(el.screenshot())   # 元素截图，不受弹窗遮罩影响
+                imgs.append(el.screenshot())   # 元素截图，emoji 彩色
         finally:
             browser.close()
     return imgs

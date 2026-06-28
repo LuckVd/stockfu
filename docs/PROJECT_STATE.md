@@ -70,9 +70,12 @@ python main.py --backfill 1825        # K线补5年
 python main.py --backfill-factors     # 两融总量+个股两融10天+股息率序列
 python main.py --backfill-limit 365   # 连板(限流分批,断点续传,多次跑)
 python main.py --fetch                # 每日抓取+算三层指数落库
-python main.py --schedule             # APScheduler每日定时(默认工作日18:18)
+python main.py --schedule             # APScheduler每日定时(工作日15:30抓行情/16:00发邮件)
 python main.py                        # TUI看板
 python main.py --serve                # API(127.0.0.1:8787)
+python main.py --test-mail            # 立即出图发测试邮件(自包含,内嵌serve)
+# 单进程 daemon(挂服务器):--schedule邮件启用时内嵌uvicorn,一条命令=web+调度+定时邮件
+nohup python main.py --schedule >> data/schedule.log 2>&1 &
 ```
 
 ## 6. 关键设计决策
