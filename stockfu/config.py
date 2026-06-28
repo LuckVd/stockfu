@@ -204,3 +204,81 @@ def set_fetch_retry_count(value) -> int:
     set_app_config("fetch_retry_count", str(max(0, n)))
     _SCHEDULE_CACHE.clear()
     return get_fetch_retry_count()
+
+
+# ---------- 邮件定时（web 设置面板写入，QQ 邮箱默认）----------
+# 邮箱服务预设：面板选预设即自动填 host/port/SSL；也可自填（通用 SMTP）
+MAIL_PRESETS = {
+    "qq":    {"host": "smtp.qq.com",    "port": 465, "ssl": True,  "label": "QQ 邮箱"},
+    "163":   {"host": "smtp.163.com",   "port": 465, "ssl": True,  "label": "163 邮箱"},
+    "gmail": {"host": "smtp.gmail.com", "port": 587, "ssl": False, "label": "Gmail"},
+}
+
+_MAIL_CACHE: dict[str, str] = {}
+
+
+def _mail_cfg(key: str, default: str) -> str:
+    if key in _MAIL_CACHE:
+        return _MAIL_CACHE[key]
+    from stockfu.db import get_app_config, has_app_config
+    v = get_app_config(key, default) if has_app_config(key) else default
+    _MAIL_CACHE[key] = v
+    return v
+
+
+def _set_mail_cfg(key: str, value: str) -> None:
+    from stockfu.db import set_app_config
+    set_app_config(key, value)
+    _MAIL_CACHE.clear()
+
+
+def get_smtp_host():    return _mail_cfg("smtp_host", "smtp.qq.com")
+def get_smtp_port():    return int(_mail_cfg("smtp_port", "465") or 465)
+def get_smtp_user():    return _mail_cfg("smtp_user", "")
+def get_smtp_pass():    return _mail_cfg("smtp_pass", "")
+def get_smtp_from():    return _mail_cfg("smtp_from", "")  # 空 = 用 smtp_user
+def get_mail_to():      return _mail_cfg("mail_to", "")
+def get_mail_enabled(): return _mail_cfg("mail_enabled", "0") == "1"
+def get_mail_time():
+    v = _mail_cfg("mail_time", "16:00")
+    return v if _TIME_RE.match(v) else "16:00"
+def get_mail_days():    return _mail_cfg("mail_days", "mon-fri") or "mon-fri"
+
+
+def set_mail_config(data: dict) -> None:
+    """批量写入邮件配置（空 smtp_pass 视为不改密码）。"""
+    for k in ("smtp_host", "smtp_port", "smtp_from", "mail_to"):
+        if data.get(k) is not None:
+            _set_mail_cfg(k, str(data[k]).strip())
+    if data.get("smtp_user") is not None:           # 账号允许清空
+        _set_mail_cfg("smtp_user", str(data["smtp_user"]).strip())
+    if data.get("smtp_pass"):                        # 空串 = 不改
+        _set_mail_cfg("smtp_pass", str(data["smtp_pass"]))
+    if "mail_enabled" in data:
+        _set_mail_cfg("mail_enabled", "1" if data["mail_enabled"] else "0")
+    if "mail_time" in data:
+        v = str(data["mail_time"]).strip()
+        _set_mail_cfg("mail_time", v if _TIME_RE.match(v) else "16:00")
+    if "mail_days" in data:
+        _set_mail_cfg("mail_days", str(data["mail_days"]).strip() or "mon-fri")
+
+
+def get_mail_config() -> dict:
+    """聚合读（密码脱敏为 has_password 布尔）。"""
+    return {
+        "smtp_host": get_smtp_host(),
+        "smtp_port": get_smtp_port(),
+        "smtp_user": get_smtp_user(),
+        "has_password": bool(get_smtp_pass()),
+        "smtp_from": get_smtp_from(),
+        "mail_to": get_mail_to(),
+        "mail_enabled": get_mail_enabled(),
+        "mail_time": get_mail_time(),
+        "mail_days": get_mail_days(),
+        "presets": MAIL_PRESETS,
+    }
+
+
+def is_mail_ready() -> bool:
+    """是否具备发信条件（账号 + 密码 + 收件人）。enabled 由调用方另判。"""
+    return bool(get_smtp_user() and get_smtp_pass() and get_mail_to())

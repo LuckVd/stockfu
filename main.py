@@ -121,6 +121,12 @@ def run_clean_quotes() -> None:
     print(f"✓ 清理非交易日快照: {clean_quote_snapshots()}")
 
 
+def run_test_mail() -> None:
+    from stockfu.services.mail import run_mail_job
+
+    print(f"✓ 邮件任务结果: {run_mail_job()}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="stockfu", description="StockFu·资产管理终端")
     p.add_argument("--serve", action="store_true", help="以 FastAPI 服务模式运行")
@@ -141,6 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补 连板/涨停历史（默认365天，限速，慢，建议后台）")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
+    p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件（需 --serve 在跑）")
     return p
 
 
@@ -171,6 +178,8 @@ def main() -> None:
         run_schedule()
     elif args.clean_quotes:
         run_clean_quotes()
+    elif args.test_mail:
+        run_test_mail()
     elif args.serve:
         run_api(args.host, args.port, args.reload)
     else:

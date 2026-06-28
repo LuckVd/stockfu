@@ -32,6 +32,9 @@ pydantic-settings
 # 定时任务（每日抓取/落库/推送）
 apscheduler
 
+# 邮件定时发送（无头浏览器把分享卡片渲染成图 → SMTP 发出）
+playwright     # 装后需运行 `playwright install chromium` 下载浏览器
+
 # AI 决策报告（可选，按你用的模型二选一）
 # openai
 # anthropic

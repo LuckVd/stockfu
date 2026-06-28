@@ -284,17 +284,37 @@ def run_scheduled_fetch() -> dict:
 
 
 def run_schedule() -> None:
-    """APScheduler 长驻：工作日 daily_fetch_time（北京时间，web 可改）跑 run_scheduled_fetch。"""
+    """APScheduler 长驻：工作日 daily_fetch_time（北京时间，web 可改）跑 run_scheduled_fetch；
+    若邮件已启用且配置完整，另加 mail job（到点自动出图+发信，需 --serve 同跑）。"""
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
 
-    from stockfu.config import get_daily_fetch_time
+    from stockfu.config import (get_daily_fetch_time, get_mail_days, get_mail_enabled,
+                                get_mail_time, is_mail_ready)
 
     init_db()
+    sched = BlockingScheduler(timezone="Asia/Shanghai")
+
     hhmm = get_daily_fetch_time()
     h, m = (int(x) for x in hhmm.split(":"))
-    trig = CronTrigger(hour=h, minute=m, day_of_week="mon-fri", timezone="Asia/Shanghai")
-    sched = BlockingScheduler(timezone="Asia/Shanghai")
-    sched.add_job(run_scheduled_fetch, trig, id="daily", max_instances=1, coalesce=True)
-    print(f"调度已启动：工作日 {hhmm}（北京时间）自动抓取+算指数。Ctrl-C 退出。")
+    sched.add_job(
+        run_scheduled_fetch,
+        CronTrigger(hour=h, minute=m, day_of_week="mon-fri", timezone="Asia/Shanghai"),
+        id="daily", max_instances=1, coalesce=True,
+    )
+    print(f"✓ 抓取任务：工作日 {hhmm}（北京）抓行情 + 算指数")
+
+    if get_mail_enabled() and is_mail_ready():
+        from stockfu.services.mail import run_mail_job
+        mh, mm = (int(x) for x in get_mail_time().split(":"))
+        sched.add_job(
+            run_mail_job,
+            CronTrigger(hour=mh, minute=mm, day_of_week=get_mail_days(), timezone="Asia/Shanghai"),
+            id="mail", max_instances=1, coalesce=True,
+        )
+        print(f"✓ 邮件任务：{get_mail_days()} {get_mail_time()}（北京）自动发多图邮件（依赖 --serve 在跑）")
+    else:
+        print("· 邮件任务：未启用或未配置完整，跳过（面板配置后重启 --schedule 生效）")
+
+    print("调度已启动，Ctrl-C 退出。")
     sched.start()

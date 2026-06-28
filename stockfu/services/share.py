@@ -5,24 +5,33 @@
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from stockfu.services import factors as F
 
 
 def perf(code: str, days: int) -> Optional[float]:
-    """近 N 日涨跌幅% = (今收 / N 日前收 - 1) * 100。数据不足返回 None。
+    """近 N 自然日涨跌幅% = 今收 / N 天前最近交易日收 - 1。
 
-    quote_series 过滤 None 后取首末；多取 15 日余量保证首点足够靠前。
+    以 today - N 自然日为起点，取该日及之后第一个交易日的收盘为基准，与最新收盘比较。
+    修复：旧实现误用 quote_series(days+15) 的最早点，实际窗口是 ~N+30 自然日，
+    把"近1周"算成了近 5 周（京东方A 曾因此显示 +52.8%，实际近1周应是 +12.4%）。
     """
-    closes = F.quote_series(code, "close", days + 15)
-    if len(closes) < 2:
+    from sqlmodel import select
+
+    from stockfu.db import session_scope
+    from stockfu.models import QuoteSnapshot
+
+    start = date.today() - timedelta(days=days)
+    with session_scope() as s:
+        rows = s.exec(select(QuoteSnapshot).where(
+            QuoteSnapshot.asset_code == code, QuoteSnapshot.quote_date >= start,
+        ).order_by(QuoteSnapshot.quote_date)).all()
+    closes = [r.close for r in rows if r.close is not None]
+    if len(closes) < 2 or not closes[0]:
         return None
-    old = closes[0]
-    if not old:
-        return None
-    return round((closes[-1] / old - 1) * 100, 2)
+    return round((closes[-1] / closes[0] - 1) * 100, 2)
 
 
 def day_chg(code: str, cur: Optional[float] = None) -> Optional[float]:

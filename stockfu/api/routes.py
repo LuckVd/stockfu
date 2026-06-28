@@ -316,3 +316,25 @@ def set_schedule_config(payload: dict = Body(...)):
     if "fetch_retry_count" in payload:
         out["fetch_retry_count"] = set_fetch_retry_count(payload["fetch_retry_count"])
     return {"ok": True, **out}
+
+
+@router.get("/config/mail")
+def get_mail_config_api():
+    """邮件配置（密码脱敏为 has_password）。"""
+    from stockfu.config import get_mail_config
+    return get_mail_config()
+
+
+@router.put("/config/mail")
+def set_mail_config_api(payload: dict = Body(...)):
+    """保存邮件配置（任一项可选；空 smtp_pass = 不改密码）。"""
+    from stockfu.config import get_mail_config, set_mail_config
+    set_mail_config(payload or {})
+    return get_mail_config()
+
+
+@router.post("/config/mail/test")
+def test_mail_api():
+    """立即生成多图并发一封测试邮件（需 --serve 在跑 + SMTP 已配置）。"""
+    from stockfu.services.mail import run_mail_job
+    return run_mail_job()
