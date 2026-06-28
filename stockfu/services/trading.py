@@ -9,12 +9,14 @@ from datetime import date
 
 from sqlmodel import select
 
-from stockfu.data.base import (classify_asset_type, currency_of, detect_market)
+from stockfu.data.base import (classify_asset_type, currency_of,
+                            detect_market, normalize_stock_code)
 from stockfu.db import session_scope
 from stockfu.models import Asset, Holding, Side, Transaction
 
 
 def _ensure_asset(code: str) -> None:
+    code = normalize_stock_code(code)
     with session_scope() as s:
         if s.get(Asset, code):
             return
@@ -109,6 +111,7 @@ def list_holdings() -> list[dict]:
 
 def add_watch(code: str) -> dict:
     """加追踪/自选：不产生持仓，只标记 is_watch=True（没买但想看数据的股票）。"""
+    code = normalize_stock_code(code)
     _ensure_asset(code)
     with session_scope() as s:
         a = s.get(Asset, code)
@@ -120,6 +123,7 @@ def add_watch(code: str) -> dict:
 
 def remove_watch(code: str) -> dict:
     """取消追踪/自选：is_watch=False。保留 Asset 及其历史行情（已持仓则持仓不受影响）。"""
+    code = normalize_stock_code(code)
     with session_scope() as s:
         a = s.get(Asset, code)
         if a and a.is_watch:

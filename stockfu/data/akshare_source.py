@@ -7,12 +7,12 @@ daily_stock_analysis/data_provider/fundamental_adapter.py (MIT)。
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from typing import Optional
 
 import pandas as pd
 
-from stockfu.data.base import (DataSource, Market, Quote, currency_of,
+from stockfu.data.base import (DataSource, KlineBar, Market, Quote, currency_of,
                             detect_market, direct_connection)
 from stockfu.data.dividend_parser import (_filter_rows as filter_rows,
                                        _pick as pick_col, build_metric_from_df,
@@ -46,14 +46,22 @@ def _call_df(candidates):
 
 class AkshareSource(DataSource):
     name = "akshare"
-    supports = {Market.CN}
+    supports = {Market.CN, Market.HK, Market.US}
 
     # 全量 A 股实时表（类级缓存 20 分钟，仅实时兜底用）
     _spot_df: Optional[pd.DataFrame] = None
     _spot_ts: float = 0.0
+    # 全量港股实时表（类级缓存 20 分钟，仅取名称用）
+    _hk_spot_df: Optional[pd.DataFrame] = None
+    _hk_spot_ts: float = 0.0
 
     # -------- 行情（兜底；主力失败时全量 spot 缓存） --------
     def _fetch_quote(self, code: str) -> Optional[Quote]:
+        mkt = detect_market(code)
+        if mkt == Market.HK:
+            return self._fetch_quote_hk(code)
+        if mkt == Market.US:
+            return self._fetch_quote_us(code)
         now = time.monotonic()
         if self._spot_df is None or now - self._spot_ts > 1200:
             try:
@@ -84,6 +92,125 @@ class AkshareSource(DataSource):
             pct_chg=f("涨跌幅"), open=f("今开"), high=f("最高"), low=f("最低"),
             pre_close=f("昨收"), volume=f("成交量"), amount=f("成交额"),
             pe=f("市盈率", "市盈率-动态"), pb=f("市净率"), market_cap=f("总市值"),
+            updated_at=datetime.now(),
+        )
+
+    # -------- 港股（stock_hk_hist，国内源直连，无需代理） --------
+    def _hk_symbol(self, code: str) -> str:
+        """HK00700 → 00700（akshare stock_hk_hist 的 symbol）。"""
+        return code[2:] if code.startswith("HK") else code
+
+    def _hk_name(self, code: str) -> str:
+        """港股名称（stock_hk_spot_em 全量缓存 20 分钟）。"""
+        sym = self._hk_symbol(code)
+        now = time.monotonic()
+        if self._hk_spot_df is None or now - self._hk_spot_ts > 1200:
+            try:
+                with direct_connection():
+                    import akshare as ak
+                    self._hk_spot_df = ak.stock_hk_spot_em()
+                self._hk_spot_ts = now
+            except Exception:  # noqa: BLE001
+                return ""
+        df = self._hk_spot_df
+        if df is None or df.empty:
+            return ""
+        code_col = next((c for c in df.columns if "代码" in str(c)), None)
+        if code_col is None:
+            return ""
+        row = df[df[code_col].astype(str) == sym]
+        return safe_str(pick_col(row.iloc[0], ["名称"])) if not row.empty else ""
+
+    def _hk_bars(self, code: str, days: int) -> list:
+        sym = self._hk_symbol(code)
+        end = date.today().strftime("%Y%m%d")
+        start = (date.today() - timedelta(days=days + 30)).strftime("%Y%m%d")
+        df, _, _ = _call_df([("stock_hk_hist", {
+            "symbol": sym, "period": "daily", "adjust": "qfq",
+            "start_date": start, "end_date": end,
+        })])
+        if df is None:
+            return []
+        bars: list = []
+        for _, r in df.iterrows():
+            try:
+                d = pd.to_datetime(r["日期"]).date()
+                bars.append(KlineBar(
+                    date=d,
+                    open=float(r["开盘"]), close=float(r["收盘"]),
+                    high=float(r["最高"]), low=float(r["最低"]),
+                    volume=float(r["成交量"]) if pd.notna(r.get("成交量")) else None,
+                ))
+            except (KeyError, ValueError, TypeError):
+                continue
+        return bars
+
+    def get_kline(self, code: str, days: int = 365) -> list:
+        """港股/美股日K（akshare 东财源）；A 股 K 线由 efinance 负责，返回空。"""
+        mkt = detect_market(code)
+        if mkt == Market.HK:
+            bars = self._hk_bars(code, days)
+        elif mkt == Market.US:
+            bars = self._us_bars(code, days)
+        else:
+            return []
+        return bars[-days:] if days and len(bars) > days else bars
+
+    def _fetch_quote_hk(self, code: str) -> Optional[Quote]:
+        """港股现价 = 最近交易日收盘（天级，无盘中实时）。"""
+        bars = self._hk_bars(code, 5)
+        if not bars:
+            return None
+        last = bars[-1]
+        prev = bars[-2].close if len(bars) >= 2 else last.close
+        return Quote(
+            code=code, name=self._hk_name(code), market=Market.HK, currency=currency_of(Market.HK),
+            price=last.close, open=last.open, high=last.high, low=last.low,
+            pre_close=prev, volume=last.volume,
+            pct_chg=(((last.close - prev) / prev * 100) if prev else None),
+            updated_at=datetime.now(),
+        )
+
+    # -------- 美股（stock_us_hist，国内源直连，无需代理） --------
+    def _us_bars(self, code: str, days: int) -> list:
+        end = date.today().strftime("%Y%m%d")
+        start = (date.today() - timedelta(days=days + 30)).strftime("%Y%m%d")
+        df = None
+        for prefix in ("105", "106"):   # 纳斯达克 / 纽交所，逐个试
+            df, _, _ = _call_df([("stock_us_hist", {
+                "symbol": f"{prefix}.{code}", "period": "daily", "adjust": "qfq",
+                "start_date": start, "end_date": end,
+            })])
+            if df is not None:
+                break
+        if df is None:
+            return []
+        bars: list = []
+        for _, r in df.iterrows():
+            try:
+                d = pd.to_datetime(r["日期"]).date()
+                bars.append(KlineBar(
+                    date=d,
+                    open=float(r["开盘"]), close=float(r["收盘"]),
+                    high=float(r["最高"]), low=float(r["最低"]),
+                    volume=float(r["成交量"]) if pd.notna(r.get("成交量")) else None,
+                ))
+            except (KeyError, ValueError, TypeError):
+                continue
+        return bars
+
+    def _fetch_quote_us(self, code: str) -> Optional[Quote]:
+        """美股现价 = 最近交易日收盘（天级）。"""
+        bars = self._us_bars(code, 5)
+        if not bars:
+            return None
+        last = bars[-1]
+        prev = bars[-2].close if len(bars) >= 2 else last.close
+        return Quote(
+            code=code, name="", market=Market.US, currency=currency_of(Market.US),
+            price=last.close, open=last.open, high=last.high, low=last.low,
+            pre_close=prev, volume=last.volume,
+            pct_chg=(((last.close - prev) / prev * 100) if prev else None),
             updated_at=datetime.now(),
         )
 

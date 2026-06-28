@@ -116,7 +116,7 @@
 .sc-bench .it{color:var(--ink-mute);white-space:nowrap}
 .sc-bench .it b{font-weight:700;font-variant-numeric:tabular-nums;margin-left:5px}
 .sc-tbl{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
-.sc-tbl th{font-size:11px;color:var(--ink-mute);font-weight:500;text-align:right;padding:8px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+.sc-tbl th{font-size:12px;color:var(--ink-mute);font-weight:700;text-align:right;padding:9px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
 .sc-tbl th:first-child{text-align:left}
 .sc-tbl td{padding:9px 6px;text-align:right;border-bottom:1px solid var(--line-soft);font-variant-numeric:tabular-nums;white-space:nowrap}
 .sc-tbl td:first-child{text-align:left;font-weight:600;color:var(--ink)}
@@ -129,11 +129,14 @@
 .sc-idx-row .ch{font-variant-numeric:tabular-nums;font-weight:600;min-width:54px}
 .sc-idx-row .gx{margin-left:auto;display:flex;gap:8px;align-items:flex-end}
 .sc-idx-row .gc{display:inline-flex;flex-direction:column;align-items:center;gap:2px}
-.sc-idx-row .gc i{font-style:normal;font-size:10px;color:var(--ink-mute);line-height:1}
-.sc-idx-row .gauge svg{width:64px;height:34px}
-.sc-idx-row .gauge b{font-size:15px}
-.sc-idx-row .gauge .face{font-size:11px}
-.sc-foot{text-align:center;font-size:10px;color:var(--ink-faint);margin-top:18px;letter-spacing:1px}
+.sc-idx-row .gc i{font-style:normal;font-size:12px;color:var(--ink-mute);line-height:1}
+.sc-idx-row .gauge svg{width:84px;height:44px}
+.sc-idx-row .gauge b{font-size:22px}
+.sc-idx-row .gauge .face{font-size:18px;transform:none;line-height:1;margin:0}
+.sc-note{font-size:11px;color:var(--ink-mute);line-height:1.6;margin-top:14px;padding:10px 12px;background:var(--surface-2);border:1px solid var(--line-soft);border-radius:8px}
+.sc-note div+div{margin-top:4px}
+.sc-note b{color:var(--ink-dim);font-weight:600}
+.sc-foot{text-align:center;font-size:10px;color:var(--ink-faint);margin-top:14px;letter-spacing:1px}
 .upc{color:var(--heat-up)}
 .dnc{color:var(--heat-dn)}
 .idx-bar{display:inline-flex;align-items:center;gap:6px}
@@ -179,11 +182,11 @@ header{display:flex;align-items:center;justify-content:space-between;gap:24px;pa
 .idx-main .im-num .im-price{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;font-family:var(--sans);line-height:1.1}
 .idx-main .im-num .im-chg{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
 .idx-main .im-cell{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
-.idx-main .im-cell .k{font-size:11px;color:var(--ink-mute);font-weight:500}
+.idx-main .im-cell .k{font-size:15px;color:var(--ink-mute);font-weight:500}
 .idx-main .im-cell .gauge{display:flex;flex-direction:column;align-items:center;width:100%}
 .idx-main .im-cell .gauge svg{width:100%;height:auto}
 .idx-main .im-cell .gauge b{font-size:36px}
-.idx-main .im-cell .gauge .face{font-size:26px}
+.idx-main .im-cell .gauge .face{font-size:36px;transform:none;line-height:1;margin:0}
 .mood-sub{display:flex;gap:12px;margin-top:12px;margin-bottom:22px}
 .mood-sub .sub-card{flex:1;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 16px;font-size:12px;box-shadow:var(--shadow)}
 .mood-sub .sub-card .sn{font-weight:600;color:var(--ink-dim);font-size:13px;margin-bottom:4px}
@@ -196,9 +199,9 @@ header{display:flex;align-items:center;justify-content:space-between;gap:24px;pa
 .gauge .num-row{display:inline-flex;align-items:center;gap:5px;margin-top:-4px;line-height:1}
 .gauge b{font-family:var(--sans);font-weight:700;font-size:24px;font-variant-numeric:tabular-nums;line-height:1}
 .gauge .face{font-size:18px;line-height:1;display:inline-block;transform:scale(0.65);transform-origin:center;vertical-align:middle;margin:0 -3px}
-.sc-mood .gauge svg{width:84px;height:44px}
-.sc-mood .gauge .face{font-size:17px}
-.sc-mood .gauge b{font-size:16px}
+.sc-mood .gauge svg{width:120px;height:62px}
+.sc-mood .gauge .face{font-size:28px;transform:none;line-height:1;margin:0}
+.sc-mood .gauge b{font-size:32px}
 .bar{height:8px;background:var(--line-soft);border-radius:6px;overflow:hidden}
 .mood-card .bar{display:none}
 .bar > i{display:block;height:100%;width:0;background:var(--accent,var(--gold));border-radius:6px;transition:width .7s cubic-bezier(.2,.8,.2,1)}
@@ -982,7 +985,7 @@ async function openShare(){
   h+=`<div class="c"><div class="k">贪婪</div><div class="v">${gauge(m.greed,'greed')}</div><div class="t" style="color:${mc(bg.color)}">${bg.label}</div></div>`;
   h+=`<div class="c"><div class="k">热度</div><div class="v">${gauge(m.heat,'heat',m.today_chg)}</div><div class="t" style="color:${mc(bh.color)}">${bh.label}</div></div>`;
   h+=`</div>`;
-  h+=`<div class="sc-sec">大盘指数</div><div class="sc-idx">`;
+  h+=`<div class="sc-idx">`;
   [['399006','创业板指'],['000688','科创50']].forEach(([c,nm])=>{
     const x=iq[c]; if(!x) return;
     const u=x.pct_chg!=null && x.pct_chg>=0;
@@ -991,12 +994,13 @@ async function openShare(){
   h+=`</div>`;
   h+=`<div class="sc-sec">区间涨跌观察 · 仅公开数据</div>`;
   h+=`<div class="sc-bench"><span class="lbl">上证指数<small>基准</small></span><span class="grp"><span class="it">近1周 <b class="${scCls(m.perf_1w)}">${scFmt(m.perf_1w)}</b></span><span class="it">近1月 <b class="${scCls(m.perf_1m)}">${scFmt(m.perf_1m)}</b></span><span class="it">近1年 <b class="${scCls(m.perf_1y)}">${scFmt(m.perf_1y)}</b></span></span></div>`;
-  h+=`<table class="sc-tbl"><thead><tr><th>名称</th><th>现价</th><th>今涨</th><th>股息率</th><th>近1周</th><th>近1月</th><th>近1年</th><th>恐慌</th><th>贪婪</th><th>热度</th></tr></thead><tbody>`;
+  h+=`<table class="sc-tbl"><tbody><tr class="hd"><th>名称</th><th>现价</th><th>今涨</th><th>近1周</th><th>近1月</th><th>近1年</th><th>恐慌</th><th>贪婪</th><th>热度</th><th>股息率</th></tr>`;
   (d.holdings||[]).forEach(p=>{
     const cur=p.currency==='USD'?'$':p.currency==='HKD'?'HK$':'¥';
-    h+=`<tr><td>${p.name||p.code}<small>${p.code}</small></td><td>${cur}${p.price==null||isNaN(p.price)?'—':p.price.toFixed(2)}</td><td class="${scCls(p.day_chg)}">${p.day_chg==null?'—':(p.day_chg>=0?'+':'')+p.day_chg.toFixed(2)+'%'}</td><td>${p.ttm_yield_pct==null?'—':p.ttm_yield_pct.toFixed(2)+'%'}</td><td class="${scCls(p.perf_1w)}">${scFmt(p.perf_1w)}</td><td class="${scCls(p.perf_1m)}">${scFmt(p.perf_1m)}</td><td class="${scCls(p.perf_1y)}">${scFmt(p.perf_1y)}</td><td>${indexBar(p.fear,true)}</td><td>${indexBar(p.greed,true)}</td><td>${indexBar(p.heat,true,p.day_chg)}</td></tr>`;
+    h+=`<tr><td>${p.name||p.code}<small>${p.code}</small></td><td>${cur}${p.price==null||isNaN(p.price)?'—':p.price.toFixed(2)}</td><td class="${scCls(p.day_chg)}">${p.day_chg==null?'—':(p.day_chg>=0?'+':'')+p.day_chg.toFixed(2)+'%'}</td><td class="${scCls(p.perf_1w)}">${scFmt(p.perf_1w)}</td><td class="${scCls(p.perf_1m)}">${scFmt(p.perf_1m)}</td><td class="${scCls(p.perf_1y)}">${scFmt(p.perf_1y)}</td><td>${indexBar(p.fear,true)}</td><td>${indexBar(p.greed,true)}</td><td>${indexBar(p.heat,true,p.day_chg)}</td><td>${p.ttm_yield_pct==null?'—':p.ttm_yield_pct.toFixed(2)+'%'}</td></tr>`;
   });
   h+=`</tbody></table>`;
+  h+=`<div class="sc-note"><div><b>情绪指数</b> = 多因子 → 各自历史分位(0-100) → 等权平均（CNN 式）</div><div><b>恐慌</b>：波动率/跌幅/资金流出/ERP 等下行因子分位</div><div><b>贪婪</b>：涨幅/成交/连板/两融/资金流入等上行因子分位</div><div><b>热度</b>：成交活跃度分位（红=买方热、绿=卖方热）</div></div>`;
   h+=`<div class="sc-foot">StockFu · asset &amp; sentiment</div>`;
   $('#share-card').innerHTML=h;
 }
