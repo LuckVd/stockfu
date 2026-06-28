@@ -33,13 +33,15 @@ class YfinanceSource(DataSource):
     def _proxy_session():
         """带代理的 requests.Session，供 yfinance 访问港/美/日韩台股。
 
-        setup_network 不设全局代理(会误伤国内源)，故 yfinance 在此显式注入代理。
+        代理地址来自 web 设置面板（get_overseas_proxy，运行时可变）；setup_network
+        不设全局代理(会误伤国内源)，故 yfinance 在此显式注入。
         """
         import requests
-        from stockfu.config import settings
+        from stockfu.config import get_overseas_proxy
+        proxy = get_overseas_proxy()
         s = requests.Session()
-        if settings.proxy_url:
-            s.proxies = {"http": settings.proxy_url, "https": settings.proxy_url}
+        if proxy:
+            s.proxies = {"http": proxy, "https": proxy}
         return s
 
     # -------- 行情 --------

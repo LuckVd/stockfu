@@ -13,6 +13,7 @@ from sqlmodel import select
 from stockfu.data.manager import get_manager
 from stockfu.db import session_scope
 from stockfu.models import Asset, Holding, IndexSnapshot
+from stockfu.services.snapshot import latest_snapshot
 
 
 @dataclass
@@ -36,6 +37,7 @@ class PositionView:
     fear: float | None = None
     greed: float | None = None
     heat: float | None = None
+    day_chg: float | None = None      # 当日涨跌幅%（热度箭头方向用）
 
 
 @dataclass
@@ -73,18 +75,18 @@ def get_portfolio() -> PortfolioSummary:
             if h.shares <= 0:
                 continue
             a = assets.get(h.asset_code)
-            q = mgr.get_quote(h.asset_code)
-            price = q.price if q else 0.0
+            snap = latest_snapshot(h.asset_code)
+            price = snap.close if snap else 0.0
             mv = price * h.shares
             cost = h.total_cost or (h.avg_cost * h.shares)
             profit = mv - cost
-            m = mgr.get_dividend_metric(h.asset_code, latest_price=price) if q else None
-            annual_div = (m.ttm_cash_per_share or 0.0) * h.shares
-            cur = (a.currency if a else "") or (q.currency if q else "CNY")
+            m = mgr.get_dividend_metric(h.asset_code, latest_price=price) if snap else None
+            annual_div = ((m.ttm_cash_per_share or 0.0) if m else 0.0) * h.shares
+            cur = (snap.currency if snap else "") or (a.currency if a else "CNY")
             currencies.add(cur)
             positions.append(PositionView(
                 code=h.asset_code,
-                name=(a.name if a and a.name else (q.name if q else "")),
+                name=(snap.name if snap and snap.name else "") or (a.name if a else ""),
                 market=a.market if a else "",
                 currency=cur,
                 shares=h.shares, avg_cost=h.avg_cost, price=price,
@@ -97,6 +99,7 @@ def get_portfolio() -> PortfolioSummary:
                 fear=stock_idx.get(h.asset_code, {}).get("fear"),
                 greed=stock_idx.get(h.asset_code, {}).get("greed"),
                 heat=stock_idx.get(h.asset_code, {}).get("heat"),
+                day_chg=(snap.pct_chg if snap else None),
             ))
 
     positions.sort(key=lambda p: p.market_value, reverse=True)
@@ -112,3 +115,48 @@ def get_portfolio() -> PortfolioSummary:
         annual_dividend_income=annual,
         mixed_currency=len(currencies) > 1,
     )
+
+
+def get_watchlist_view() -> list[dict]:
+    """自选/追踪股行情视图：is_watch=True 的股票，带现价/涨跌/股息率/三层情绪。
+
+    与持仓视图同源的行情·分红·情绪获取，但**不含**持仓数量/成本/盈亏等敏感字段。
+    is_holding 标记该股是否同时在持仓表（前端据此区分「纯追踪」与「已持仓」）。
+    """
+    mgr = get_manager()
+    with session_scope() as s:
+        assets = s.exec(select(Asset).where(Asset.is_watch == True)).all()  # noqa: E712
+        if not assets:
+            return []
+        codes = [a.code for a in assets]
+        held = {h.asset_code for h in s.exec(select(Holding)).all()}
+        idx_rows = s.exec(select(IndexSnapshot).where(
+            IndexSnapshot.level == "stock",
+            IndexSnapshot.scope.in_(codes),
+        ).order_by(IndexSnapshot.scope, IndexSnapshot.snap_date.desc())).all()
+        stock_idx: dict[str, dict[str, float]] = {}
+        for r in idx_rows:
+            d = stock_idx.setdefault(r.scope, {})
+            if r.index_key in ("fear", "greed", "heat") and r.index_key not in d:
+                d[r.index_key] = r.value  # 已按日期降序，首个即最新
+    out: list[dict] = []
+    for a in assets:
+        snap = latest_snapshot(a.code)
+        price = snap.close if snap else None
+        # ETF/基金无个股分红意义，跳过 dividend 查询（也是 watchlist 卡顿源）
+        m = mgr.get_dividend_metric(a.code, latest_price=price) if (snap and a.asset_type == "stock") else None
+        out.append({
+            "code": a.code,
+            "name": (snap.name if snap and snap.name else "") or a.name or a.code,
+            "market": a.market,
+            "currency": (snap.currency if snap else "") or a.currency or "CNY",
+            "type": a.asset_type,
+            "price": price,
+            "day_chg": (snap.pct_chg if snap else None),
+            "ttm_yield_pct": (m.ttm_yield_pct if m else None),
+            "fear": stock_idx.get(a.code, {}).get("fear"),
+            "greed": stock_idx.get(a.code, {}).get("greed"),
+            "heat": stock_idx.get(a.code, {}).get("heat"),
+            "is_holding": a.code in held,
+        })
+    return out

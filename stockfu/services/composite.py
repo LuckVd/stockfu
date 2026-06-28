@@ -18,7 +18,7 @@ from stockfu.db import session_scope
 from stockfu.models import FactorSnapshot, IndexSnapshot
 from stockfu.services import factors as F
 
-BENCH = "510300"
+BENCH = "512100"  # 大盘基准：中证1000ETF（中小盘代表，比沪深300 更能反映全市场）
 MID = F.WINDOW_MID_DAYS  # 情绪/量价类 5 年窗口
 
 # 板块/主题 → 代表 ETF（板块层用其 K 线 + 板块资金流）
@@ -63,6 +63,28 @@ def _ext_pct(level, scope, factor, today_val):
     return F.percentile(hist, today_val)[0]  # 样本不足返回 None
 
 
+def _call_timeout(fn, timeout: float = 8.0):
+    """带超时跑 fn（外部网络因子：baostock/东财），超时或异常返回 None。
+
+    这些调用在后台 daemon 线程里可能卡住（baostock 非线程安全、东财反爬），
+    若不设超时会阻塞整个指数计算——而 fear/greed 主要来自本地 K 线分位，
+    不应被外部因子拖累。卡住即跳过该因子，K 线分位照常算。
+    """
+    import threading
+    box: dict = {}
+
+    def _run():
+        try:
+            box["r"] = fn()
+        except Exception:  # noqa: BLE001
+            box["e"] = True
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    return box.get("r")
+
+
 def compute_for(code, level, scope, ext=None, val_pcts=None):
     """通用三层合成。
 
@@ -72,13 +94,16 @@ def compute_for(code, level, scope, ext=None, val_pcts=None):
     ext = ext or {}
     closes = F.quote_series(code, "close", MID)
     amounts = F.quote_series(code, "amount", MID)
+    volumes = F.quote_series(code, "volume", MID)
     comps, fp, gp, hp, ext_raws = {}, [], [], [], {}
 
     if len(closes) >= 30:
         vols, chgs = _rolling_vol(closes), _rolling_chg(closes)
         vol_pct = _pct(vols, vols[-1]) if vols else None
         chg_pct = _pct(chgs, chgs[-1]) if chgs else None
-        amt_pct = _pct(amounts, amounts[-1]) if amounts else None
+        # 成交活跃度：优先成交额(amount)，样本不足则回退成交量(volume)
+        amt_series = amounts if len(amounts) >= 10 else volumes
+        amt_pct = _pct(amt_series, amt_series[-1]) if amt_series else None
         comps.update(volatility_pct=vol_pct, momentum_pct=chg_pct, amount_pct=amt_pct)
         if vol_pct is not None:
             fp.append(vol_pct)
@@ -106,16 +131,32 @@ def compute_for(code, level, scope, ext=None, val_pcts=None):
     fear = round(sum(fp) / len(fp), 2) if fp else None
     greed = round(sum(gp) / len(gp), 2) if gp else None
     heat = round(sum(hp) / len(hp), 2) if hp else None
+    today_chg = round((closes[-1] / closes[-2] - 1) * 100, 2) if len(closes) >= 2 else None
     return {"level": level, "scope": scope, "fear": fear, "greed": greed, "heat": heat,
+            "today_chg": today_chg,
             "components": comps, "ext_raws": ext_raws,
             "factor_counts": {"fear": len(fp), "greed": len(gp), "heat": len(hp)}}
+
+
+def _ensure_bench_kline(min_bars: int = 60) -> None:
+    """大盘基准(510300)K线不足则补——大盘指数依赖它，否则恒为空。"""
+    from stockfu.db import session_scope
+    from stockfu.models import QuoteSnapshot
+    with session_scope() as s:
+        n = len(s.exec(select(QuoteSnapshot).where(
+            QuoteSnapshot.asset_code == BENCH)).all())
+    if n < min_bars:
+        from stockfu.scheduler.jobs import backfill_kline
+        backfill_kline(BENCH, 1825)
 
 
 def compute_market():
     from stockfu.data.manager import get_manager
     from stockfu.services import market_data as md
 
-    q = get_manager().get_quote(BENCH)
+    _ensure_bench_kline()
+    from stockfu.services.snapshot import latest_snapshot
+    snap = latest_snapshot(BENCH)
     ext = {}
     try:
         lu = md.limit_up_board() or {}
@@ -132,8 +173,8 @@ def compute_market():
     except Exception:  # noqa: BLE001
         pass
     try:
-        if q and q.pe:
-            er = md.erp(q.pe) or {}
+        if snap and snap.pe:
+            er = md.erp(snap.pe) or {}
             if er.get("erp") is not None:
                 ext["erp"] = (er["erp"], "fear")
     except Exception:  # noqa: BLE001
@@ -154,29 +195,22 @@ def compute_stock(code):
     from stockfu.services import market_data as md
 
     ext = {}
-    try:
-        ff = get_manager().get_stock_fund_flow(code) or {}
-        mi = ff.get("main_net_inflow")
-        if mi is not None:
-            ext["fund_flow_main"] = (mi, "greed" if mi > 0 else "fear")
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        sm = md.stock_margin(code) or {}
-        if sm.get("buy_amount"):
-            ext["margin_buy"] = (sm["buy_amount"], "greed")
-    except Exception:  # noqa: BLE001
-        pass
+    ff = _call_timeout(lambda: get_manager().get_stock_fund_flow(code)) or {}
+    mi = ff.get("main_net_inflow")
+    if mi is not None:
+        ext["fund_flow_main"] = (mi, "greed" if mi > 0 else "fear")
+    sm = _call_timeout(lambda: md.stock_margin(code)) or {}
+    if sm.get("buy_amount"):
+        ext["margin_buy"] = (sm["buy_amount"], "greed")
     # 估值因子：PE/PB 历史分位（baostock，免费替代 tushare）
     val_pcts = {}
-    try:
-        pe_pct, pb_pct = get_manager().baostock.get_pe_pb_percentile(code)
+    pe_pb = _call_timeout(lambda: get_manager().baostock.get_pe_pb_percentile(code))
+    if isinstance(pe_pb, tuple):
+        pe_pct, pb_pct = pe_pb
         if pe_pct is not None:
             val_pcts["pe_pct"] = pe_pct
         if pb_pct is not None:
             val_pcts["pb_pct"] = pb_pct
-    except Exception:  # noqa: BLE001
-        pass
     return compute_for(code, "stock", code, ext, val_pcts=val_pcts)
 
 

@@ -71,3 +71,136 @@ def setup_network() -> None:
     if settings.proxy_bypass:
         for k in ("no_proxy", "NO_PROXY"):
             os.environ.setdefault(k, settings.proxy_bypass)
+
+
+# ---------- 运行时可变的外网代理（web 设置面板写入，供 yfinance 用）----------
+_proxy_cache: dict[str, str] = {}
+
+
+def get_overseas_proxy() -> str:
+    """yfinance 实际使用的代理地址。
+
+    优先 app_config['overseas_proxy']（web 面板设置过）；未设置过则回落 .env 的
+    proxy_url（向后兼容）。空串 = 直连。带内存缓存，set 时清空。
+    """
+    if "overseas_proxy" in _proxy_cache:
+        return _proxy_cache["overseas_proxy"]
+    from stockfu.db import get_app_config, has_app_config
+    if has_app_config("overseas_proxy"):
+        effective = get_app_config("overseas_proxy")
+    else:
+        effective = settings.proxy_url
+    _proxy_cache["overseas_proxy"] = effective
+    return effective
+
+
+def set_overseas_proxy(value: str) -> str:
+    """保存外网代理到 db，清缓存。空串 = 直连。返回生效值。"""
+    from stockfu.db import set_app_config
+    set_app_config("overseas_proxy", (value or "").strip())
+    _proxy_cache.clear()
+    return get_overseas_proxy()
+
+
+def test_overseas_proxy(proxy_url: str | None = None) -> dict:
+    """用指定代理（None=当前生效；空串=直连）实际请求 Yahoo，三态判定。"""
+    import time
+    import requests
+
+    url = proxy_url if proxy_url is not None else get_overseas_proxy()
+    sess = requests.Session()
+    if url:
+        sess.proxies = {"http": url, "https": url}
+    target = "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d"
+    t0 = time.time()
+    try:
+        r = sess.get(target, timeout=10)
+    except requests.exceptions.RequestException as e:
+        return {"ok": False, "status": None, "latency_ms": None,
+                "detail": f"代理连不上：{type(e).__name__}"}
+    ms = int((time.time() - t0) * 1000)
+    if r.status_code == 200:
+        return {"ok": True, "status": 200, "latency_ms": ms,
+                "detail": "代理可用，Yahoo 正常返回"}
+    if r.status_code in (403, 429):
+        return {"ok": False, "status": r.status_code, "latency_ms": ms,
+                "detail": "代理可达，但该出口 IP 被 Yahoo 封了，需换住宅/海外节点"}
+    return {"ok": False, "status": r.status_code, "latency_ms": ms,
+            "detail": f"Yahoo 返回 {r.status_code}"}
+
+
+# ---------- 定时抓取配置（web 设置面板写入，北京时间）----------
+import re
+
+_SCHEDULE_CACHE: dict[str, str] = {}
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _cached_int(key: str, default: int) -> int:
+    if key in _SCHEDULE_CACHE:
+        try:
+            return int(_SCHEDULE_CACHE[key])
+        except (TypeError, ValueError):
+            pass
+    from stockfu.db import get_app_config, has_app_config
+    raw = get_app_config(key, str(default)) if has_app_config(key) else str(default)
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = default
+    _SCHEDULE_CACHE[key] = str(n)
+    return n
+
+
+def get_daily_fetch_time() -> str:
+    """每日定时抓取的北京时间 HH:MM，默认 15:30（A 股收盘后）。"""
+    if "daily_fetch_time" in _SCHEDULE_CACHE:
+        return _SCHEDULE_CACHE["daily_fetch_time"]
+    from stockfu.db import get_app_config, has_app_config
+    v = get_app_config("daily_fetch_time", "15:30") if has_app_config("daily_fetch_time") else "15:30"
+    if not _TIME_RE.match(v):
+        v = "15:30"
+    _SCHEDULE_CACHE["daily_fetch_time"] = v
+    return v
+
+
+def set_daily_fetch_time(value: str) -> str:
+    v = (value or "").strip()
+    if not _TIME_RE.match(v):
+        v = "15:30"
+    from stockfu.db import set_app_config
+    set_app_config("daily_fetch_time", v)
+    _SCHEDULE_CACHE.clear()
+    return get_daily_fetch_time()
+
+
+def get_fetch_retry_interval() -> int:
+    """拉取失败的重试间隔（分钟），默认 10。"""
+    return max(1, _cached_int("fetch_retry_interval", 10))
+
+
+def set_fetch_retry_interval(value) -> int:
+    from stockfu.db import set_app_config
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = 10
+    set_app_config("fetch_retry_interval", str(max(1, n)))
+    _SCHEDULE_CACHE.clear()
+    return get_fetch_retry_interval()
+
+
+def get_fetch_retry_count() -> int:
+    """重试次数（0=只跑一轮不重试），默认 3。"""
+    return max(0, _cached_int("fetch_retry_count", 3))
+
+
+def set_fetch_retry_count(value) -> int:
+    from stockfu.db import set_app_config
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = 3
+    set_app_config("fetch_retry_count", str(max(0, n)))
+    _SCHEDULE_CACHE.clear()
+    return get_fetch_retry_count()

@@ -16,7 +16,7 @@ from stockfu.data.base import (DataSource, Market, Quote, currency_of,
                             detect_market, direct_connection)
 from stockfu.data.dividend_parser import (_filter_rows as filter_rows,
                                        _pick as pick_col, build_metric_from_df,
-                                       build_metric_from_history, safe_float,
+                                       build_metric_from_fhps, build_metric_from_history, safe_float,
                                        safe_str)
 
 
@@ -93,15 +93,18 @@ class AkshareSource(DataSource):
         if detect_market(code) != Market.CN:
             return None
         cur = currency or currency_of(Market.CN)
-        # stock_history_dividend_detail 有明确的「派息」列(每10股)，最可靠，优先
+        # stock_fhps_detail_em 有「报告期」(财年)，按财年累加避免跨财年，优先
         df, used, _ = _call_df([
+            ("stock_fhps_detail_em", {"symbol": code}),
             ("stock_history_dividend_detail",
              {"symbol": code, "indicator": "分红", "date": ""}),
-            ("stock_fhps_detail_em", {"symbol": code}),
             ("stock_dividend_cninfo", {"symbol": code}),
         ])
         if df is None:
             return None
+        if "报告期" in df.columns:
+            return build_metric_from_fhps(
+                df, code, cur, latest_price, source=f"akshare:{used}")
         if "派息" in df.columns:
             return build_metric_from_history(
                 df, code, cur, latest_price, source=f"akshare:{used}")

@@ -103,3 +103,38 @@ def seed_demo_holdings() -> list[str]:
             codes.append(code)
         s.commit()
     return codes
+
+
+def _ensure_tables() -> None:
+    """幂等建表（create_all 只建缺失表，不动已有数据）。
+
+    server 启动时不调 init_db，故运行时新表（如 app_config）在此 lazy 生效。
+    """
+    SQLModel.metadata.create_all(engine)
+
+
+def has_app_config(key: str) -> bool:
+    from stockfu.models import AppConfig
+    _ensure_tables()
+    with session_scope() as s:
+        return s.get(AppConfig, key) is not None
+
+
+def get_app_config(key: str, default: str = "") -> str:
+    from stockfu.models import AppConfig
+    _ensure_tables()
+    with session_scope() as s:
+        row = s.get(AppConfig, key)
+        return row.value if row else default
+
+
+def set_app_config(key: str, value: str) -> None:
+    from stockfu.models import AppConfig
+    _ensure_tables()
+    with session_scope() as s:
+        row = s.get(AppConfig, key)
+        if row is None:
+            s.add(AppConfig(key=key, value=value))
+        else:
+            row.value = value
+        s.commit()

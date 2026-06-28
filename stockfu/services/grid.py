@@ -13,13 +13,14 @@ DEFAULT_LEVELS = (2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0)
 
 
 def build_grid(code: str, levels: tuple[float, ...] = DEFAULT_LEVELS) -> dict | None:
+    from stockfu.services.snapshot import latest_snapshot
     mgr = get_manager()
-    q = mgr.get_quote(code)
-    if not q:
+    snap = latest_snapshot(code)
+    if not snap:
         return None
-    m = mgr.get_dividend_metric(code, latest_price=q.price)
+    m = mgr.get_dividend_metric(code, latest_price=snap.close)
     if not m or m.ttm_cash_per_share <= 0:
-        return {"code": code, "name": q.name, "current_price": q.price,
+        return {"code": code, "name": snap.name, "current_price": snap.close,
                 "current_yield": None, "ttm_cash": None, "rows": [],
                 "note": "无分红数据，无法生成股息率网格"}
 
@@ -35,7 +36,7 @@ def build_grid(code: str, levels: tuple[float, ...] = DEFAULT_LEVELS) -> dict | 
             action = "持有"
         rows.append({"yield_pct": yld, "price": round(price, 3), "action": action})
     return {
-        "code": code, "name": q.name, "currency": q.currency,
-        "current_price": q.price, "current_yield": cur_yield,
+        "code": code, "name": snap.name, "currency": snap.currency,
+        "current_price": snap.close, "current_yield": cur_yield,
         "ttm_cash": m.ttm_cash_per_share, "rows": rows,
     }

@@ -26,9 +26,12 @@ def run_tui() -> None:
 def run_api(host: str, port: int, reload: bool) -> None:
     import uvicorn
 
-    from stockfu.api.server import app
-
-    uvicorn.run(app, host=host, port=port, reload=reload)
+    if reload:
+        # reload 模式必须传导入字符串（不能是 app 对象），否则 uvicorn 报错退出
+        uvicorn.run("stockfu.api.server:app", host=host, port=port, reload=True)
+    else:
+        from stockfu.api.server import app
+        uvicorn.run(app, host=host, port=port)
 
 
 def run_init_db() -> None:
@@ -72,9 +75,9 @@ def run_holdings() -> None:
 
 
 def run_fetch() -> None:
-    from stockfu.scheduler.jobs import run_daily_job
+    from stockfu.scheduler.jobs import run_scheduled_fetch
 
-    print(f"✓ 每日抓取完成: {run_daily_job()}")
+    print(f"✓ 抓取完成（今日行情+分红+指数）: {run_scheduled_fetch()}")
 
 
 def run_backfill(days: int) -> None:
@@ -112,6 +115,12 @@ def run_schedule() -> None:
     _run()
 
 
+def run_clean_quotes() -> None:
+    from stockfu.scheduler.jobs import clean_quote_snapshots
+
+    print(f"✓ 清理非交易日快照: {clean_quote_snapshots()}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="stockfu", description="StockFu·资产管理终端")
     p.add_argument("--serve", action="store_true", help="以 FastAPI 服务模式运行")
@@ -131,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backfill-limit", type=int, nargs="?", const=365,
                    help="回补 连板/涨停历史（默认365天，限速，慢，建议后台）")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
+    p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
     return p
 
 
@@ -159,6 +169,8 @@ def main() -> None:
         run_backfill_limit(args.backfill_limit)
     elif args.schedule:
         run_schedule()
+    elif args.clean_quotes:
+        run_clean_quotes()
     elif args.serve:
         run_api(args.host, args.port, args.reload)
     else:

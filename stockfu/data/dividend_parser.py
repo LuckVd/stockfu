@@ -30,18 +30,19 @@ _KW: dict[str, list[str]] = {
 def safe_float(value: Any) -> Optional[float]:
     if value is None:
         return None
-    if isinstance(value, (int, float)):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-    s = str(value).strip().replace(",", "").replace("%", "").replace("元", "")
-    if not s or s in ("-", "--"):
-        return None
     try:
-        return float(s)
+        if isinstance(value, (int, float)):
+            f = float(value)
+        else:
+            s = str(value).strip().replace(",", "").replace("%", "").replace("元", "")
+            if not s or s in ("-", "--"):
+                return None
+            f = float(s)
     except (TypeError, ValueError):
         return None
+    if f != f or f == float('inf') or f == float('-inf'):   # pandas NaN/inf 当空，避免污染除法
+        return None
+    return f
 
 
 def safe_str(value: Any) -> str:
@@ -129,6 +130,21 @@ def _filter_rows(df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def _latest_annual_cash(events: list[DividendEventDTO]) -> Optional[float]:
+    """TTM（近 365 天）每股现金分红之和，最多取最近 2 笔。events 须按 ex_date 降序。
+
+    累加窗口内已实施分红；上限 2 笔（年度 + 中期）避免分红日落在窗口两端时
+    跨财年重复计入（如平安 6 月年度分红，12 个月窗口会同时含上/本年度）。
+    旧实现只取最新一笔，导致茅台/平安等股息率偏低近一半。
+    """
+    if not events:
+        return None
+    cutoff = date.today() - timedelta(days=365)
+    recent = [e for e in events if e.ex_date >= cutoff][:2]
+    total = sum(e.per_share_cash for e in recent)
+    return total or None
+
+
 def build_metric_from_df(
     df: pd.DataFrame,
     code: str,
@@ -172,13 +188,12 @@ def build_metric_from_df(
         return None
 
     events.sort(key=lambda e: e.ex_date, reverse=True)
-    ttm = round(sum(e.per_share_cash for e in events
-                    if ttm_start <= e.ex_date <= today), 6)
-    yield_pct = round(ttm / latest_price * 100, 4) if (latest_price and latest_price > 0) else None
+    latest_annual = _latest_annual_cash(events)
+    yield_pct = round(latest_annual / latest_price * 100, 4) if (latest_annual and latest_price and latest_price > 0) else None
     return DividendMetric(
         code=code, currency=currency,
-        ttm_cash_per_share=ttm, ttm_yield_pct=yield_pct,
-        events=events[:max_events], coverage="cash_dividend_pre_tax",
+        ttm_cash_per_share=latest_annual or 0.0, ttm_yield_pct=yield_pct,
+        events=events[:max_events], coverage="ttm_365d",
     )
 
 
@@ -200,25 +215,97 @@ def build_metric_from_history(
     for _, row in df.iterrows():
         if not isinstance(row, pd.Series):
             continue
-        ex = (_to_date(row.get("除权除息日")) or _to_date(row.get("股权登记日"))
-              or _to_date(row.get("公告日期")))
+        # 只取已「实施」的分红；预案/进度阶段尚未派发，且会与实施行重复计入
+        prog = safe_str(row.get("进度"))
+        if prog and prog != "实施":
+            continue
+        ex = _to_date(row.get("除权除息日")) or _to_date(row.get("股权登记日"))
         if not ex or ex > today:
             continue
         per10 = safe_float(row.get("派息"))
         if not per10 or per10 <= 0:
             continue
+        # 每10股派现；若同时送股/转增，按除权后股本(10+送+转)摊到每股，
+        # 与现价(除权后)口径一致，避免虚高（如比亚迪「送8转12派39.74」）
+        song = safe_float(row.get("送股")) or 0.0
+        zz = safe_float(row.get("转增")) or 0.0
+        denom = 10.0 + song + zz
         events.append(DividendEventDTO(
-            ex_date=ex, per_share_cash=round(per10 / 10.0, 6),
+            ex_date=ex, per_share_cash=round(per10 / denom, 6),
             currency=currency, source=source,
         ))
     if not events:
         return None
     events.sort(key=lambda e: e.ex_date, reverse=True)
-    ttm = round(sum(e.per_share_cash for e in events
-                    if ttm_start <= e.ex_date <= today), 6)
+    latest_annual = _latest_annual_cash(events)
+    yp = round(latest_annual / latest_price * 100, 4) if (latest_annual and latest_price and latest_price > 0) else None
+    return DividendMetric(
+        code=code, currency=currency,
+        ttm_cash_per_share=latest_annual or 0.0, ttm_yield_pct=yp,
+        events=events[:max_events], coverage="ttm_365d",
+    )
+
+
+def build_metric_from_fhps(
+    df: pd.DataFrame,
+    code: str,
+    currency: str = "CNY",
+    latest_price: Optional[float] = None,
+    source: str = "akshare",
+    max_events: int = 8,
+) -> Optional[DividendMetric]:
+    """处理 stock_fhps_detail_em：有「报告期」(财年) 字段，按财年累加，根治跨财年。
+
+    取「报告期为 12-31 的最近一个财年」的全部分红之和（含已实施 + 股东大会通过
+    的预案），与行情软件（同花顺/东财）口径一致。
+    列：报告期 / 现金分红-现金分红比例(每10股) / 现金分红-现金分红比例描述 /
+    除权除息日 / 方案进度。
+    """
+    if df is None or df.empty or "报告期" not in df.columns:
+        return None
+    today = date.today()
+    rows: list[tuple[date, float]] = []   # (报告期, 每股派息)
+    events: list[DividendEventDTO] = []
+    for _, row in df.iterrows():
+        if not isinstance(row, pd.Series):
+            continue
+        prog = safe_str(row.get("方案进度"))
+        if prog and prog not in ("实施分配", "实施", "股东大会决议通过"):
+            continue   # 只取已实施 + 已通过预案
+        rp = _to_date(row.get("报告期"))
+        if not rp:
+            continue
+        ratio = safe_float(row.get("现金分红-现金分红比例"))   # 每 10 股派现
+        desc = safe_str(row.get("现金分红-现金分红比例描述"))
+        song = safe_float(row.get("送转股份-送股比例")) or 0.0
+        zhuan = safe_float(row.get("送转股份-转股比例")) or 0.0   # 列名是「转股」不是「转增」
+        denom = 10.0 + song + zhuan   # 送转股除权后股本，与现价(除权后)口径一致
+        per = (ratio / denom) if (ratio and ratio > 0) else _parse_plan_to_per_share(desc)
+        if not per or per <= 0:
+            continue
+        ex = _to_date(row.get("除权除息日"))
+        if ex and ex > today:
+            continue   # 未来除权跳过；预案 ex=NaT 用报告期当日期
+        rows.append((rp, per))
+        events.append(DividendEventDTO(
+            ex_date=ex or rp, per_share_cash=round(per, 6),
+            currency=currency, source=source,
+        ))
+    if not rows:
+        return None
+    # 最近一个完整财年：报告期含 12-31 的最大年份
+    annual_years = sorted({rp.year for rp, _ in rows if rp.month == 12}, reverse=True)
+    if annual_years:
+        fy = annual_years[0]
+        ttm = sum(per for rp, per in rows if rp.year == fy)
+        cov = f"fiscal_{fy}"
+    else:
+        ttm = rows[0][1]
+        cov = "latest_event"
+    events.sort(key=lambda e: e.ex_date, reverse=True)
     yp = round(ttm / latest_price * 100, 4) if (latest_price and latest_price > 0) else None
     return DividendMetric(
         code=code, currency=currency,
-        ttm_cash_per_share=ttm, ttm_yield_pct=yp,
-        events=events[:max_events], coverage="cash_dividend_pre_tax",
+        ttm_cash_per_share=round(ttm, 6), ttm_yield_pct=yp,
+        events=events[:max_events], coverage=cov,
     )

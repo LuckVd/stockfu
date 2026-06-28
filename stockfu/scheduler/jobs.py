@@ -30,22 +30,70 @@ INDEX_ETFS = [
 
 
 def _upsert_quote(code: str) -> bool:
+    """拉最近交易日行情落 quote_snapshot。
+
+    quote_date 优先取自 K 线最后一条 bar.date（真实交易日，自动跳周末/节假日）；
+    K 线不支持的代码（如指数 sh000001）→ fallback 实时报价 + 交易日历推算的最近交易日。
+    不再用抓取日：实时报价不返回交易日，周末/节假日抓的会被错标。
+    pe/pb/market_cap/name 始终从实时 get_quote 补。最近交易日已落盘则跳过。
+    """
     from stockfu.data.manager import get_manager
-    q = get_manager().get_quote(code)
-    if not q:
+    from stockfu.services.snapshot import latest_trade_date
+    m = get_manager()
+    bars = m.get_kline(code, 10)
+    q = m.get_quote(code)
+    if bars:
+        bars = sorted(bars, key=lambda b: b.date)
+        bar = bars[-1]
+        tday = bar.date
+        o, h, l, c, vol, amt = bar.open, bar.high, bar.low, bar.close, bar.volume, bar.amount
+        pct = round((bar.close / bars[-2].close - 1) * 100, 2) if len(bars) >= 2 and bars[-2].close else None
+    elif q:
+        tday = latest_trade_date()
+        o, h, l, c, vol, amt = q.open, q.high, q.low, q.price, q.volume, q.amount
+        pct = q.pct_chg
+    else:
         return False
-    today = date.today()
+    with session_scope() as s:
+        existing = s.exec(select(QuoteSnapshot).where(
+            QuoteSnapshot.asset_code == code, QuoteSnapshot.quote_date == tday)).first()
+        if existing and existing.close:          # 最近交易日已落盘 → 跳过
+            return True
     with session_scope() as s:
         snap = s.exec(select(QuoteSnapshot).where(
-            QuoteSnapshot.asset_code == code, QuoteSnapshot.quote_date == today)).first()
-        snap = snap or QuoteSnapshot(asset_code=code, quote_date=today)
-        snap.open, snap.high, snap.low, snap.close = q.open, q.high, q.low, q.price
-        snap.pct_chg, snap.volume, snap.amount = q.pct_chg, q.volume, q.amount
-        snap.pe, snap.pb, snap.market_cap = q.pe, q.pb, q.market_cap
+            QuoteSnapshot.asset_code == code, QuoteSnapshot.quote_date == tday)).first()
+        snap = snap or QuoteSnapshot(asset_code=code, quote_date=tday)
+        snap.open, snap.high, snap.low, snap.close = o, h, l, c
+        snap.pct_chg, snap.volume, snap.amount = pct, vol, amt
+        if q:
+            snap.pe, snap.pb, snap.market_cap = q.pe, q.pb, q.market_cap
         if snap.id is None:
             s.add(snap)
+        if q and q.name:                          # 回填 Asset.name
+            a = s.get(Asset, code)
+            if a and not a.name:
+                a.name = q.name
         s.commit()
     return True
+
+
+def clean_quote_snapshots() -> dict:
+    """删除 quote_snapshot 里 quote_date 不在 A 股交易日历的记录（周末/节假日错标）。
+
+    这些是「非交易日抓取、被错标为抓取日」产生的重复数据，删除安全（真实交易日记录保留）。
+    """
+    from stockfu.services.snapshot import _trade_calendar
+    cal = _trade_calendar()
+    if not cal:
+        return {"deleted": 0, "note": "交易日历不可用，跳过"}
+    deleted = 0
+    with session_scope() as s:
+        for r in s.exec(select(QuoteSnapshot)).all():
+            if r.quote_date not in cal:
+                s.delete(r)
+                deleted += 1
+        s.commit()
+    return {"deleted": deleted}
 
 
 def _upsert_fundflow(code: str) -> bool:
@@ -66,24 +114,61 @@ def _upsert_fundflow(code: str) -> bool:
     return True
 
 
+def _upsert_index_quotes() -> int:
+    """主要指数(上证/创业板/科创50)当日行情落 quote_snapshot（akshare 东财指数系列）。"""
+    import akshare as ak
+    from stockfu.services.snapshot import beijing_today
+    today = beijing_today()
+    cfg = {"上证系列指数": [("000001", "sh000001"), ("000688", "sh000688")],
+           "深证系列指数": [("399006", "sz399006")]}
+    n = 0
+    for sym, codes in cfg.items():
+        try:
+            df = ak.stock_zh_index_spot_em(symbol=sym)
+        except Exception:  # noqa: BLE001
+            continue
+        want = {c for c, _ in codes}
+        imap = {c: ic for c, ic in codes}
+        for _, r in df.iterrows():
+            c = str(r.get("代码", "")).strip()
+            if c not in want:
+                continue
+            try:
+                price = float(r.get("最新价")); chg = float(r.get("涨跌幅"))
+            except (TypeError, ValueError):
+                continue
+            with session_scope() as s:
+                snap = s.exec(select(QuoteSnapshot).where(
+                    QuoteSnapshot.asset_code == imap[c], QuoteSnapshot.quote_date == today)).first()
+                snap = snap or QuoteSnapshot(asset_code=imap[c], quote_date=today)
+                snap.close = price; snap.pct_chg = chg
+                if snap.id is None:
+                    s.add(snap)
+                s.commit()
+            n += 1
+    return n
+
+
 def backfill_kline(code: str, days: int = 90) -> int:
     """拉历史日K灌入 quote_snapshot（首次/补数据）。返回新增条数。"""
     from stockfu.data.manager import get_manager
-    bars = get_manager().get_kline(code, days)
+    bars = sorted(get_manager().get_kline(code, days), key=lambda b: b.date)
     if not bars:
         return 0
     n = 0
     with session_scope() as s:
         have = {q.quote_date for q in s.exec(
             select(QuoteSnapshot).where(QuoteSnapshot.asset_code == code)).all()}
+        prev_close = None
         for b in bars:
-            if b.date in have:
-                continue
-            s.add(QuoteSnapshot(
-                asset_code=code, quote_date=b.date, open=b.open, high=b.high,
-                low=b.low, close=b.close, volume=b.volume, amount=b.amount,
-            ))
-            n += 1
+            if b.date not in have:
+                pct = round((b.close / prev_close - 1) * 100, 2) if prev_close else None
+                s.add(QuoteSnapshot(
+                    asset_code=code, quote_date=b.date, open=b.open, high=b.high,
+                    low=b.low, close=b.close, pct_chg=pct, volume=b.volume, amount=b.amount,
+                ))
+                n += 1
+            prev_close = b.close
         s.commit()
     return n
 
@@ -149,18 +234,67 @@ def run_daily_job() -> dict:
             "composite_levels": len(comp)}
 
 
+def _batch_fetch_today(codes: list[str]) -> tuple[list[str], list[str]]:
+    """对 codes 逐个 _upsert_quote。返回 (成功, 失败)。"""
+    ok, fail = [], []
+    for c in codes:
+        try:
+            (ok if _upsert_quote(c) else fail).append(c)
+        except Exception:  # noqa: BLE001
+            fail.append(c)
+    return ok, fail
+
+
+def run_scheduled_fetch() -> dict:
+    """到 daily_fetch_time 触发：批量抓今日 + 失败按间隔重试 N 次 + 分红/ETF/三层指数。
+
+    重试只针对上一轮失败的 code（已落盘的 _upsert_quote 会秒跳过，双重保险）；
+    重试耗尽后剩下的不管（读路径会显示最近一条历史快照）。
+    """
+    import time as _t
+
+    from stockfu.config import get_fetch_retry_count, get_fetch_retry_interval
+
+    init_db()
+    with session_scope() as s:
+        codes = [a.code for a in s.exec(select(Asset)).all()]
+    targets = list(dict.fromkeys(codes + INDEX_ETFS))
+
+    ok, fail = _batch_fetch_today(targets)
+    retries = get_fetch_retry_count()
+    for _ in range(retries):
+        if not fail:
+            break
+        _t.sleep(get_fetch_retry_interval() * 60)
+        ok2, fail = _batch_fetch_today(fail)
+        ok.extend(ok2)
+
+    # 主要指数当日行情落盘
+    _upsert_index_quotes()
+    # 后半段：分红 / ETF 份额 / 三层指数
+    from stockfu.services import composite, dividend as div_svc
+    with session_scope() as s:
+        all_codes = [a.code for a in s.exec(select(Asset)).all()]
+    divs = sum(div_svc.persist_dividends(c) for c in all_codes)
+    flows = sum(1 for c in INDEX_ETFS if _upsert_fundflow(c))
+    comp = composite.compute_all(all_codes)
+    return {"quotes": len(ok), "retries": retries, "still_failed": len(fail),
+            "still_failed_codes": fail[:20], "dividends": divs,
+            "fundflow_etfs": flows, "composite_levels": len(comp)}
+
+
 def run_schedule() -> None:
-    """APScheduler 长驻，按 settings.daily_cron 跑 run_daily_job。"""
+    """APScheduler 长驻：工作日 daily_fetch_time（北京时间，web 可改）跑 run_scheduled_fetch。"""
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
 
-    from stockfu.config import settings
+    from stockfu.config import get_daily_fetch_time
 
     init_db()
-    parts = settings.daily_cron.split()
-    trig = CronTrigger(minute=parts[0], hour=parts[1], day=parts[2],
-                       month=parts[3], day_of_week=parts[4])
+    hhmm = get_daily_fetch_time()
+    h, m = (int(x) for x in hhmm.split(":"))
+    trig = CronTrigger(hour=h, minute=m, day_of_week="mon-fri", timezone="Asia/Shanghai")
     sched = BlockingScheduler(timezone="Asia/Shanghai")
-    sched.add_job(run_daily_job, trig, id="daily", max_instances=1, coalesce=True)
-    print(f"调度已启动，cron={settings.daily_cron}（Asia/Shanghai）。Ctrl-C 退出。")
+    sched.add_job(run_scheduled_fetch, trig, id="daily", max_instances=1, coalesce=True)
+    print(f"调度已启动：工作日 {hhmm}（北京时间）自动抓取+算指数。Ctrl-C 退出。")
     sched.start()

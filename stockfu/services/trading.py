@@ -84,9 +84,45 @@ def reset_all() -> None:
         s.commit()
 
 
+def delete_holding(code: str) -> dict:
+    """删除单只持仓：清掉该 code 的全部交易流水 + 聚合持仓（保留 asset 自选）。"""
+    with session_scope() as s:
+        txns = s.exec(select(Transaction).where(
+            Transaction.asset_code == code)).all()
+        n = len(txns)
+        for t in txns:
+            s.delete(t)
+        h = s.get(Holding, code)
+        if h is not None:
+            s.delete(h)
+        s.commit()
+    return {"ok": True, "code": code, "deleted_transactions": n}
+
+
 def list_holdings() -> list[dict]:
     with session_scope() as s:
         return [{"code": h.asset_code, "shares": h.shares,
                  "avg_cost": h.avg_cost, "total_cost": h.total_cost,
                  "first_buy": h.first_buy_date}
                 for h in s.exec(select(Holding)).all()]
+
+
+def add_watch(code: str) -> dict:
+    """加追踪/自选：不产生持仓，只标记 is_watch=True（没买但想看数据的股票）。"""
+    _ensure_asset(code)
+    with session_scope() as s:
+        a = s.get(Asset, code)
+        if a and not a.is_watch:
+            a.is_watch = True
+            s.commit()
+    return {"ok": True, "code": code, "is_watch": True}
+
+
+def remove_watch(code: str) -> dict:
+    """取消追踪/自选：is_watch=False。保留 Asset 及其历史行情（已持仓则持仓不受影响）。"""
+    with session_scope() as s:
+        a = s.get(Asset, code)
+        if a and a.is_watch:
+            a.is_watch = False
+            s.commit()
+    return {"ok": True, "code": code, "is_watch": False}

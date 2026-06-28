@@ -146,3 +146,11 @@ class NewsItem(SQLModel, table=True):
     published_at: datetime | None = None
     related_code: str = Field(default="", index=True)
     sentiment: float | None = None                 # -1..1
+
+
+class AppConfig(SQLModel, table=True):
+    """通用键值配置（运行时可变设置，如外网代理地址）。"""
+    __tablename__ = "app_config"
+    key: str = Field(primary_key=True)
+    value: str = ""
+    updated_at: datetime = Field(default_factory=_now)

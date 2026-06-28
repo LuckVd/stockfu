@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from stockfu.data.base import (DividendMetric, KlineBar, Market, Quote, detect_market)
+from stockfu.data.base import (DividendMetric, KlineBar, Market, Quote, TTLCache, detect_market)
 from stockfu.data.akshare_source import AkshareSource
 from stockfu.data.baostock_source import BaostockSource
 from stockfu.data.efinance_source import EfinanceSource
@@ -26,6 +26,9 @@ class DataProviderManager:
         self.baostock = BaostockSource()
         self.akshare = AkshareSource()
         self.yfinance = YfinanceSource()
+        # 分红数据低频（一年几次），缓存 1 小时，避免每次刷新自选都全量联网拉取
+        self._dividend_cache = TTLCache(3600)
+        self._index_cache = TTLCache(300)
         # 行情 / K 线优先级：efinance(东财)→tencent→sina→pytdx→baostock(独立梯队)→akshare→yfinance
         self._quote_order: list = [self.efinance, self.tencent, self.sina, self.pytdx,
                                    self.baostock, self.akshare, self.yfinance]
@@ -48,10 +51,16 @@ class DataProviderManager:
     # -------- 分红 / 股息率 --------
     def get_dividend_metric(self, code: str,
                             latest_price: Optional[float] = None) -> Optional[DividendMetric]:
+        # 分红事件低频，按 code 缓存；并对「查不到」做负缓存——ETF/无分红股反复
+        # 触发 akshare→yfinance 联网重试是 watchlist 卡顿的主因。
+        cached = self._dividend_cache.get(code)
+        if cached is not None:
+            return cached if cached.events else None   # 空 marker 命中→None（无分红）
         market = detect_market(code)
         # A 股分红主力 akshare；港美股主力 yfinance
         candidates = ([self.akshare, self.yfinance] if market == Market.CN
                       else [self.yfinance, self.akshare])
+        result: Optional[DividendMetric] = None
         for s in candidates:
             fn = getattr(s, "get_dividend_metric", None)
             if fn is None:
@@ -61,8 +70,11 @@ class DataProviderManager:
             except Exception:  # noqa: BLE001
                 m = None
             if m and m.events:
-                return m
-        return None
+                result = m
+                break
+        # 有 events 缓存 metric；否则负缓存空 marker（1h 内不再重试），对外返回 None
+        self._dividend_cache.set(code, result if result is not None else DividendMetric(code=code))
+        return result
 
     # -------- K 线 --------
     def get_kline(self, code: str, days: int = 365) -> list[KlineBar]:
@@ -85,6 +97,33 @@ class DataProviderManager:
 
     def get_etf_fund_flow(self, code: str) -> dict:
         return self.akshare.get_etf_fund_flow(code)
+
+    def get_index_quotes(self) -> dict:
+        """主要指数实时点数/涨跌幅（akshare 东财指数系列：上证+深证）。
+        返回 {code: {name, price, pct_chg}}，含上证指数/创业板指/科创50。"""
+        cached = self._index_cache.get("all")
+        if cached is not None:
+            return cached
+        import akshare as ak
+        out: dict = {}
+        for sym, codes in (("上证系列指数", ("000001", "000688")),
+                           ("深证系列指数", ("399006",))):
+            try:
+                df = ak.stock_zh_index_spot_em(symbol=sym)
+            except Exception:  # noqa: BLE001
+                continue
+            for _, r in df.iterrows():
+                c = str(r.get("代码", "")).strip()
+                if c in codes:
+                    try:
+                        price = float(r.get("最新价"))
+                        chg = float(r.get("涨跌幅"))
+                    except (TypeError, ValueError):
+                        continue
+                    out[c] = {"name": str(r.get("名称", "")).strip(),
+                              "price": price, "pct_chg": chg}
+        self._index_cache.set("all", out)
+        return out
 
 
 _manager: Optional[DataProviderManager] = None
