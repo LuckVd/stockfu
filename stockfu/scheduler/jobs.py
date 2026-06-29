@@ -315,28 +315,38 @@ def run_schedule() -> None:
     init_db()
     sched = BlockingScheduler(timezone="Asia/Shanghai")
 
+    # 内嵌 web（mail job 渲染分享卡片时需要本进程的页面）
+    started_web = False
+
+    if get_mail_enabled() and is_mail_ready():
+        start_embedded_server()
+        started_web = True
+        print("✓ 内嵌 web 已启动（供 playwright 渲染分享卡片）")
+    else:
+        print("· 邮件未启用或未配置完整，跳过内嵌 web（面板配置后重启 --schedule 生效）")
+
+    from stockfu.services.mail import run_mail_job
+
+    def _fetch_then_mail() -> dict:
+        """抓取 + 分红/ETF/三层指数 → 全部完后自动发邮件（不等定时）。"""
+        result = run_scheduled_fetch()
+        # 只要邮件就绪就发，不管个别标的失败（有数据的发，没数据的跳）
+        if get_mail_enabled() and is_mail_ready():
+            try:
+                mail_result = run_mail_job()
+                result["mail"] = mail_result
+            except Exception as exc:  # noqa: BLE001
+                result["mail"] = {"ok": False, "detail": str(exc)}
+        return result
+
     hhmm = get_daily_fetch_time()
     h, m = (int(x) for x in hhmm.split(":"))
     sched.add_job(
-        run_scheduled_fetch,
+        _fetch_then_mail,
         CronTrigger(hour=h, minute=m, day_of_week="mon-fri", timezone="Asia/Shanghai"),
         id="daily", max_instances=1, coalesce=True,
     )
-    print(f"✓ 抓取任务：工作日 {hhmm}（北京）抓行情 + 算指数")
-
-    if get_mail_enabled() and is_mail_ready():
-        base_url = start_embedded_server()
-        from stockfu.services.mail import run_mail_job
-        mh, mm = (int(x) for x in get_mail_time().split(":"))
-        sched.add_job(
-            run_mail_job,
-            CronTrigger(hour=mh, minute=mm, day_of_week=get_mail_days(), timezone="Asia/Shanghai"),
-            id="mail", max_instances=1, coalesce=True,
-        )
-        print(f"✓ 邮件任务：{get_mail_days()} {get_mail_time()}（北京）自动发信"
-              f"（内嵌 web {base_url}，无需另开 --serve）")
-    else:
-        print("· 邮件任务：未启用或未配置完整，跳过（面板配置后重启 --schedule 生效）")
+    print(f"✓ 抓取任务：工作日 {hhmm}（北京）抓行情 + 算指数 → 自动发邮件")
 
     print("调度已启动，Ctrl-C 退出。")
     sched.start()
