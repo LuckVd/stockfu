@@ -172,11 +172,14 @@ def latest_trade_date() -> date:
 def index_quotes_view() -> dict:
     """三个大盘指数的当日点数/涨跌幅 + 恐/贪/热（/indices/quotes 与分享卡片共用）。
 
-    pct_chg 优先用落盘值；backfill 未存时从最近两条 close 算（= 该交易日涨跌幅）。
+    情绪指数仅取 query_date 当天数据，不往回读旧数据（否则多日显示同一值）。
+    上证取 market→MARKET；创业板/科创50 取 sector→板块名（与 compute_all 保存时一致）。
+    pct_chg 优先用落盘值；backfill 未存时从最近两条 close 算。
     """
     from stockfu.models import IndexSnapshot
-    cfg = {"000001": ("sh000001", "上证指数", "market", "上证指数"),
-           "399006": ("sz399006", "创业板指", "sector", "创业板指"),
+    td = date.today()
+    cfg = {"000001": ("sh000001", "上证指数", "market", "MARKET"),
+           "399006": ("sz399006", "创业板指", "sector", "创业板"),
            "000688": ("sh000688", "科创50", "sector", "科创50")}
     out: dict = {}
     with session_scope() as s:
@@ -187,8 +190,9 @@ def index_quotes_view() -> dict:
             snap = snaps[0] if snaps else None
             prev_close = snaps[1].close if len(snaps) >= 2 else None
             rows = s.exec(select(IndexSnapshot).where(
-                IndexSnapshot.level == lvl, IndexSnapshot.scope == scope
-            ).order_by(IndexSnapshot.snap_date.desc()).limit(3)).all()
+                IndexSnapshot.level == lvl, IndexSnapshot.scope == scope,
+                IndexSnapshot.snap_date == td
+            )).all()
             idx = {r.index_key: r.value for r in rows}
             if snap and snap.pct_chg is not None:
                 pct = snap.pct_chg

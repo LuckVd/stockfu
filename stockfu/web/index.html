@@ -116,7 +116,7 @@
 .sc-bench .it{color:var(--ink-mute);white-space:nowrap}
 .sc-bench .it b{font-weight:700;font-variant-numeric:tabular-nums;margin-left:5px}
 .sc-tbl{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
-.sc-tbl th{font-size:12px;color:var(--ink-mute);font-weight:700;text-align:right;padding:9px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+.sc-tbl th{color:var(--ink-mute);font-weight:700;text-align:right;padding:9px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
 .sc-tbl th:first-child{text-align:left}
 .sc-tbl td{padding:9px 6px;text-align:right;border-bottom:1px solid var(--line-soft);font-variant-numeric:tabular-nums;white-space:nowrap}
 .sc-tbl td:first-child{text-align:left;font-weight:600;color:var(--ink)}
@@ -308,7 +308,7 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
 .main-tabs .tab-refresh.spinning{animation:spin .7s cubic-bezier(.4,.1,.2,1)}
 @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 .mtab-pane[hidden]{display:none}
-#hold th[data-sort],.wt-tbl th[data-sort]{cursor:pointer;user-select:none;position:relative;padding-right:13px}
+#hold th[data-sort],.wt-tbl th[data-sort]{cursor:pointer;user-select:none;position:relative;padding-right:10px}
 #hold th[data-sort]:hover,.wt-tbl th[data-sort]:hover{color:var(--ink-dim)}
 #hold th[data-sort]::after,.wt-tbl th[data-sort]::after{content:'⇅';position:absolute;right:1px;top:50%;transform:translateY(-50%);opacity:.3;font-size:10px;font-weight:400}
 #hold th.sort-asc::after,.wt-tbl th.sort-asc::after{content:'↑';opacity:1;color:var(--gold)}
