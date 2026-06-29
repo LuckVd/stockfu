@@ -52,17 +52,22 @@ def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str |
                         if (document.querySelectorAll('#share-card .sc-page').length) { clearInterval(t); r(); }
                     }, 50);
                 });
-                // 隐藏分享浮层以外的一切：交易录入表单（价格/日期）等会覆盖卡片被截进去
-                const share = document.querySelector('#share-overlay');
-                [...document.body.children].forEach(el => { if (el !== share) el.style.display = 'none'; });
+                // 将卡片移出遮罩层放到 body，避免 shadow-dom 合成导致底部混杂遮罩背景色
+                const card = document.getElementById('share-card');
+                document.body.innerHTML = '';
+                document.body.appendChild(card);
+                document.documentElement.style.background = '#fffdf7';
+                document.body.style.background = '#fffdf7';
+                document.body.style.margin = '0';
+                // 去掉底部边框（否则截图底边会有一条 1px 的线）
+                document.querySelectorAll('.sc-page').forEach(p => { p.style.borderBottom = '0'; });
                 // emoji 强制彩色字体：卡片 .face 继承 --sans（无 emoji 字体），服务器回退到
-                // DejaVu Sans 会把部分 emoji 渲染成单色简笔画；显式指定 Noto Color Emoji 走彩色
                 document.querySelectorAll('#share-card .face').forEach(el => {
                     el.style.fontFamily = '"Noto Color Emoji","Apple Color Emoji","Segoe UI Emoji"';
                 });
             }""")
             for el in page.query_selector_all('#share-card .sc-page'):
-                imgs.append(el.screenshot())   # 元素截图，emoji 彩色
+                imgs.append(el.screenshot())   # 元素截图，此时卡片已在干净背景中
         finally:
             browser.close()
     return imgs
