@@ -306,6 +306,30 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
 .main-tabs .tab-refresh{margin-left:10px;color:var(--ink-faint);font-size:16px;font-weight:400;padding:2px 4px 6px;border-bottom:2px solid transparent}
 .main-tabs .tab-refresh:hover{color:var(--gold);transform:rotate(180deg);transition:transform .5s}
 .main-tabs .tab-refresh.spinning{animation:spin .7s cubic-bezier(.4,.1,.2,1)}
+.pager{display:flex;align-items:center;justify-content:center;gap:14px;padding:12px 0;color:var(--ink-mute);font-size:13px}
+.pager .pg-btn{background:transparent;border:1px solid var(--ink-faint);color:var(--ink-dim);padding:4px 14px;border-radius:6px;cursor:pointer;font-family:var(--sans);font-size:13px}
+.pager .pg-btn:hover:not(:disabled){color:var(--gold);border-color:var(--gold)}
+.pager .pg-btn:disabled{opacity:.4;cursor:default}
+/* 资金流向：顶部全市场净额卡 + 单向横向柱（名+数值在左，柱在右，红流入/绿流出）*/
+.mkt-card{display:flex;align-items:baseline;gap:10px;padding:10px 14px;border-radius:8px;border:1px solid var(--ink-faint);margin:6px 2px 12px}
+.mkt-card.up{border-color:var(--up-dim);background:rgba(220,38,38,.07)}
+.mkt-card.down{border-color:var(--down-dim);background:rgba(22,163,74,.07)}
+.mkt-lbl{font-size:13px;color:var(--ink-mute)}
+.mkt-val{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.mkt-card.up .mkt-val{color:var(--up)}
+.mkt-card.down .mkt-val{color:var(--down)}
+.mkt-tag{font-size:12px;color:var(--ink-mute)}
+.bars{padding:0 2px}
+.bar-row{display:flex;align-items:center;gap:10px;padding:2px 0}
+.bar-lbl{width:158px;flex-shrink:0;display:flex;align-items:baseline;gap:6px;justify-content:flex-end}
+.bar-lbl b{font-weight:600;color:var(--ink);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:104px}
+.bar-lbl em{font-style:normal;font-size:11px;font-variant-numeric:tabular-nums}
+.bar-lbl em.up{color:var(--up)}
+.bar-lbl em.down{color:var(--down)}
+.bar-track{flex:1;height:16px;border-radius:3px;overflow:hidden}
+.bar{height:100%;border-radius:3px}
+.bar-in{background:var(--up)}
+.bar-out{background:var(--down)}
 @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 .mtab-pane[hidden]{display:none}
 #hold th[data-sort],.wt-tbl th[data-sort]{cursor:pointer;user-select:none;position:relative;padding-right:10px}
@@ -406,6 +430,7 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
         <div class="main-tabs">
           <button class="on" data-mtab="holdings">持仓</button>
           <button data-mtab="watchlist">自选</button>
+          <button data-mtab="sentiment">资金流向</button>
           <button class="tab-refresh" id="main-refresh" title="刷新当前列表">⟳</button>
         </div>
         <div class="head-actions" id="hold-actions"><span class="hint" id="as-of">—</span><button class="btn ghost sm" id="clear-all">清空全部</button></div>
@@ -426,6 +451,7 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
         <div class="mtab-pane" id="pane-watchlist" hidden>
           <div class="empty">暂无自选/追踪股 — 在右侧「追踪」添加</div>
         </div>
+        <div class="mtab-pane" id="pane-sentiment" hidden><div class="empty"><span class="spin"></span>加载中…</div></div>
       </div>
     </div>
 
@@ -450,13 +476,6 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
       </div>
     </div>
   </section>
-
-  <!-- 板块 / 资金流 / 自选 -->
-  <div class="tabs">
-    <button class="on" data-tab="sentiment">板块情绪</button>
-    <button data-tab="fundflow">资金流</button>
-  </div>
-  <div class="tab-body" id="tab-body"><div class="empty"><span class="spin"></span>加载中…</div></div>
 
 </div>
 <div class="toast" id="toast"></div>
@@ -520,6 +539,20 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
       <div class="row" style="margin-top:14px">
         <button class="btn ghost" id="mail-test">测试发送（生成图 + 发一封）</button>
         <span class="test-result" id="mail-result"></span>
+      </div>
+    </div>
+    <div class="set-group">
+      <div class="set-gtitle">数据 · CSV 导入 / 导出</div>
+      <div class="desc">导出市场数据到 <code>data/*.csv</code>（可 git 提交、跨机同步）；从 <code>data/*.csv</code> 合并导入回库（upsert，不丢个人持仓）。操作服务器 <code>data/</code> 目录。</div>
+      <div class="lab">表范围</div>
+      <select id="csv-scope" style="width:100%;background:#fff;border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:var(--mono);font-size:14px;padding:9px 12px;outline:none">
+        <option value="market">市场表（6 张，可入 git）</option>
+        <option value="all">全部表（含个人持仓交易，慎提交）</option>
+      </select>
+      <div class="row" style="margin-top:14px">
+        <button class="btn ghost" id="csv-export">导出到 data/</button>
+        <button class="btn ghost" id="csv-import">从 data/ 导入</button>
+        <span class="test-result" id="csv-result"></span>
       </div>
     </div>
     <div class="actions">
@@ -871,34 +904,27 @@ function addRecent(side,code,shares,price){
     `<div class="row"><span style="color:${r.side==='buy'?'var(--up)':'var(--down)'}">${r.side==='buy'?'买':'卖'} ${r.code}</span><span>${nf(r.shares)} @ ${r.price}</span><span style="color:var(--ink-faint)">${r.t}</span></div>`).join('');
 }
 
-/* ---------- tabs: 板块/资金流/自选 ---------- */
-let curTab='sentiment';
-document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{
-  curTab=b.dataset.tab;document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x===b));loadTab();
-});
-async function loadTab(){
-  const body=$('#tab-body');
-  body.innerHTML='<div class="empty"><span class="spin"></span> 加载中…</div>';
-  if(curTab==='sentiment'){
-    const s=await api('/sentiment');
-    const rows=[...(s.top||[]),...(s.bottom||[]).reverse()];
-    if(!rows.length){body.innerHTML='<div class="empty">暂无板块资金流数据（数据源限流）</div>';return}
-    body.innerHTML = rows.map(r=>{
-      const up=(r.net||0)>=0;
-      return `<div class="sector-row"><span class="nm">${esc(r.name)}</span><span class="fl ${up?'up':'down'}">${signed(r.net/1e8,2)}亿</span><span class="pill" style="color:${up?'var(--up)':'var(--down)'};border-color:${up?'var(--up-dim)':'var(--down-dim)'}">${up?'净流入':'净流出'}</span></div>`;
-    }).join('');
-  }else if(curTab==='fundflow'){
-    const f=await api('/fundflow?lookback=30');
-    const items=(f&&f.etfs)||(f&&f.items)||[];
-    if(!items.length && !Array.isArray(f)){body.innerHTML='<div class="empty">'+esc(JSON.stringify(f).slice(0,200))+'</div>';return}
-    const arr=Array.isArray(f)?f:(f.etfs||f.items||[]);
-    if(!arr.length){body.innerHTML='<div class="empty">暂无 ETF 资金流数据</div>';return}
-    body.innerHTML = arr.map(r=>{
-      const inflow=(r.net_inflow||0);
-      const up=inflow>=0;
-      return `<div class="flow-row"><span class="nm">${esc(r.name||r.code||r.etf_code)}</span><span class="fl ${up?'up':'down'}">${nf(inflow)}</span><span class="pill" style="color:${up?'var(--up)':'var(--down)'};border-color:${up?'var(--up-dim)':'var(--down-dim)'}">${up?'流入':'流出'}</span></div>`;
-    }).join('');
-  }
+/* ---------- 资金流向（全市场净额卡 + 板块横向柱状图）---------- */
+async function renderSentiment(){
+  const pane=$('#pane-sentiment');
+  pane.innerHTML='<div class="empty"><span class="spin"></span> 加载中…</div>';
+  const d=await api('/sectors/flow?top_n=90');
+  let rows=(d&&d.top)||[];
+  if(!rows.length){pane.innerHTML='<div class="empty">暂无资金流向数据（数据源限流）</div>';return}
+  const total=rows.reduce((a,r)=>a+(r.net_inflow||0),0);      /* 全市场净额（亿）*/
+  const tup=total>=0;
+  rows=rows.slice().sort((a,b)=>(b.net_inflow||0)-(a.net_inflow||0));
+  const top=rows.filter(r=>(r.net_inflow||0)>0).slice(0,20);
+  const bot=rows.filter(r=>(r.net_inflow||0)<0).slice(-20);
+  const show=[...top,...bot];
+  const maxNet=Math.max(...show.map(r=>Math.abs(r.net_inflow||0)),1);
+  const card=`<div class="mkt-card ${tup?'up':'down'}"><span class="mkt-lbl">市场资金流向 · 今日净额</span><span class="mkt-val">${signed(total,1)}亿</span><span class="mkt-tag">${tup?'净流入':'净流出'} · 共 ${rows.length} 板块</span></div>`;
+  const bars=`<div class="bars">${show.map(r=>{
+    const v=r.net_inflow||0, up=v>=0;
+    const pct=(Math.abs(v)/maxNet*100).toFixed(1);
+    return `<div class="bar-row"><span class="bar-lbl"><b>${esc(r.name)}</b><em class="${up?'up':'down'}">${signed(v,1)}亿</em></span><div class="bar-track"><div class="bar ${up?'bar-in':'bar-out'}" style="width:${pct}%"></div></div></div>`;
+  }).join('')}</div>`;
+  pane.innerHTML=card+bars;
 }
 
 /* ---------- 主区：持仓 / 自选 切换 ---------- */
@@ -908,34 +934,47 @@ document.querySelectorAll('.main-tabs button[data-mtab]').forEach(b=>b.onclick=(
   document.querySelectorAll('.main-tabs button[data-mtab]').forEach(x=>x.classList.toggle('on',x===b));
   $('#pane-holdings').hidden = curMain!=='holdings';
   $('#pane-watchlist').hidden = curMain!=='watchlist';
-  $('#hold-actions').hidden = curMain==='watchlist';   // 自选下隐藏「截至/清空全部」
+  $('#pane-sentiment').hidden = curMain!=='sentiment';
+  $('#hold-actions').hidden = curMain!=='holdings';   // 仅持仓显示「截至/清空全部」
   if(curMain==='watchlist') loadWatchlist();
+  else if(curMain==='sentiment') renderSentiment();
 });
 $('#main-refresh').onclick=()=>{
   const btn=$('#main-refresh');
   btn.classList.remove('spinning'); void btn.offsetWidth; btn.classList.add('spinning');   // 点击旋转一圈
   setTimeout(()=>btn.classList.remove('spinning'), 700);
   toast('刷新中…');
-  curMain==='watchlist' ? loadWatchlist() : loadSummary();
+  if(curMain==='watchlist') loadWatchlist();
+  else if(curMain==='sentiment') renderSentiment();
+  else loadSummary();
 };
-let _watchlist=[], watchSort={key:null, dir:'desc'};
+let _watchlist=[], watchSort={key:null, dir:'desc'}, watchPage=1; const WATCH_PS=15;
 async function loadWatchlist(){
   const pane=$('#pane-watchlist');
   _watchlist = await api('/watchlist');
+  watchPage=1;
   if(!_watchlist.length){pane.innerHTML='<div class="empty">暂无自选/追踪股 — 在右侧「追踪」添加</div>';return}
   renderWatchlist();
 }
 function sortWatchlist(key){
   if(watchSort.key===key) watchSort.dir = watchSort.dir==='asc'?'desc':'asc';
   else { watchSort.key=key; watchSort.dir = key==='name'?'asc':'desc'; }
+  watchPage=1;
   renderWatchlist();
+}
+function pagerHTML(page,pages){
+  return `<div class="pager"><button class="pg-btn" data-pg="${page-1}" ${page<=1?'disabled':''}>‹ 上一页</button><span>第 ${page} / ${pages} 页</span><button class="pg-btn" data-pg="${page+1}" ${page>=pages?'disabled':''}>下一页 ›</button></div>`;
 }
 function renderWatchlist(){
   const pane=$('#pane-watchlist');
   const w = watchSort.key ? sortBy(_watchlist, watchSort.key, watchSort.dir) : _watchlist;
   const cur=c=>c==='USD'?'$':c==='HKD'?'HK$':'¥';
+  const pages=Math.max(1, Math.ceil(w.length/WATCH_PS));
+  if(watchPage>pages) watchPage=pages;
+  if(watchPage<1) watchPage=1;
+  const slice=w.slice((watchPage-1)*WATCH_PS, watchPage*WATCH_PS);
   pane.innerHTML = `<table class="wt-tbl"><thead><tr><th data-sort="name">名称</th><th data-sort="price">现价</th><th data-sort="day_chg">涨跌</th><th data-sort="ttm_yield_pct">股息率</th><th data-sort="fear">恐慌</th><th data-sort="greed">贪婪</th><th data-sort="heat">热度</th><th>操作</th></tr></thead><tbody>${
-    w.map((r,i)=>{
+    slice.map((r,i)=>{
       const up=(r.day_chg||0)>=0, hasPrice=r.price!=null&&r.price>0;
       return `<tr class="rise" style="animation-delay:${i*40}ms"><td>${esc(r.name)||r.code}<small>${r.code}</small>${r.is_holding?'<span class="tag">持仓</span>':''}</td>`
         +`<td class="num">${hasPrice?cur(r.currency)+nf(r.price,2):'—'}</td>`
@@ -944,15 +983,16 @@ function renderWatchlist(){
         +`<td>${indexBar(r.fear,true)}</td><td>${indexBar(r.greed,true)}</td><td>${indexBar(r.heat,true,r.day_chg)}</td>`
         +`<td class="op"><button class="row-del" data-watch="${r.code}" title="取消追踪">×</button></td></tr>`;
     }).join('')
-  }</tbody></table>`;
+  }</tbody></table>${w.length>WATCH_PS?pagerHTML(watchPage,pages):''}`;
   pane.querySelectorAll('[data-watch]').forEach(b=>b.onclick=()=>removeWatch(b.dataset.watch));
   pane.querySelectorAll('.wt-tbl thead th[data-sort]').forEach(th=>th.onclick=()=>sortWatchlist(th.dataset.sort));
+  pane.querySelectorAll('.pg-btn').forEach(b=>b.onclick=()=>{watchPage=+b.dataset.pg; renderWatchlist();});
   markSortHead('#pane-watchlist .wt-tbl', watchSort.key, watchSort.dir);
 }
 
 /* ---------- 全量加载 ---------- */
 async function loadAll(){
-  await Promise.all([loadMarket(), loadSummary(), loadWatchlist(), loadTab()]);
+  await Promise.all([loadMarket(), loadSummary(), loadWatchlist(), renderSentiment()]);
 }
 $('#refresh').onclick=()=>{ toast('刷新中…'); loadAll(); };
 
@@ -977,6 +1017,24 @@ async function openSettings(){
   await loadMail();
 }
 function closeSettings(){overlay.classList.remove('on')}
+
+async function csvExport(){
+  const r=$('#csv-result'); r.textContent='导出中…'; r.className='test-result';
+  const all=$('#csv-scope').value==='all';
+  const res=await api('/csv/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({all})});
+  if(!res||!res.ok){r.textContent='✗ '+(res&&res.error||'失败');return}
+  r.textContent='✓ 导出 '+Object.entries(res.result).map(([t,n])=>`${t}:${n}行`).join(' · ');
+}
+async function csvImport(){
+  if(!confirm('从 data/*.csv 合并导入回库？（upsert，不会删除现有数据）')) return;
+  const r=$('#csv-result'); r.textContent='导入中…'; r.className='test-result';
+  const all=$('#csv-scope').value==='all';
+  const res=await api('/csv/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({all})});
+  if(!res||!res.ok){r.textContent='✗ '+(res&&res.error||'失败');return}
+  r.textContent='✓ 导入 '+Object.entries(res.result).map(([t,c])=>`${t}:+${c.inserted}~${c.updated}=${c.skipped}`).join(' · ');
+  toast('CSV 导入完成，刷新中');
+  loadAll();
+}
 async function testProxy(){
   const url=$('#proxy-input').value.trim();
   const res=$('#proxy-result');
@@ -1236,6 +1294,8 @@ $('#share-card').addEventListener('click',e=>{
 });
 $('#share-overlay').addEventListener('click',e=>{if(e.target.id==='share-overlay')$('#share-overlay').classList.remove('on')});
 $('#proxy-cancel').onclick=closeSettings;
+$('#csv-export').onclick=csvExport;
+$('#csv-import').onclick=csvImport;
 $('#proxy-test').onclick=testProxy;
 $('#proxy-save').onclick=saveProxy;
 $('#mail-preset').onchange=e=>{const p=MAIL_PRESETS_FE[e.target.value];if(p){$('#mail-host').value=p.host;$('#mail-port').value=p.port;}};
