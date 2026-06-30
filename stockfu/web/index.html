@@ -374,6 +374,25 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
 .modal .test-result{font-size:13px;min-height:20px}
 .modal .test-result.ok{color:var(--up)} .modal .test-result.err{color:var(--down)} .modal .test-result.wait{color:var(--ink-mute)}
 .modal .actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
+/* CSV 导入/导出弹框：类型分段 + 模板预览 */
+.csv-seg{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--line-soft);border-radius:8px;padding:4px;margin-bottom:6px}
+.csv-seg button{background:transparent;border:0;color:var(--ink-mute);padding:9px;font-family:var(--sans);font-size:13px;font-weight:600;cursor:pointer;transition:.15s;border-radius:6px}
+.csv-seg button:hover{color:var(--ink-dim)}
+.csv-seg button.on{color:#fff;background:var(--gold)}
+.lab-hint{font-weight:400;color:var(--ink-mute)}
+.lab-hint .req,.csv-head .ch.req{color:var(--gold);font-weight:700}
+/* 中文表头芯片行：必填项金色描边带 * */
+.csv-head{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+.csv-head .ch{font-size:12px;color:var(--ink-dim);background:var(--surface-2);border:1px solid var(--line-soft);border-radius:6px;padding:4px 10px}
+.csv-head .ch.req{color:var(--gold);border-color:var(--gold-lo);font-weight:600}
+.csv-head .ch.req::after{content:"*";margin-left:2px}
+.csv-hint{font-size:12px;color:var(--ink-mute);line-height:1.7;margin-top:8px}
+.csv-hint b{color:var(--ink-dim);font-weight:600}
+/* 自定义文件选择（隐藏原生 input，label 承载点击） */
+.file-pick{display:flex;align-items:center;gap:10px;background:#fff;border:1px dashed var(--gold-lo);border-radius:8px;padding:6px 8px 6px 10px;cursor:pointer;transition:.15s}
+.file-pick:hover{border-color:var(--gold);background:var(--gold-glow)}
+.file-pick-btn{font-family:var(--sans);font-size:13px;font-weight:500;color:var(--gold);background:var(--gold-glow);border:1px solid var(--gold-lo);border-radius:6px;padding:6px 12px;white-space:nowrap}
+.file-name{font-size:13px;color:var(--ink-mute);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .help-item{font-size:13px;color:var(--ink-dim);line-height:1.6;padding:9px 0;border-top:1px solid var(--line-soft)}
 .help-item:first-of-type{border-top:0}
 .help-item b{color:var(--ink);font-weight:600;margin-right:6px}
@@ -408,6 +427,8 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
       <span id="clock">--:--:--</span>
       <button class="btn ghost" id="refresh"><span id="rspin"></span>刷新</button>
       <button class="btn ghost" id="share-btn" title="导出分享图">分享</button>
+      <button class="btn ghost" id="csv-import-btn" title="从 CSV 文件导入持仓/自选">导入</button>
+      <button class="btn ghost" id="csv-export-btn" title="导出持仓/自选为 CSV 文件">导出</button>
       <button class="btn ghost" id="settings-btn">设置</button>
       <button class="btn ghost" id="theme-btn" title="切换主题">主题</button>
       <button class="btn ghost" id="help-btn" title="指数说明">?</button>
@@ -541,23 +562,40 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
         <span class="test-result" id="mail-result"></span>
       </div>
     </div>
-    <div class="set-group">
-      <div class="set-gtitle">数据 · CSV 导入 / 导出</div>
-      <div class="desc">导出市场数据到 <code>data/*.csv</code>（可 git 提交、跨机同步）；从 <code>data/*.csv</code> 合并导入回库（upsert，不丢个人持仓）。操作服务器 <code>data/</code> 目录。</div>
-      <div class="lab">表范围</div>
-      <select id="csv-scope" style="width:100%;background:#fff;border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:var(--mono);font-size:14px;padding:9px 12px;outline:none">
-        <option value="market">市场表（6 张，可入 git）</option>
-        <option value="all">全部表（含个人持仓交易，慎提交）</option>
-      </select>
-      <div class="row" style="margin-top:14px">
-        <button class="btn ghost" id="csv-export">导出到 data/</button>
-        <button class="btn ghost" id="csv-import">从 data/ 导入</button>
-        <span class="test-result" id="csv-result"></span>
-      </div>
-    </div>
     <div class="actions">
       <button class="btn ghost" id="proxy-cancel">取消</button>
       <button class="btn" id="proxy-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="csv-overlay">
+  <div class="modal">
+    <h3 id="csv-title">导入</h3>
+    <div class="desc" id="csv-desc"></div>
+    <div class="lab">数据类型</div>
+    <div class="csv-seg" id="csv-scope-seg">
+      <button class="on" data-scope="holdings">持仓</button>
+      <button data-scope="watchlist">自选</button>
+    </div>
+    <div id="csv-tpl-block">
+      <div class="lab">表头<span class="lab-hint">（标 <b class="req">*</b> 为必填，其余可留空；点「下载模板文件」获取空表）</span></div>
+      <div class="csv-head" id="csv-head"></div>
+      <div class="csv-hint" id="csv-hint"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn ghost sm" id="csv-dl-tpl">下载模板文件</button>
+      </div>
+      <div class="lab" style="margin-top:14px">选择 CSV 文件</div>
+      <label class="file-pick" for="csv-file">
+        <span class="file-pick-btn">选择文件</span>
+        <span class="file-name" id="csv-file-name">未选择文件</span>
+      </label>
+      <input type="file" id="csv-file" accept=".csv,text/csv" hidden>
+    </div>
+    <div class="test-result" id="csv-result"></div>
+    <div class="actions">
+      <button class="btn ghost" id="csv-cancel">取消</button>
+      <button class="btn" id="csv-ok">导入</button>
     </div>
   </div>
 </div>
@@ -610,9 +648,13 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
 
 <script>
 const $ = s => document.querySelector(s);
-const api = (p, opt) => fetch(p, opt)
-  .then(r => r.json().then(j => r.ok ? j : ({...j, error: j.detail || j.error || ('HTTP '+r.status)})))
-  .catch(e => ({error:String(e)}));
+const api = (p, opt) => fetch(p, opt).then(async r => {
+  const txt = await r.text();
+  let j = null;
+  try { j = txt ? JSON.parse(txt) : null; } catch (_) { /* 非 JSON（如 500 文本） */ }
+  if (!r.ok) return { error: (j && (j.detail || j.error)) || (txt && txt.slice(0, 200)) || ('HTTP ' + r.status) };
+  return j;
+}).catch(e => ({error: String(e)}));
 
 /* ---------- 工具 ---------- */
 const nf = (n, d=0) => n==null||isNaN(n) ? '—' : Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
@@ -1018,20 +1060,83 @@ async function openSettings(){
 }
 function closeSettings(){overlay.classList.remove('on')}
 
-async function csvExport(){
-  const r=$('#csv-result'); r.textContent='导出中…'; r.className='test-result';
-  const all=$('#csv-scope').value==='all';
-  const res=await api('/csv/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({all})});
-  if(!res||!res.ok){r.textContent='✗ '+(res&&res.error||'失败');return}
-  r.textContent='✓ 导出 '+Object.entries(res.result).map(([t,n])=>`${t}:${n}行`).join(' · ');
+/* ---------- CSV 导入 / 导出（顶部工具栏：持仓 / 自选） ---------- */
+const csvOverlay=$('#csv-overlay');
+let csvMode='import', csvScope='holdings';
+const CSV_SCOPE_LABEL={holdings:'持仓',watchlist:'自选'};
+
+// 字段图例：[列名, 说明, 是否必填]。模板下载是干净 CSV；这里只给界面标注必填/可选。
+// 中文表头芯片：[显示名, 是否必填]。与后端 io_csv.TEMPLATE_COLS / COLUMN_CN 保持一致。
+const CSV_HEAD={
+  holdings:[['代码',1],['方向',1],['股数',1],['价格',1],['日期',0],['备注',0]],
+  watchlist:[['代码',1],['名称',0],['市场',0],['类型',0],['板块',0],['币种',0],['自选',0],['备注',0]],
+};
+const CSV_HINT={
+  holdings:'<b>方向</b>填 buy / sell / dividend（或 买入 / 卖出 / 分红）；<b>日期</b> YYYY-MM-DD（选填，斜杠/点号也认）。',
+  watchlist:'<b>市场</b> cn / hk / us（选填，留空按代码推断）；<b>自选</b> 1 或 0（选填，默认 1）。',
+};
+function renderCsvHead(){
+  $('#csv-head').innerHTML = CSV_HEAD[csvScope].map(([n,req]) =>
+    `<span class="ch${req?' req':''}">${n}</span>`
+  ).join('');
+  $('#csv-hint').innerHTML = CSV_HINT[csvScope];
 }
-async function csvImport(){
-  if(!confirm('从 data/*.csv 合并导入回库？（upsert，不会删除现有数据）')) return;
-  const r=$('#csv-result'); r.textContent='导入中…'; r.className='test-result';
-  const all=$('#csv-scope').value==='all';
-  const res=await api('/csv/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({all})});
-  if(!res||!res.ok){r.textContent='✗ '+(res&&res.error||'失败');return}
-  r.textContent='✓ 导入 '+Object.entries(res.result).map(([t,c])=>`${t}:+${c.inserted}~${c.updated}=${c.skipped}`).join(' · ');
+
+async function openCsv(mode){
+  csvMode=mode; csvScope='holdings';
+  $('#csv-title').textContent = mode==='export' ? '导出' : '导入';
+  $('#csv-ok').textContent = mode==='export' ? '导出下载' : '确认导入';
+  $('#csv-tpl-block').style.display = mode==='export' ? 'none' : '';
+  $('#csv-desc').innerHTML = mode==='export'
+    ? '导出为 CSV 文件下载到本地。<b>持仓</b>＝交易流水（移动加权成本可由其重算）；<b>自选</b>＝追踪股票清单。'
+    : '从本地 CSV 文件合并导入（按主键 upsert，不删现有数据）。可「下载模板文件」获取空表，填好后再选文件导入。';
+  const r=$('#csv-result'); r.className='test-result'; r.textContent='';
+  $('#csv-file').value='';
+  $('#csv-file-name').textContent='未选择文件';
+  setCsvScope('holdings');
+  csvOverlay.classList.add('on');
+}
+function closeCsv(){csvOverlay.classList.remove('on')}
+
+function setCsvScope(s){
+  csvScope=s;
+  document.querySelectorAll('#csv-scope-seg button').forEach(b=>b.classList.toggle('on',b.dataset.scope===s));
+  if(csvMode==='import') renderCsvHead();
+}
+
+
+async function doCsvExport(){
+  const r=$('#csv-result'); r.textContent='导出中…'; r.className='test-result wait';
+  try{
+    const res=await fetch(`/csv/export/${csvScope}`);
+    if(!res.ok){ r.className='test-result err'; r.textContent='✗ 导出失败 HTTP '+res.status; return; }
+    const txt=await res.text();
+    const cd=res.headers.get('content-disposition')||'';
+    const m=cd.match(/filename="?([^"]+)"?/);
+    const fn=m?m[1]:(csvScope+'.csv');
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([txt],{type:'text/csv'}));
+    a.download=fn; a.click(); URL.revokeObjectURL(a.href);
+    const rows=txt.trim() ? txt.trim().split(/\r?\n/).length-1 : 0;
+    r.className='test-result ok';
+    r.textContent=`✓ 已下载 ${fn}（${rows} 行）`;
+    toast(`已导出${CSV_SCOPE_LABEL[csvScope]} ${rows} 行`);
+  }catch(e){ r.className='test-result err'; r.textContent='✗ '+e; }
+}
+
+async function doCsvImport(){
+  const f=$('#csv-file').files[0];
+  const r=$('#csv-result');
+  if(!f){ r.className='test-result err'; r.textContent='请先选择 CSV 文件'; return; }
+  if(!confirm(`从「${f.name}」导入${CSV_SCOPE_LABEL[csvScope]}？\n（按主键合并，不会删除现有数据）`)) return;
+  r.textContent='导入中…'; r.className='test-result wait';
+  const fd=new FormData(); fd.append('file', f);
+  const res=await api(`/csv/import/${csvScope}`,{method:'POST',body:fd});
+  if(!res||res.error){ r.className='test-result err'; r.textContent='✗ '+(res&&res.error||'失败'); return; }
+  const c=res.counts||{};
+  r.className='test-result ok';
+  r.textContent=`✓ +${c.inserted??0} 新增  ~${c.updated??0} 更新  =${c.skipped??0} 跳过`
+    + (res.bg_ensure&&res.bg_ensure.length?` · 新代码 ${res.bg_ensure.length} 只后台补数据中`:'');
   toast('CSV 导入完成，刷新中');
   loadAll();
 }
@@ -1294,8 +1399,13 @@ $('#share-card').addEventListener('click',e=>{
 });
 $('#share-overlay').addEventListener('click',e=>{if(e.target.id==='share-overlay')$('#share-overlay').classList.remove('on')});
 $('#proxy-cancel').onclick=closeSettings;
-$('#csv-export').onclick=csvExport;
-$('#csv-import').onclick=csvImport;
+$('#csv-import-btn').onclick=()=>openCsv('import');
+$('#csv-export-btn').onclick=()=>openCsv('export');
+$('#csv-cancel').onclick=closeCsv;
+$('#csv-ok').onclick=()=> csvMode==='export' ? doCsvExport() : doCsvImport();
+$('#csv-dl-tpl').onclick=()=>{ window.location.href=`/csv/template/${csvScope}`; };
+$('#csv-file').onchange=e=>{ $('#csv-file-name').textContent = e.target.files[0]?.name || '未选择文件'; };
+document.querySelectorAll('#csv-scope-seg button').forEach(b=>b.onclick=()=>setCsvScope(b.dataset.scope));
 $('#proxy-test').onclick=testProxy;
 $('#proxy-save').onclick=saveProxy;
 $('#mail-preset').onchange=e=>{const p=MAIL_PRESETS_FE[e.target.value];if(p){$('#mail-host').value=p.host;$('#mail-port').value=p.port;}};

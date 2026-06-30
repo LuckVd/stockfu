@@ -4,6 +4,7 @@
 # Web / API
 fastapi
 uvicorn[standard]
+python-multipart   # 表单/文件上传（CSV 导入）
 
 # 终端界面 (TUI)
 textual

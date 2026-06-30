@@ -27,6 +27,11 @@ def _ensure_asset(code: str) -> None:
         s.commit()
 
 
+def ensure_asset(code: str) -> None:
+    """公开包装：确保 asset 行存在（CSV 持仓导入补全引用代码、缺名展示用）。"""
+    _ensure_asset(code)
+
+
 def add_transaction(code: str, side: str, shares: float, price: float,
                     trade_date: date | None = None, note: str = "") -> dict:
     _ensure_asset(code)
