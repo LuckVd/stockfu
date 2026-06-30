@@ -408,3 +408,23 @@ def test_mail_api():
     """立即生成多图并发一封测试邮件（需 --serve 在跑 + SMTP 已配置）。"""
     from stockfu.services.mail import run_mail_job
     return run_mail_job()
+
+
+@router.post("/csv/export")
+def csv_export(payload: dict = Body(...)):
+    """导出表为 data/*.csv。payload: {all?: bool}。返回 {表名: 行数}。"""
+    from stockfu.services.io_csv import export_csv
+    try:
+        return {"ok": True, "result": export_csv("data", all_tables=bool(payload.get("all")))}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@router.post("/csv/import")
+def csv_import(payload: dict = Body(...)):
+    """从 data/*.csv 合并导入回库（upsert，不删现有数据）。payload: {all?: bool}。"""
+    from stockfu.services.io_csv import import_csv
+    try:
+        return {"ok": True, "result": import_csv("data", all_tables=bool(payload.get("all")))}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
