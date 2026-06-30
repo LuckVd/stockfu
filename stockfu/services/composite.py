@@ -15,7 +15,7 @@ from datetime import date
 from sqlmodel import select
 
 from stockfu.db import session_scope
-from stockfu.models import FactorSnapshot, IndexSnapshot
+from stockfu.models import FactorSnapshot, IndexSnapshot, SectorFlowSnapshot, SectorSnapshot
 from stockfu.services import factors as F
 
 BENCH = "512100"  # 大盘基准：中证1000ETF（中小盘代表，比沪深300 更能反映全市场）
@@ -26,6 +26,16 @@ SECTOR_MAP = {
     "沪深300": "510300", "中证500": "510500", "创业板": "159915",
     "科创50": "588000", "银行": "512800", "白酒": "512690",
     "半导体": "512480", "医药": "512010", "新能源车": "515030",
+}
+
+# SECTOR_MAP 键 → 同花顺行业精确名（stock_board_industry_index_ths / stock_fund_flow_industry 的 symbol）。
+# None = 宽基指数/无对应行业 → 板块K线与资金流跳过，compute_sector 自动降级为纯 ETF 分位。
+# 医药/新能源车 同花顺无单一对应行业，取代表性细分行业代理（可按需调整）。
+SECTOR_THS_NAME = {
+    "沪深300": None, "中证500": None, "创业板": None, "科创50": None,
+    "银行": "银行", "白酒": "白酒", "半导体": "半导体",
+    "医药": "医疗服务",
+    "新能源车": "汽车整车",
 }
 
 
@@ -63,6 +73,34 @@ def _ext_pct(level, scope, factor, today_val):
     return F.percentile(hist, today_val)[0]  # 样本不足返回 None
 
 
+def _sector_series(name: str, model, field: str, days: int) -> list[float]:
+    """读板块 raw 表(sector_snapshot/sector_flow_snapshot) 近 days 日某字段序列。"""
+    from datetime import date as _d, timedelta as _td
+    start = _d.today() - _td(days=days + 15)
+    with session_scope() as s:
+        rows = s.exec(select(model).where(
+            model.sector_name == name, model.snap_date >= start,
+        ).order_by(model.snap_date)).all()
+    return [getattr(r, field) for r in rows if getattr(r, field) is not None]
+
+
+def _sector_today(name: str, model, field: str):
+    """读板块 raw 表最新一行的 field 值（无则 None）。"""
+    with session_scope() as s:
+        row = s.exec(select(model).where(
+            model.sector_name == name).order_by(model.snap_date.desc())).first()
+    return getattr(row, field, None) if row else None
+
+
+def _sector_field_pct(name: str, model, field: str, today=None) -> float | None:
+    """板块 raw 表某字段当日值的历史分位（样本<10 返回 None）。today 默认取序列末值。"""
+    series = _sector_series(name, model, field, MID)
+    if not series:
+        return None
+    val = today if today is not None else series[-1]
+    return F.percentile(series, val)[0]
+
+
 def _call_timeout(fn, timeout: float = 8.0):
     """带超时跑 fn（外部网络因子：baostock/东财），超时或异常返回 None。
 
@@ -85,11 +123,12 @@ def _call_timeout(fn, timeout: float = 8.0):
     return box.get("r")
 
 
-def compute_for(code, level, scope, ext=None, val_pcts=None):
+def compute_for(code, level, scope, ext=None, val_pcts=None, ext_pcts=None):
     """通用三层合成。
 
-    ext={factor:(today_value, belong)}，belong∈fear/greed/heat（raw→历史分位）。
-    val_pcts={name:分位} 已算好的分位，直接参与合成（如 baostock 的 PE/PB）。
+    ext={factor:(today_value, belong)}，belong∈fear/greed/heat（raw→历史分位，历史攒在 factor_snapshot）。
+    val_pcts={name:分位} 已算好的分位，同时进 fear(100-p)+greed(p)（估值语义，如 PE/PB）。
+    ext_pcts={name:(分位, belong)} 已算好的分位按指定 belong 进单一桶（成交额→heat 等非估值因子）。
     """
     ext = ext or {}
     closes = F.quote_series(code, "close", MID)
@@ -127,6 +166,12 @@ def compute_for(code, level, scope, ext=None, val_pcts=None):
             comps[name] = p
             fp.append(100 - p)   # 低分位(低估)=fear；高分位(高估)=greed
             gp.append(p)
+
+    # 已算好分位 + 指定 belong（板块成交额→heat 等，区别于 val_pcts 的估值语义）
+    for nm, (p, belong) in (ext_pcts or {}).items():
+        if p is not None:
+            comps[nm] = p
+            {"fear": fp, "greed": gp, "heat": hp}.get(belong, []).append(p)
 
     fear = round(sum(fp) / len(fp), 2) if fp else None
     greed = round(sum(gp) / len(gp), 2) if gp else None
@@ -215,19 +260,46 @@ def compute_stock(code):
 
 
 def compute_sector(etf_code, name):
-    """板块层：用板块代表 ETF 的 K 线 + 板块资金流。"""
+    """板块层：代表 ETF 的 K 线分位 + 板块自身成交额分位(heat) + 资金流(greed/fear)。
+
+    板块自身数据从 sector_snapshot / sector_flow_snapshot 读（表里存业务名 name）；
+    仅 SECTOR_THS_NAME 有映射的板块才有；无映射(宽基)或无数据 → 降级为纯 ETF 分位。
+    """
     from stockfu.data.manager import get_manager
 
-    ext = {}
-    try:
-        sf = get_manager().get_sector_fund_flow() or {}
-        for x in sf.get("top", []) + sf.get("bottom", []):
-            if name in str(x.get("name", "")):
-                ext["sector_flow"] = (x["net"], "greed" if x["net"] > 0 else "fear")
-                break
-    except Exception:  # noqa: BLE001
-        pass
-    return compute_for(etf_code, "sector", name, ext)
+    ext, ext_pcts = {}, {}
+    if SECTOR_THS_NAME.get(name):              # 有同花顺行业映射才查板块自身数据
+        # 板块成交额历史分位 → heat（sector_snapshot 有 ~4 年历史，立刻有分位）
+        try:
+            amt = _sector_today(name, SectorSnapshot, "amount")
+            if amt is not None:
+                p = _sector_field_pct(name, SectorSnapshot, "amount", today=amt)
+                if p is not None:
+                    ext_pcts["sector_amount"] = (p, "heat")
+        except Exception:  # noqa: BLE001
+            pass
+        # 板块净流入：有历史分位用分位(greed)，否则当日方向(ext→落 factor_snapshot 攒)
+        try:
+            net = _sector_today(name, SectorFlowSnapshot, "net_inflow")
+            if net is not None:
+                p = _sector_field_pct(name, SectorFlowSnapshot, "net_inflow", today=net)
+                if p is not None:
+                    ext_pcts["sector_flow"] = (p, "greed")    # 高分位=持续流入
+                else:
+                    ext["sector_flow"] = (net, "greed" if net > 0 else "fear")
+        except Exception:  # noqa: BLE001
+            pass
+    # 兜底：净流入未落库时沿用东财实时排名（push2 限流返回空→自动跳过）
+    if "sector_flow" not in ext and "sector_flow" not in ext_pcts:
+        try:
+            sf = get_manager().get_sector_fund_flow() or {}
+            for x in sf.get("top", []) + sf.get("bottom", []):
+                if SECTOR_THS_NAME.get(name) in str(x.get("name", "")):
+                    ext["sector_flow"] = (x["net"], "greed" if x["net"] > 0 else "fear")
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+    return compute_for(etf_code, "sector", name, ext, ext_pcts=ext_pcts)
 
 
 def save(result) -> None:

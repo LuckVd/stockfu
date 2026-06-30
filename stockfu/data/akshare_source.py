@@ -20,6 +20,19 @@ from stockfu.data.dividend_parser import (_filter_rows as filter_rows,
                                        safe_str)
 
 
+def _find_col(cols, *keys, exclude=()):
+    """列名同时包含所有 keys（且不含任何 exclude 词）的第一列；找不到返回 None。
+
+    用于在 akshare 资金流 df 里精确区分同源易混列：如「主力净流入-净额」vs
+    「主力净流入-净占比」、「大单净流入-净额」vs「超大单净流入-净额」（后者用 exclude=('超大',)）。
+    """
+    for c in cols:
+        cs = str(c)
+        if all(k in cs for k in keys) and not any(x in cs for x in exclude):
+            return c
+    return None
+
+
 def _call_df(candidates):
     """逐个尝试 akshare 函数，返回首个非空 DataFrame。借鉴参考的 _call_df_candidates。"""
     errors = []
@@ -311,3 +324,106 @@ class AkshareSource(DataSource):
             "shares": safe_float(pick_col(r, ["基金份额", "份额"])),
             "source": f"akshare:{used}",
         }
+
+    # -------- 板块（同花顺：板块K线+成交额 / 板块资金流 / 大盘资金流）--------
+    # 同花顺端点绕开东财 push2/push2his 限流，是板块历史数据的主力源。
+    def get_sector_kline(self, sector_name: str, days: int = 1460) -> list:
+        """行业板块指数历史K线（同花顺 stock_board_industry_index_ths）。
+
+        绕开东财 push2his 限流，能拉到当天，4年+逐日。返回 list[KlineBar]，
+        失败返回 []。注意同花顺 OHLC 列名带「价」后缀（开盘价/最高价/...），区别于东财。
+        """
+        from datetime import date as _d, timedelta as _td
+        end = _d.today().strftime("%Y%m%d")
+        start = (_d.today() - _td(days=days + 30)).strftime("%Y%m%d")
+        df, _, _ = _call_df([("stock_board_industry_index_ths", {
+            "symbol": sector_name, "start_date": start, "end_date": end,
+        })])
+        if df is None or getattr(df, "empty", True):
+            return []
+        bars: list = []
+        for _, r in df.iterrows():
+            try:
+                d = pd.to_datetime(pick_col(r, ["日期", "日期时间"])).date()
+                bars.append(KlineBar(
+                    date=d,
+                    open=safe_float(pick_col(r, ["开盘价", "开盘"])) or 0.0,
+                    high=safe_float(pick_col(r, ["最高价", "最高"])) or 0.0,
+                    low=safe_float(pick_col(r, ["最低价", "最低"])) or 0.0,
+                    close=safe_float(pick_col(r, ["收盘价", "收盘"])) or 0.0,
+                    volume=safe_float(pick_col(r, ["成交量"])),
+                    amount=safe_float(pick_col(r, ["成交额"])),
+                ))
+            except (KeyError, ValueError, TypeError):
+                continue
+        return bars[-days:] if days and len(bars) > days else bars
+
+    def get_sector_flow_today(self) -> list:
+        """行业板块当日资金流（同花顺 stock_fund_flow_industry 即时，90 行业）。
+
+        比东财 rank 列更全（流入/流出/净额/公司家数/领涨股）且不受 push2 限流。
+        返回 [{name, net_inflow, inflow, outflow, company_count, leading_stock,
+        leading_chg, index_pct_chg}, ...]，失败返回 []。
+        """
+        df, _, _ = _call_df([
+            ("stock_fund_flow_industry", {"symbol": "即时"}),
+            ("stock_fund_flow_industry", {"indicator": "即时"}),
+        ])
+        if df is None or getattr(df, "empty", True):
+            return []
+        net_col = _find_col(df.columns, "净额", exclude=("占比",))
+        out: list = []
+        for _, r in df.iterrows():
+            name = safe_str(pick_col(r, ["行业", "名称", "板块"]))
+            if not name:
+                continue
+            cc = safe_float(pick_col(r, ["公司家数", "家数"]))
+            out.append({
+                "name": name,
+                "net_inflow": safe_float(r[net_col]) if net_col else None,
+                "inflow": safe_float(pick_col(r, ["流入资金", "流入"])),
+                "outflow": safe_float(pick_col(r, ["流出资金", "流出"])),
+                "company_count": int(cc) if cc is not None else None,
+                "leading_stock": safe_str(pick_col(r, ["领涨股"])),
+                "leading_chg": safe_float(pick_col(r, ["领涨股-涨跌幅"])),
+                "index_pct_chg": safe_float(pick_col(r, ["行业-涨跌幅", "涨跌幅"])),
+            })
+        return out
+
+    def get_market_fund_flow(self) -> list:
+        """大盘资金流历史（akshare stock_market_fund_flow，~6个月逐日）。
+
+        返回 [{date, main_net, main_pct, super_net, super_pct, large_net, large_pct,
+        mid_net, mid_pct, small_net, small_pct}, ...]——主力/超大/大/中/小单净额+占比。
+        失败返回 []。
+        """
+        df, _, _ = _call_df([("stock_market_fund_flow", {})])
+        if df is None or getattr(df, "empty", True):
+            return []
+        date_col = next((c for c in df.columns if "日期" in str(c)), None)
+        # 列名「X净流入-净额」vs「X净流入-净占比」；大单需 exclude 超大单
+        flow_cols = {
+            "main_net": _find_col(df.columns, "主力", "净额"),
+            "main_pct": _find_col(df.columns, "主力", "占比"),
+            "super_net": _find_col(df.columns, "超大单", "净额"),
+            "super_pct": _find_col(df.columns, "超大单", "占比"),
+            "large_net": _find_col(df.columns, "大单", "净额", exclude=("超大",)),
+            "large_pct": _find_col(df.columns, "大单", "占比", exclude=("超大",)),
+            "mid_net": _find_col(df.columns, "中单", "净额"),
+            "mid_pct": _find_col(df.columns, "中单", "占比"),
+            "small_net": _find_col(df.columns, "小单", "净额"),
+            "small_pct": _find_col(df.columns, "小单", "占比"),
+        }
+        out: list = []
+        for _, r in df.iterrows():
+            if date_col is None:
+                continue
+            try:
+                d = pd.to_datetime(r[date_col]).date()
+            except (KeyError, ValueError, TypeError):
+                continue
+            row = {"date": d}
+            for k, c in flow_cols.items():
+                row[k] = safe_float(r[c]) if c else None
+            out.append(row)
+        return out

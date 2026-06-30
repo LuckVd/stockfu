@@ -136,6 +136,45 @@ class FundFlowSnapshot(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("etf_code", "snap_date", name="uq_fundflow_code_date"),)
 
 
+class SectorSnapshot(SQLModel, table=True):
+    """板块指数K线天级快照（同花顺 stock_board_industry_index_ths，4年历史）。
+
+    板块自身的 OHLC + 成交额，支撑板块热度/走势的历史分位（区别于代表 ETF 的 quote_snapshot）。
+    sector_name 取自 composite.SECTOR_MAP 的键（中文板块名）。
+    """
+    __tablename__ = "sector_snapshot"
+    id: int | None = Field(default=None, primary_key=True)
+    sector_name: str = Field(index=True)
+    snap_date: date = Field(default_factory=date.today, index=True)
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float | None = None
+    pct_chg: float | None = None
+    volume: float | None = None
+    amount: float | None = None                  # 板块成交额（heat 关键因子）
+    __table_args__ = (UniqueConstraint("sector_name", "snap_date", name="uq_sector_name_date"),)
+
+
+class SectorFlowSnapshot(SQLModel, table=True):
+    """板块当日主力资金流天级快照（同花顺 stock_fund_flow_industry 即时，每日 --fetch 攒历史）。
+
+    东财 push2his 历史源限流不稳，故净流入靠每日即时落库累积（首日无分位，越跑越准）。
+    """
+    __tablename__ = "sector_flow_snapshot"
+    id: int | None = Field(default=None, primary_key=True)
+    sector_name: str = Field(index=True)
+    snap_date: date = Field(default_factory=date.today, index=True)
+    net_inflow: float | None = None              # 主力净额
+    inflow: float | None = None
+    outflow: float | None = None
+    company_count: int | None = None
+    leading_stock: str = ""
+    leading_chg: float | None = None
+    index_pct_chg: float | None = None           # 行业指数涨跌幅
+    __table_args__ = (UniqueConstraint("sector_name", "snap_date", name="uq_sector_flow_name_date"),)
+
+
 class NewsItem(SQLModel, table=True):
     __tablename__ = "news_item"
     id: int | None = Field(default=None, primary_key=True)

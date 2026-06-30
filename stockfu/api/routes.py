@@ -169,6 +169,76 @@ def sectors(top_n: int = Query(8, ge=1, le=30)):
     return get_manager().get_sector_fund_flow(top_n)
 
 
+@router.get("/sectors/kline/{name}")
+def sector_kline(name: str, days: int = Query(365, ge=1, le=2000)):
+    """板块指数K线+成交额历史（读 sector_snapshot；数据由 --backfill / --fetch 攒）。"""
+    from datetime import date, timedelta
+    from stockfu.models import SectorSnapshot
+    from stockfu.services.composite import SECTOR_MAP
+    if name not in SECTOR_MAP:
+        return {"error": "unknown sector", "available": list(SECTOR_MAP)}
+    start = date.today() - timedelta(days=days + 15)
+    with session_scope() as s:
+        rows = s.exec(select(SectorSnapshot).where(
+            SectorSnapshot.sector_name == name,
+            SectorSnapshot.snap_date >= start).order_by(SectorSnapshot.snap_date)).all()
+    return {"sector": name, "days": days, "points": [
+        {"date": r.snap_date.isoformat(), "close": r.close, "amount": r.amount,
+         "pct_chg": r.pct_chg} for r in rows]}
+
+
+@router.get("/sectors/flow")
+def sector_flow_today_api(top_n: int = Query(10, ge=1, le=90)):
+    """板块当日主力资金流即时排名（同花顺，列全且不受东财限流；按净额降序）。
+
+    只读实时；历史落库由每日 --fetch 负责（backfill_sector_flow_today）。
+    """
+    rows = get_manager().get_sector_flow_today()
+    rows = sorted(rows, key=lambda x: x.get("net_inflow") or 0, reverse=True)
+    return {"count": len(rows),
+            "top": rows[:top_n],
+            "bottom": list(reversed(rows[-top_n:])) if len(rows) > top_n else []}
+
+
+@router.get("/sectors/flow/{name}")
+def sector_flow_history(name: str, days: int = Query(30, ge=1, le=365)):
+    """单板块净流入历史（读 sector_flow_snapshot，每日 --fetch 攒）。"""
+    from datetime import date, timedelta
+    from stockfu.models import SectorFlowSnapshot
+    from stockfu.services.composite import SECTOR_MAP
+    if name not in SECTOR_MAP:
+        return {"error": "unknown sector", "available": list(SECTOR_MAP)}
+    start = date.today() - timedelta(days=days + 15)
+    with session_scope() as s:
+        rows = s.exec(select(SectorFlowSnapshot).where(
+            SectorFlowSnapshot.sector_name == name,
+            SectorFlowSnapshot.snap_date >= start).order_by(SectorFlowSnapshot.snap_date)).all()
+    return {"sector": name, "points": [
+        {"date": r.snap_date.isoformat(), "net_inflow": r.net_inflow,
+         "inflow": r.inflow, "outflow": r.outflow,
+         "leading_stock": r.leading_stock} for r in rows]}
+
+
+@router.get("/market/fundflow")
+def market_fundflow(days: int = Query(120, ge=1, le=365)):
+    """大盘资金流历史（主力/超大/大/中/小单净额+占比，读 factor_snapshot level=market）。"""
+    from datetime import date, timedelta
+    from stockfu.models import FactorSnapshot
+    factors = ("main_net_inflow", "main_net_inflow_pct", "super_large_net", "super_large_pct",
+               "large_net", "large_pct", "mid_net", "mid_pct", "small_net", "small_pct")
+    start = date.today() - timedelta(days=days + 15)
+    with session_scope() as s:
+        rows = s.exec(select(FactorSnapshot).where(
+            FactorSnapshot.level == "market", FactorSnapshot.scope == "MARKET",
+            FactorSnapshot.snap_date >= start).order_by(FactorSnapshot.snap_date)).all()
+    series: dict[str, list] = {}
+    for r in rows:
+        if r.factor in factors:
+            series.setdefault(r.factor, []).append(
+                {"date": r.snap_date.isoformat(), "value": r.raw_value})
+    return {"days": days, "series": series}
+
+
 @router.get("/fundflow/{code}")
 def fundflow_one(code: str):
     return get_manager().get_stock_fund_flow(code) or {"error": "no data", "code": code}

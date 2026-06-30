@@ -174,7 +174,7 @@ def backfill_kline(code: str, days: int = 90) -> int:
 
 
 def run_backfill(days: int = 90) -> dict:
-    """回填宽基/行业 ETF + 自选 的历史，供指数/情绪计算。"""
+    """回填宽基/行业 ETF + 自选 + 板块自身K线 + 大盘资金流 的历史，供指数/情绪计算。"""
     init_db()
     with session_scope() as s:
         watch = [a.code for a in s.exec(select(Asset)).all()]
@@ -185,6 +185,24 @@ def run_backfill(days: int = 90) -> dict:
             result[code] = backfill_kline(code, days)
         except Exception as exc:  # noqa: BLE001
             result[code] = -1
+    # 板块自身K线+成交额（同花顺，绕开东财限流；跳过无映射的宽基）+ 大盘资金流历史
+    from stockfu.services import backfill as bf
+    from stockfu.services.composite import SECTOR_MAP, SECTOR_THS_NAME
+    sec_days = max(days, 1460)                 # 板块情绪分位要 4 年历史
+    sectors: dict[str, int] = {}
+    for name in SECTOR_MAP:
+        if not SECTOR_THS_NAME.get(name):      # 宽基无同花顺映射，跳过
+            continue
+        try:
+            sectors[name] = bf.backfill_sector_kline(name, sec_days)
+        except Exception as exc:  # noqa: BLE001
+            sectors[name] = -1
+    try:
+        market_flow = bf.backfill_market_fund_flow()
+    except Exception:  # noqa: BLE001
+        market_flow = -1
+    result["sectors"] = sectors
+    result["market_flow"] = market_flow
     return result
 
 
@@ -225,13 +243,16 @@ def run_daily_job() -> dict:
     quotes = sum(1 for c in key_codes if _upsert_quote(c))
     divs = sum(div_svc.persist_dividends(c) for c in codes)
     flows = sum(1 for c in INDEX_ETFS if _upsert_fundflow(c))
+    # 板块当日主力资金流（即时攒历史）
+    from stockfu.services import backfill as bf
+    sector_flow = bf.backfill_sector_flow_today()
     indices = indices_svc.compute_and_save()
     # 三层情绪指数（市场 / 个股 / 板块）
     from stockfu.services import composite
     comp = composite.compute_all(codes)
     return {"quotes": quotes, "dividends": divs,
             "fundflow_etfs": flows, "indices": indices,
-            "composite_levels": len(comp)}
+            "sector_flow": sector_flow, "composite_levels": len(comp)}
 
 
 def _batch_fetch_today(codes: list[str]) -> tuple[list[str], list[str]]:
@@ -271,6 +292,9 @@ def run_scheduled_fetch() -> dict:
 
     # 主要指数当日行情落盘
     _upsert_index_quotes()
+    # 板块当日主力资金流（即时，每日攒历史；落库后供 compute_sector 用）
+    from stockfu.services import backfill as bf
+    sector_flow = bf.backfill_sector_flow_today()
     # 后半段：分红 / ETF 份额 / 三层指数
     from stockfu.services import composite, dividend as div_svc
     with session_scope() as s:
@@ -280,7 +304,7 @@ def run_scheduled_fetch() -> dict:
     comp = composite.compute_all(all_codes)
     return {"quotes": len(ok), "retries": retries, "still_failed": len(fail),
             "still_failed_codes": fail[:20], "dividends": divs,
-            "fundflow_etfs": flows, "composite_levels": len(comp)}
+            "fundflow_etfs": flows, "sector_flow": sector_flow, "composite_levels": len(comp)}
 
 
 def start_embedded_server() -> str:
