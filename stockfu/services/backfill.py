@@ -14,7 +14,8 @@ import pandas as pd
 from sqlmodel import select
 
 from stockfu.db import session_scope
-from stockfu.models import DividendEvent, FactorSnapshot, QuoteSnapshot
+from stockfu.models import (DividendEvent, FactorSnapshot, QuoteSnapshot,
+                            SectorFlowSnapshot, SectorSnapshot)
 from stockfu.services.market_data import _call, _f, _pick, limit_up_at
 
 
@@ -158,4 +159,101 @@ def compute_dividend_yield_series(code) -> int:
         _save_factor("stock", code, "dividend_yield", snap.quote_date,
                      round(ttm / snap.close * 100, 4))
         n += 1
+    return n
+
+
+# ---------- 板块资金流（同花顺源，绕开东财 push2/push2his 限流）----------
+def backfill_sector_kline(sector_name: str, days: int = 1460) -> int:
+    """拉行业板块指数历史K线灌入 sector_snapshot（同花顺，~4年逐日）。返回新增条数。
+
+    范式同 backfill_kline：sorted → 集合去重 → 循环 add → commit。
+    """
+    from stockfu.data.manager import get_manager
+    from stockfu.services.composite import SECTOR_THS_NAME
+    ths = SECTOR_THS_NAME.get(sector_name) or sector_name   # 业务名 → 同花顺行业名(symbol)
+    bars = sorted(get_manager().get_sector_kline(ths, days), key=lambda b: b.date)
+    if not bars:
+        return 0
+    n = 0
+    with session_scope() as s:
+        have = {x.snap_date for x in s.exec(
+            select(SectorSnapshot).where(SectorSnapshot.sector_name == sector_name)).all()}
+        prev_close = None
+        for b in bars:
+            if b.date not in have:
+                pct = round((b.close / prev_close - 1) * 100, 2) if prev_close else None
+                s.add(SectorSnapshot(
+                    sector_name=sector_name, snap_date=b.date, open=b.open, high=b.high,
+                    low=b.low, close=b.close, pct_chg=pct, volume=b.volume, amount=b.amount,
+                ))
+                n += 1
+            prev_close = b.close
+        s.commit()
+    return n
+
+
+def backfill_market_fund_flow() -> int:
+    """大盘资金流历史（主力/超大/大/中/小单净额+占比）灌入 factor_snapshot（level=market）。
+
+    stock_market_fund_flow 一次返回 ~6 个月全量序列；每列一个 factor，scope=MARKET。
+    复用 _save_factor upsert。失败（限流/空）返回 0。
+    """
+    from stockfu.data.manager import get_manager
+    rows = get_manager().get_market_fund_flow()
+    if not rows:
+        return 0
+    factors = (
+        ("main_net_inflow", "main_net"), ("main_net_inflow_pct", "main_pct"),
+        ("super_large_net", "super_net"), ("super_large_pct", "super_pct"),
+        ("large_net", "large_net"), ("large_pct", "large_pct"),
+        ("mid_net", "mid_net"), ("mid_pct", "mid_pct"),
+        ("small_net", "small_net"), ("small_pct", "small_pct"),
+    )
+    n = 0
+    for r in rows:
+        d = r.get("date")
+        if d is None:
+            continue
+        for factor, key in factors:
+            if _save_factor("market", "MARKET", factor, d, r.get(key)):
+                n += 1
+    return n
+
+
+def backfill_sector_flow_today() -> int:
+    """行业板块当日主力资金流即时落库 sector_flow_snapshot（每日 --fetch 攒历史）。
+
+    东财 push2his 历史源限流不稳，故即时快照靠每日累积（首日无分位，越跑越准）。
+    仅匹配 SECTOR_THS_NAME 里有映射的板块（精确匹配，避免「医药商业」误中「医药」）。
+    返回写入行数。
+    """
+    from stockfu.data.manager import get_manager
+    from stockfu.services.composite import SECTOR_THS_NAME
+
+    today = date.today()
+    flows = get_manager().get_sector_flow_today()
+    if not flows:
+        return 0
+    want = {ths: name for name, ths in SECTOR_THS_NAME.items() if ths}  # ths行业名 → SECTOR_MAP键
+    n = 0
+    with session_scope() as s:
+        for f in flows:
+            sector = want.get(f.get("name", ""))
+            if not sector:
+                continue
+            snap = s.exec(select(SectorFlowSnapshot).where(
+                SectorFlowSnapshot.sector_name == sector,
+                SectorFlowSnapshot.snap_date == today)).first()
+            snap = snap or SectorFlowSnapshot(sector_name=sector, snap_date=today)
+            snap.net_inflow = f.get("net_inflow")
+            snap.inflow = f.get("inflow")
+            snap.outflow = f.get("outflow")
+            snap.company_count = f.get("company_count")
+            snap.leading_stock = f.get("leading_stock") or ""
+            snap.leading_chg = f.get("leading_chg")
+            snap.index_pct_chg = f.get("index_pct_chg")
+            if snap.id is None:
+                s.add(snap)
+            n += 1
+        s.commit()
     return n

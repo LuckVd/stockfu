@@ -98,6 +98,16 @@ class DataProviderManager:
     def get_etf_fund_flow(self, code: str) -> dict:
         return self.akshare.get_etf_fund_flow(code)
 
+    # -------- 板块（同花顺：板块K线+成交额 / 板块资金流 / 大盘资金流）--------
+    def get_sector_kline(self, sector_name: str, days: int = 1460) -> list:
+        return self.akshare.get_sector_kline(sector_name, days)
+
+    def get_sector_flow_today(self) -> list:
+        return self.akshare.get_sector_flow_today()
+
+    def get_market_fund_flow(self) -> list:
+        return self.akshare.get_market_fund_flow()
+
     def get_index_quotes(self) -> dict:
         """主要指数实时点数/涨跌幅（akshare 东财指数系列：上证+深证）。
         返回 {code: {name, price, pct_chg}}，含上证指数/创业板指/科创50。"""
