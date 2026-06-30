@@ -12,6 +12,8 @@
     python main.py --backfill-limit [N]  # 回补 连板/涨停历史（默认365天，限速1次/秒+断点续传，慢，建议后台跑）
     python main.py --fetch         # 每日抓取行情/分红/ETF + 算三层情绪指数
     python main.py --schedule      # 每日定时调度
+    python main.py --export-csv [DIR]  # 导出市场数据为 CSV（默认 data/，可入 git）
+    python main.py --import-csv [DIR]  # 从 CSV 合并导入回库（换机同步；upsert 不丢数据）
     python main.py --serve         # FastAPI 服务
 """
 import argparse
@@ -138,6 +140,28 @@ def run_config() -> None:
     run_wizard()
 
 
+def _parse_tables(spec: str | None) -> list[str] | None:
+    if not spec:
+        return None
+    return [t.strip() for t in spec.split(",") if t.strip()]
+
+
+def run_export_csv(out_dir: str, tables: list[str] | None, all_tables: bool) -> None:
+    from stockfu.services.io_csv import export_csv
+
+    scope = "全部表" if all_tables else ("指定表" if tables else "市场表")
+    print(f"导出 CSV（{scope}）→ {out_dir}/ …")
+    export_csv(out_dir, tables=tables, all_tables=all_tables)
+
+
+def run_import_csv(in_dir: str, tables: list[str] | None, all_tables: bool) -> None:
+    from stockfu.services.io_csv import import_csv
+
+    scope = "全部表" if all_tables else ("指定表" if tables else "市场表")
+    print(f"从 CSV 合并导入（{scope}）← {in_dir}/ …")
+    import_csv(in_dir, tables=tables, all_tables=all_tables)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="stockfu", description="StockFu·资产管理终端")
     p.add_argument("--serve", action="store_true", help="以 FastAPI 服务模式运行")
@@ -160,6 +184,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
     p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件")
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
+    p.add_argument("--export-csv", nargs="?", const="data", default=None, metavar="DIR",
+                   help="导出市场数据为 CSV 到 DIR（默认 data/）；配合 --tables / --all")
+    p.add_argument("--import-csv", nargs="?", const="data", default=None, metavar="DIR",
+                   help="从 DIR 的 CSV 合并导入回库（默认 data/，upsert 不丢数据）")
+    p.add_argument("--tables", default=None,
+                   help="逗号分隔表名，覆盖默认市场表集（与 --export-csv/--import-csv 配合）")
+    p.add_argument("--all", action="store_true",
+                   help="导出/导入全部表（含个人持仓交易，慎提交 git）")
     return p
 
 
@@ -194,6 +226,10 @@ def main() -> None:
         run_test_mail()
     elif args.config:
         run_config()
+    elif args.export_csv is not None:
+        run_export_csv(args.export_csv, _parse_tables(args.tables), args.all)
+    elif args.import_csv is not None:
+        run_import_csv(args.import_csv, _parse_tables(args.tables), args.all)
     elif args.serve:
         run_api(args.host, args.port, args.reload)
     else:
