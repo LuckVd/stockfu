@@ -29,19 +29,35 @@ INDEX_ETFS = [
 ]
 
 
-def _upsert_quote(code: str) -> bool:
+def _upsert_quote(code: str, timeout: float = 35) -> bool:
     """拉最近交易日行情落 quote_snapshot。
 
     quote_date 优先取自 K 线最后一条 bar.date（真实交易日，自动跳周末/节假日）；
     K 线不支持的代码（如指数 sh000001）→ fallback 实时报价 + 交易日历推算的最近交易日。
     不再用抓取日：实时报价不返回交易日，周末/节假日抓的会被错标。
     pe/pb/market_cap/name 始终从实时 get_quote 补。最近交易日已落盘则跳过。
+    timeout: 单个标的超时秒数（港美股 yfinance 代理挂死时自动跳过）。
     """
-    from stockfu.data.manager import get_manager
-    from stockfu.services.snapshot import latest_trade_date
-    m = get_manager()
-    bars = m.get_kline(code, 10)
-    q = m.get_quote(code)
+    import threading
+    box: dict = {}
+
+    def _run():
+        from stockfu.data.manager import get_manager
+        from stockfu.services.snapshot import latest_trade_date
+        try:
+            m = get_manager()
+            bars = m.get_kline(code, 10)
+            q = m.get_quote(code)
+            box["bars"], box["q"] = bars, q
+        except Exception:
+            box["e"] = True
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if "e" in box or ("bars" not in box and "q" not in box):
+        return False
+    bars, q = box.get("bars"), box.get("q")
     if bars:
         bars = sorted(bars, key=lambda b: b.date)
         bar = bars[-1]
@@ -286,7 +302,9 @@ def run_scheduled_fetch() -> dict:
     for _ in range(retries):
         if not fail:
             break
-        _t.sleep(get_fetch_retry_interval() * 60)
+        # 只对可能恢复的标的等待重试：港美股断连时直接跳过，不白白等待
+        if not all(c.startswith(("HK", "US", "au")) for c in fail):
+            _t.sleep(get_fetch_retry_interval() * 60)
         ok2, fail = _batch_fetch_today(fail)
         ok.extend(ok2)
 
@@ -301,10 +319,37 @@ def run_scheduled_fetch() -> dict:
         all_codes = [a.code for a in s.exec(select(Asset)).all()]
     divs = sum(div_svc.persist_dividends(c) for c in all_codes)
     flows = sum(1 for c in INDEX_ETFS if _upsert_fundflow(c))
-    comp = composite.compute_all(all_codes)
+    # 三层情绪指数：整体给 120s 超时（个股外部因子可能挂死），超时则只算市场级
+    import threading as _th
+    _comp_box: dict = {}
+    def _run_comp():
+        try:
+            _comp_box["r"] = composite.compute_all(all_codes)
+        except Exception as _e:
+            _comp_box["e"] = _e
+    _t = _th.Thread(target=_run_comp, daemon=True)
+    _t.start()
+    _t.join(120)
+    if "r" in _comp_box:
+        comp = _comp_box["r"]
+    else:
+        from stockfu.services.snapshot import beijing_today
+        print(f"  compute_all 超时(120s)，降级只算市场+板块情绪")
+        comp = {}
+        comp["market"] = composite.compute_market()
+        composite.save(comp["market"])
+        for _name, _etf in composite.SECTOR_MAP.items():
+            try:
+                _r = composite.compute_sector(_etf, _name)
+                if _r.get("fear") or _r.get("greed") or _r.get("heat"):
+                    comp[f"sector:{_name}"] = _r
+                    composite.save(_r)
+            except Exception:
+                pass
     return {"quotes": len(ok), "retries": retries, "still_failed": len(fail),
             "still_failed_codes": fail[:20], "dividends": divs,
-            "fundflow_etfs": flows, "sector_flow": sector_flow, "composite_levels": len(comp)}
+            "fundflow_etfs": flows, "sector_flow": sector_flow,
+            "composite_levels": len(comp) if isinstance(comp, dict) else 0}
 
 
 def start_embedded_server() -> str:

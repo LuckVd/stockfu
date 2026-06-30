@@ -175,8 +175,8 @@ def set_daily_fetch_time(value: str) -> str:
 
 
 def get_fetch_retry_interval() -> int:
-    """拉取失败的重试间隔（分钟），默认 10。"""
-    return max(1, _cached_int("fetch_retry_interval", 10))
+    """拉取失败的重试间隔（分钟），默认 1（港美股断连时不等太久）。"""
+    return max(1, _cached_int("fetch_retry_interval", 1))
 
 
 def set_fetch_retry_interval(value) -> int:
