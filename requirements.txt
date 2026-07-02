@@ -36,6 +36,7 @@ apscheduler
 # 邮件定时发送（无头浏览器把分享卡片渲染成图 → SMTP 发出）
 playwright     # 装后需运行 `playwright install chromium` 下载浏览器
 
-# AI 决策报告（可选，按你用的模型二选一）
-# openai
+# AI 决策报告（OpenAI 兼容协议，httpx 直连；json_repair 容错解析 LLM 的 JSON 输出）
+json_repair
+# openai       # 可选：若改用官方 SDK
 # anthropic
