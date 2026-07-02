@@ -130,38 +130,123 @@ def _upsert_fundflow(code: str) -> bool:
     return True
 
 
+def _persist_index_quote(local_code: str, d, price: float, chg) -> None:
+    """落/更 单条指数 quote_snapshot。d=落库日期（today 或日K最后一日）。"""
+    with session_scope() as s:
+        snap = s.exec(select(QuoteSnapshot).where(
+            QuoteSnapshot.asset_code == local_code, QuoteSnapshot.quote_date == d)).first()
+        snap = snap or QuoteSnapshot(asset_code=local_code, quote_date=d)
+        snap.close = price
+        snap.pct_chg = chg
+        if snap.id is None:
+            s.add(snap)
+        s.commit()
+
+
 def _upsert_index_quotes() -> int:
-    """主要指数(上证/创业板/科创50)当日行情落 quote_snapshot（akshare 东财指数系列）。"""
-    import akshare as ak
+    """主要指数(上证/创业板/科创50)当日行情落 quote_snapshot。
+
+    多源兜底链（任一层成功就停；不会覆盖已成功写入的 code）：
+    1) 东财 batch（ak.stock_zh_index_spot_em）— 最权威，按 上证/深证 分 series
+    2) 新浪全量（ak.stock_zh_index_spot_sina）— 单次拉全量；补主源缺失 code
+    3) 日K末条（ak.stock_zh_index_daily）— 末源；末条日期若≠today 则标注"滞后"
+       并落日K最后一日（index_quotes_view 的日期守卫会让邮件仍显 —，但历史分位
+       仍可用）
+
+    修复记录：东财深证端点偶发 Remote end closed connection without response，
+    三次重试也不够；之前没单代码兜底会丢当天数据。sina 兜底在断流时仍能取到当日值。
+    """
+    import time as _t
+    from datetime import date as _date
+
+    from stockfu.data.base import direct_connection
     from stockfu.services.snapshot import beijing_today
+
+    with direct_connection():
+        import akshare as ak
     today = beijing_today()
-    cfg = {"上证系列指数": [("000001", "sh000001"), ("000688", "sh000688")],
-           "深证系列指数": [("399006", "sz399006")]}
-    n = 0
-    for sym, codes in cfg.items():
-        try:
-            df = ak.stock_zh_index_spot_em(symbol=sym)
-        except Exception:  # noqa: BLE001
+    cfg = [("000001", "sh000001"), ("000688", "sh000688"), ("399006", "sz399006")]
+    by_em = {em: lo for em, lo in cfg}
+    found: dict = {}                              # em_code → (price, pct, source, date)
+
+    # === 1) 主源：东财 batch（按 上证/深证 series）===
+    for sym, em_codes in (("上证系列指数", ("000001", "000688")),
+                          ("深证系列指数", ("399006",))):
+        df = None
+        for attempt in range(3):
+            try:
+                with direct_connection():
+                    df = ak.stock_zh_index_spot_em(symbol=sym)
+                break
+            except Exception as exc:
+                if attempt < 2:
+                    _t.sleep(2)
+                else:
+                    print(f"  指数主源({sym})失败: {type(exc).__name__}")
+        if df is None:
             continue
-        want = {c for c, _ in codes}
-        imap = {c: ic for c, ic in codes}
+        want = set(em_codes)
         for _, r in df.iterrows():
             c = str(r.get("代码", "")).strip()
-            if c not in want:
+            if c not in want or c in found:
                 continue
             try:
-                price = float(r.get("最新价")); chg = float(r.get("涨跌幅"))
-            except (TypeError, ValueError):
+                p, chg = float(r["最新价"]), float(r["涨跌幅"])
+            except (TypeError, ValueError, KeyError):
                 continue
-            with session_scope() as s:
-                snap = s.exec(select(QuoteSnapshot).where(
-                    QuoteSnapshot.asset_code == imap[c], QuoteSnapshot.quote_date == today)).first()
-                snap = snap or QuoteSnapshot(asset_code=imap[c], quote_date=today)
-                snap.close = price; snap.pct_chg = chg
-                if snap.id is None:
-                    s.add(snap)
-                s.commit()
+            found[c] = (p, chg, "东财", today)
+
+    # === 2) 兜底：新浪全量（补缺失 code，不覆盖已找到的）===
+    missing = [c for c, _ in cfg if c not in found]
+    if missing:
+        try:
+            with direct_connection():
+                df_s = ak.stock_zh_index_spot_sina()
+            for c in missing:
+                r = df_s[df_s["代码"] == by_em[c]]
+                if r.empty:
+                    continue
+                try:
+                    p, chg = float(r.iloc[0]["最新价"]), float(r.iloc[0]["涨跌幅"])
+                except (TypeError, ValueError, KeyError):
+                    continue
+                found[c] = (p, chg, "新浪", today)
+        except Exception as exc:
+            print(f"  指数新浪兜底失败: {type(exc).__name__}")
+
+    # === 3) 末源：日K末条（极端兜底；可能滞后）===
+    missing = [c for c, _ in cfg if c not in found]
+    for c in missing:
+        try:
+            with direct_connection():
+                df_k = ak.stock_zh_index_daily(symbol=by_em[c])
+            if df_k is None or df_k.empty:
+                continue
+            last = df_k.iloc[-1]
+            last_d = last["date"]
+            if hasattr(last_d, "date"):
+                last_d = last_d.date()
+            prev = df_k.iloc[-2] if len(df_k) >= 2 else None
+            p = float(last["close"])
+            chg = round((p / float(prev["close"]) - 1) * 100, 2) if prev is not None else None
+            tag = "日K" if last_d == today else f"日K滞后{today - last_d}天"
+            found[c] = (p, chg, tag, last_d)
+        except Exception as exc:
+            print(f"  指数日K兜底失败({c}): {type(exc).__name__}")
+
+    # === 4) 落库 + 诊断 ===
+    n = 0
+    for c, (p, chg, src, d) in found.items():
+        try:
+            _persist_index_quote(by_em[c], d, p, chg)
             n += 1
+        except Exception as exc:
+            print(f"  指数落库失败({c}): {type(exc).__name__}")
+    parts = [f"{c}={found[c][2]}" for c, _ in cfg if c in found]
+    miss = [c for c, _ in cfg if c not in found]
+    print(f"  指数落盘: {n}/3" + (f" [{', '.join(parts)}]" if parts else ""))
+    if miss:
+        print(f"  指数完全失败: {miss}")
     return n
 
 
@@ -309,7 +394,8 @@ def run_scheduled_fetch() -> dict:
         ok.extend(ok2)
 
     # 主要指数当日行情落盘
-    _upsert_index_quotes()
+    idx_n = _upsert_index_quotes()
+    print(f"  指数行情落盘: {idx_n}/3（上证/科创50/创业板指）")
     # 板块当日主力资金流（即时，每日攒历史；落库后供 compute_sector 用）
     from stockfu.services import backfill as bf
     sector_flow = bf.backfill_sector_flow_today()

@@ -189,17 +189,22 @@ def index_quotes_view() -> dict:
             ).order_by(QuoteSnapshot.quote_date.desc()).limit(2)).all()
             snap = snaps[0] if snaps else None
             prev_close = snaps[1].close if len(snaps) >= 2 else None
+            # 当天有行情才显示价格/涨跌幅，否则留空（不展示隔夜旧数据）
+            if snap and snap.quote_date == td:
+                price = snap.close
+                if snap.pct_chg is not None:
+                    pct = snap.pct_chg
+                elif snap.close and prev_close:
+                    pct = round((snap.close / prev_close - 1) * 100, 2)
+                else:
+                    pct = None
+            else:
+                price, pct = None, None
             rows = s.exec(select(IndexSnapshot).where(
                 IndexSnapshot.level == lvl, IndexSnapshot.scope == scope,
                 IndexSnapshot.snap_date == td
             )).all()
             idx = {r.index_key: r.value for r in rows}
-            if snap and snap.pct_chg is not None:
-                pct = snap.pct_chg
-            elif snap and snap.close and prev_close:
-                pct = round((snap.close / prev_close - 1) * 100, 2)
-            else:
-                pct = None
-            out[c] = {"name": name, "price": snap.close if snap else None, "pct_chg": pct,
+            out[c] = {"name": name, "price": price, "pct_chg": pct,
                       "fear": idx.get("fear"), "greed": idx.get("greed"), "heat": idx.get("heat")}
     return out
