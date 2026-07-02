@@ -94,6 +94,9 @@ nohup python main.py --schedule >> data/schedule.log 2>&1 &
 - akshare 1.18：`stock_margin_account_sse`不存在→用`stock_margin_sse`;`stock_a_indicator_lg`不存在(PE历史无免费源)
 - `stock_margin_detail_sse(date)`只接受date参数,返回全市场需筛code;今日数据常缺,往前找交易日
 - 东财反爬：`stock_zh_a_spot_em`(全量行情)/`stock_sector_fund_flow_rank`(板块)时不稳;`stock_zt_pool_em`批量限流→连板只能分批补
+- **指数行情断流兜底**：`_upsert_index_quotes` 三层兜底链：东财 batch(`stock_zh_index_spot_em`)→ 新浪全量(`stock_zh_index_spot_sina`，单次拉全量补缺失 code)→ 日K末条(`stock_zh_index_daily`，极端兜底，可能滞后)。东财深证端点偶发 Remote end closed connection without response，三次重试也不够；之前没单代码兜底会丢当天数据
+- **scheduler 必须重启加载新代码**：uwsgi 风格不会热更。改完 `stockfu/scheduler/jobs.py` / `snapshot.py` 后 `kill <pid>` + `nohup python3 main.py --schedule >> data/schedule.log 2>&1 &`，否则工作区改动不生效
+- 分享卡片"非当日留空"守卫在 `stockfu/services/snapshot.py:193`（`if snap.quote_date == td`），避免无数据时把隔夜数据当今天显示
 - efinance：`get_realtime_quotes`已坏(报"行情参数不正确");`get_quote_history`**必须传beg**才拉长历史(默认只近期)
 - yfinance：港股符号`0700.HK`(4位补零);A股`600519.SS`;需代理;period按days选
 - A股分红：`stock_history_dividend_detail`"派息"列是**每10股**,每股=/10
