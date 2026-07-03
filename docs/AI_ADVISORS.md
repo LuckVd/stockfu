@@ -23,9 +23,12 @@
 ## 架构
 
 ```
-[取数] build_context(code) ── 读 index_snapshot（快，不调网络）
-         → AdvisorContext（纯数据包：fear/greed/heat/pe_pct/...）
-              ↓
+[取数] build_context(code) ── 读 index_snapshot + quote_snapshot + ...（快，不调网络）
+         ↓
+[工具] run_with_tools() ── 工具循环
+         │  每个顾问可见的工具列表不同（USED_BY 权限控制）
+         │  7 个分析工具：ma_alignment / macd / rsi / bollinger / volume_price / support_resistance / volatility
+         ↓
 [顾问] 4 个常驻，各出一份 Opinion（每次都跑，不走路由）
          趋势 / 逆向 ⭐ / 风险 / 估值
               ↓
@@ -35,6 +38,82 @@
 ```
 
 设计原则：**确定性 + 表达分离**。数字（打分/信号）由规则定，不交给 LLM（避免幻觉）；LLM 只做自然语言表达。
+
+## 评分与投票机制
+
+### 各专家权限
+- 每位专家有 **±20 分** 的调整权限（`score_adjustment`）
+- 4 位专家 **等权**，总分 = 简单求和
+
+### 信号阈值
+
+| 总分范围 | 最终信号 |
+|----------|----------|
+| ≥ +15 | **strong_buy** |
+| ≥ +5 | **buy** |
+| ≥ -5 | **hold** |
+| ≥ -15 | **sell** |
+| < -15 | **strong_sell** |
+
+实现见 `synthesis.py:aggregate()`。
+
+### 一票否决（特殊规则）
+
+**风险顾问**的 `sell` / `strong_sell` 可以覆盖总分结果，强制修改最终信号：
+
+```python
+if risk.signal in ("sell", "strong_sell"):
+    final = risk.signal  # 无视总分，强制改为风险建议
+```
+
+这条规则设计目的是：其他顾问可能集体看多（如估值发现极度低估），但风险找到了硬风险（波动异常/系统性过热），应能被"拉响警报"。
+
+### 评分示例
+
+平安 601318 某次分析：
+
+| 顾问 | 得分 | 理由 |
+|------|------|------|
+| 趋势 | -12 | 空头排列+跌破支撑+热度极端 |
+| 逆向 | +8 | 恐慌74.3逼近极端+PE 0.59%史低 |
+| 风险 | -10 | ⚠️ 波动率90.97分位极端 → 一票否决 |
+| 估值 | +10 | PE 0.59%+股息5.5%=极度便宜 |
+| **总分** | **-4** | 按阈值应为 hold，但风险否决 → **final=sell** |
+
+## 工具系统（`skills/tools/`）
+
+### 设计
+- 工具是纯本地分析函数，不接受 `code` 参数（由框架注入），只接受分析维度参数
+- 每个工具注册时声明 `USED_BY`：哪些顾问可见
+- 工具对顾问不可见 = 顾问 prompt 里不会出现该工具的说明
+
+### 调用流程
+
+```
+run_with_tools(advisor_cls, ctx):
+  ① 取该顾问的可见工具列表     → get_tools_for("trend")
+  ② 拼接 system prompt + 工具描述
+  ③ 调 LLM（带 tools 参数）
+  ④ LLM 返回 tool_calls 或 stop
+  ⑤ 如果是 tool_calls → 执行工具 → 结果回传 → 回到③
+  ⑥ 如果是 stop → parse Opinion → 返回
+```
+
+### 已注册工具
+
+| 工具 | 输入参数 | 输出 | 谁用 |
+|------|----------|------|------|
+| `ma_alignment` | short_ma, mid_ma, long_ma | 多头/空头/中性排列 | 趋势, 风险 |
+| `macd` | fast, slow, signal | 金叉/死叉/零轴/柱线放缩 | 趋势, 逆向, 风险 |
+| `rsi` | period | 超买/超卖/中性 | 逆向, 风险 |
+| `bollinger` | period, std_dev | 上/中/下轨位置, 带宽 | 趋势, 逆向, 风险 |
+| `volume_price` | lookback, vol_threshold | 量价配合/背离/放量异常 | 趋势 |
+| `support_resistance` | lookback, buckets | 支撑/阻力价位+触碰次数 | 趋势, 逆向 |
+| `volatility` | period | ATR+波动率历史分位 | 风险 |
+
+### 调用记录
+
+每个顾问每次分析完整记录调用了什么工具、传了什么参数、返回了什么结果，存于 `Opinion.tools_used` 数组，随输出返回。
 
 ## 4 顾问
 
@@ -54,15 +133,26 @@
 ```
 stockfu/ai/
 ├── client.py          # OpenAI 兼容 LLM 调用（httpx + json_repair + 重试 + 自动补 /v1）
-├── context.py         # 取数：读 index_snapshot 填 AdvisorContext
-├── analyze.py         # 入口：取数 → 4 顾问 → 汇总 → 润色
-├── synthesis.py       # 规则汇总 + LLM 润色
+│                     # + chat_completion() 支持 function calling（tool_calls 多轮循环）
+├── context.py         # 取数：读 index_snapshot + quote_snapshot + dividend_event 填 AdvisorContext
+│                     # + CODE_SECTOR_FALLBACK 板块映射表
+├── analyze.py         # 入口：取数 → run_with_tools(4 顾问, 含工具循环) → 汇总 → 润色
+├── synthesis.py       # 规则汇总（总分+风险一票否决）+ LLM 润色
 └── skills/
-    ├── constitution.py    # 口径宪法（4 顾问共用）
+    ├── constitution.py    # 口径宪法（4 顾问共用：字段类型、分档阈值、输出 schema 示例）
     ├── advisors/
-    │   ├── base.py            # AdvisorContext + Opinion + BaseAdvisor
+    │   ├── base.py            # AdvisorContext + Opinion（含 tools_used）+ BaseAdvisor + parse 归一化
     │   ├── trend.py / contrarian.py / risk.py / valuation.py
     │   └── __init__.py        # ALL_ADVISORS 清单
+    ├── tools/                 # 7 个分析工具（注册表 + function calling schema）
+    │   ├── __init__.py        # 注册表：discover_and_register / get_tools_for / execute_tool / TOOL_CALL_LOG
+    │   ├── ma_alignment.py    # MA5/10/20 排列（趋势/风险）
+    │   ├── macd.py            # 金叉/死叉/柱线/零轴（趋势/逆向/风险）
+    │   ├── rsi.py             # 超买/超卖/中性（逆向/风险）
+    │   ├── bollinger.py       # 轨道位置/带宽（趋势/逆向/风险）
+    │   ├── volume_price.py    # 量价配合/背离（趋势）
+    │   ├── support_resistance.py # 支撑/阻力价位（趋势/逆向）
+    │   └── volatility.py      # ATR+波动率分位（风险）
     └── README.md          # 详细说明 + daily 15 策略归属表
 ```
 
@@ -92,23 +182,28 @@ python3 -c "from stockfu.ai.analyze import analyze; import json; print(json.dump
 
 顾问据此判断：缺失数据如实说「无信号」，严禁编造。
 
-## 当前状态（2026-07-02）
+## 当前状态（2026-07-03）
 
-已完成并验证：
+### 已完成并验证
 
-- ✅ 4 顾问 + 宪法 + 基类（可加载，prompt 正确拼装）
-- ✅ `client.py`（路径/认证/重试/json_repair，自动补 `/v1`）
-- ✅ `context.py`（读 600519 真实数据通过：fear=68.81 / greed=28.2 / pe_pct=0.18 …）
-- ✅ `synthesis.py`（规则汇总 + 风险一票否决，dry-run 验证）
-- ✅ `analyze.py`（完整链路入口）
+- ✅ **4 顾问完整链路跑通**（deepseek-v4-flash via opencode.ai，单股 ~100s）
+- ✅ **LLM 直连**：`client.py` use_proxy 默认 False，走 7890 代理 SSL 失败已解决
+- ✅ **reasoning 模型适配**：max_tokens 调至 10 万（reasoning_tokens 计入预算）
+- ✅ **parse 输出归一化**：confidence/signal/score 防御性解析，`_norm_confidence` 不做有损语义词映射
+- ✅ **口径宪法**：铁律 4 写死字段类型 + 示例，4 顾问统一引用
+- ✅ **context 字段补全**：sector fallback、today_chg、ma_alignment、profit_pct、dividend_yield
+- ✅ **_call_timeout 调大**：8s→20s，baostock PE/PB 不再超时丢失
+- ✅ **7 个分析工具**（function calling 循环，各顾问按 USED_BY 权限可见）
+- ✅ **工具调用记录**：每次分析记录 `tools_used[{tool, args, result}]`
+- ✅ **PE/PB 口径确认**：baostock 返回 0-100 分位（实测 0.18 → 18% 偏便宜）
+- ✅ **dividend_yield 口径确认**：per_share_cash 已是每股值（数据源已 ÷10），勿再除
 
-待办：
+### 待办
 
-- ⬜ **LLM key**：测试 key 对 opencode.ai 的 chat 端点报 401（误导性 AuthError，实为该 key 对所测 model 无权限——`opencode-go/` 前缀能过 auth 报 ModelError 可证 key 本身有效）；待配授权范围内的 model/key 后一键跑通
-- ⬜ **pe_pct/pb_pct 口径**：实测值 0.18 / 0.76 疑似 0-1 小数而非 0-100，会让估值顾问失真，需核 baostock `get_pe_pb_percentile` 返回值并 ×100 对齐
 - ⬜ **reflection**：决策反思落库 + 下次注入（借 TradingAgents「2-4 句精简」哲学）
-- ⬜ **tools/**：技术分析工具（均线排列算 `ma_alignment`、MACD/RSI），供趋势顾问调用
 - ⬜ **API/前端**：`/ai_report/{code}` 端点 + 持仓表 AI 解读列
+- ⬜ **美股数据补全**：AAPL 等 quote_snapshot 为空，需修 yfinance 抓取
+- ⬜ **板块轮动工具**(future)：等 sector_flow_snapshot 累积足够历史后加
 
 ## 参考来源（只借思想，不抄代码）
 
