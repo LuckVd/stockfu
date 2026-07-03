@@ -35,10 +35,7 @@ class ContrarianAdvisor(BaseAdvisor):
 - 三层共振(市场+板块+个股同向极端)→ confidence 提高,reasoning 必须写"三层共振"
 - fear/greed 都在 45-55 中性区 → score 0,明确说"情绪中性,无逆向信号",严禁硬编
 
-## 输出(单个 JSON 对象)
-{{"signal":"strong_buy|buy|hold|sell|strong_sell",
-  "score_adjustment":-20~+20,
-  "confidence":0.0-1.0,
-  "reasoning":"2-3 句,必须引用你依据的 fear/greed 具体数值",
-  "evidence":{{"fear":<数值>,"greed":<数值>,"三层共振":<true/false>}}}}
+## 输出
+严格按【宪法·铁律 4】的字段与类型输出单个 JSON 对象,不要 markdown 代码块、不要任何额外文字。
+evidence 必须含 fear、greed 数值与 "三层共振": true/false。
 """

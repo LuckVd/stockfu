@@ -101,7 +101,7 @@ def _sector_field_pct(name: str, model, field: str, today=None) -> float | None:
     return F.percentile(series, val)[0]
 
 
-def _call_timeout(fn, timeout: float = 8.0):
+def _call_timeout(fn, timeout: float = 20.0):
     """带超时跑 fn（外部网络因子：baostock/东财），超时或异常返回 None。
 
     这些调用在后台 daemon 线程里可能卡住（baostock 非线程安全、东财反爬），

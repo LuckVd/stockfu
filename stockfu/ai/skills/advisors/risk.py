@@ -30,6 +30,6 @@ class RiskAdvisor(BaseAdvisor):
 - 持仓大涨:has_position 且 profit_pct 偏高 + greed≥75 → 提示"止盈纪律"
 - 严禁编造利空:新闻/减持/解禁数据暂缺,不得虚构;只就价量/估值/情绪数据发言
 
-## 输出(单个 JSON 对象,字段同宪法约定)
-{{"signal":...,"score_adjustment":...,"confidence":...,"reasoning":...,"evidence":{{...}}}}
+## 输出
+严格按【宪法·铁律 4】的字段与类型输出单个 JSON 对象,不要 markdown 代码块、不要任何额外文字。
 """

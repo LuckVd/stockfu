@@ -10,9 +10,23 @@ import json
 
 from sqlmodel import select
 
+from datetime import date, timedelta
+
 from stockfu.ai.skills.advisors.base import AdvisorContext
 from stockfu.db import session_scope
-from stockfu.models import Asset, Holding, IndexSnapshot
+from stockfu.models import Asset, DividendEvent, Holding, IndexSnapshot, QuoteSnapshot
+from stockfu.services.factors import ma_alignment
+
+# 板块 fallback(asset.sector 空时兜底,覆盖常分析标的 → 板块名)。
+# 当个股被映射到已有 sector 层 IndexSnapshot 的板块时,context 能把 sector_fear/greed 带上。
+CODE_SECTOR_FALLBACK = {
+    "002594": "新能源车", "000625": "新能源车",
+    "600519": "白酒", "000858": "白酒",
+    "600036": "银行", "601318": "保险",
+    "512480": "半导体", "512690": "白酒",
+    "510300": "沪深300", "510500": "中证500", "159915": "创业板", "588000": "科创50",
+    "512800": "银行", "512010": "医药", "515030": "新能源车",
+}
 
 
 def _latest_indices(session, level: str, scope: str) -> dict:
@@ -41,7 +55,7 @@ def build_context(code: str) -> AdvisorContext:
     with session_scope() as s:
         asset = s.get(Asset, code)
         name = asset.name if asset else ""
-        sector = asset.sector if asset else ""
+        sector = (asset.sector or "").strip() or CODE_SECTOR_FALLBACK.get(code, "")
 
         stock = _latest_indices(s, "stock", code)
         market = _latest_indices(s, "market", "MARKET")
@@ -50,7 +64,32 @@ def build_context(code: str) -> AdvisorContext:
         holding = s.get(Holding, code)
         has_position = holding is not None and holding.shares > 0
 
+        # today_chg + 最新收盘价
+        q = s.exec(select(QuoteSnapshot).where(
+            QuoteSnapshot.asset_code == code,
+        ).order_by(QuoteSnapshot.quote_date.desc())).first()
+        close = q.close if q else None
+        today_chg = q.pct_chg if q else None
+
+        # profit_pct(持仓盈亏 %)
+        profit_pct = None
+        if has_position and close and holding.avg_cost:
+            profit_pct = round((close - holding.avg_cost) / holding.avg_cost * 100, 2)
+
+        # dividend_yield(TTM 股息率 %)
+        one_year_ago = date.today() - timedelta(days=365)
+        divs = s.exec(select(DividendEvent).where(
+            DividendEvent.asset_code == code,
+            DividendEvent.ex_date >= one_year_ago,
+        )).all()
+        ttm_cash = sum(d.per_share_cash for d in divs)  # per_share_cash 已归一化为"每股"(数据源取时已÷10)
+        dividend_yield = round(ttm_cash / close * 100, 2) if close and ttm_cash else None
+
     sc = stock.get("_components", {})
+
+    # ma_alignment(均线排列,纯本地,快)
+    ma_align = ma_alignment(code) if code else None
+
     return AdvisorContext(
         code=code,
         name=name,
@@ -64,5 +103,9 @@ def build_context(code: str) -> AdvisorContext:
         pe_pct=sc.get("pe_pct"),
         pb_pct=sc.get("pb_pct"),
         volatility_pct=sc.get("volatility_pct"),
+        today_chg=today_chg,
+        profit_pct=profit_pct,
+        dividend_yield=dividend_yield,
+        ma_alignment=ma_align,
         has_position=has_position,
     )
