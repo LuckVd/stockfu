@@ -358,6 +358,48 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
 .overlay{position:fixed;inset:0;background:rgba(15,23,42,.4);display:none;align-items:center;justify-content:center;z-index:60}
 .overlay.on{display:flex}
 .modal{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 16px 48px rgba(15,23,42,.18);width:min(520px,92vw);padding:24px}
+
+/* ---------- AI 分析 ---------- */
+.ai-btn{position:relative;width:38px;height:28px;border:1px solid var(--line);border-radius:6px;background:var(--surface-2);color:var(--ink-mute);font-size:11px;font-weight:600;cursor:pointer;transition:.2s;vertical-align:middle;display:inline-flex;align-items:center;justify-content:center}
+.ai-btn:hover{background:var(--gold-glow);border-color:var(--gold-lo);color:var(--gold)}
+.ai-btn.loading{color:var(--ink-faint);border-color:var(--line);background:var(--surface-2);pointer-events:none}
+.ai-btn.loading::after{content:'';width:12px;height:12px;border:2px solid var(--ink-faint);border-top-color:var(--gold);border-radius:50%;animation:ai-spin .7s linear infinite}
+@keyframes ai-spin{to{transform:rotate(360deg)}}
+.ai-btn.done{pointer-events:auto;width:auto;padding:0 8px;cursor:pointer;font-size:10px;border-width:0;background:transparent}
+.ai-btn.done strong{font-size:12px;margin-right:3px}
+.ai-btn.done.sig-buy{color:var(--up);background:rgba(220,38,38,.08)}
+.ai-btn.done.sig-sell{color:var(--down);background:rgba(22,163,74,.08)}
+.ai-btn.done.sig-hold{color:var(--ink-mute);background:var(--surface-2)}
+.ai-btn.done.sig-strong_buy{color:#b91c1c;background:rgba(220,38,38,.12);font-weight:700}
+.ai-btn.done.sig-strong_sell{color:#15803d;background:rgba(22,163,74,.12);font-weight:700}
+
+/* AI 弹窗(宽屏 4 列) */
+.ai-overlay .modal{width:min(900px,94vw);padding:20px 24px}
+.ai-code-title{font-size:18px;font-weight:700;color:var(--ink);margin-bottom:4px}
+.ai-final{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:10px;margin:12px 0 18px;font-size:13px;background:var(--surface-2)}
+.ai-final .lbl{color:var(--ink-mute);font-weight:500}
+.ai-final .sig{font-weight:700;font-size:15px}
+.ai-final .veto{color:var(--down);margin-left:6px}
+.ai-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.ai-card{border:1px solid var(--line-soft);border-radius:12px;padding:14px;background:var(--surface-3);display:flex;flex-direction:column;align-items:center;text-align:center}
+.ai-avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:8px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.ai-avatar.trend{background:linear-gradient(135deg,#dbeafe,#bfdbfe);color:#2563eb}
+.ai-avatar.contrarian{background:linear-gradient(135deg,#f3e8ff,#e9d5ff);color:#7c3aed}
+.ai-avatar.risk{background:linear-gradient(135deg,#fee2e2,#fecaca);color:#dc2626}
+.ai-avatar.valuation{background:linear-gradient(135deg,#d1fae5,#a7f3d0);color:#059669}
+.ai-title{font-size:13px;font-weight:600;color:var(--ink);margin-bottom:2px}
+.ai-sub{font-size:10px;color:var(--ink-faint);font-weight:500;margin-bottom:8px;letter-spacing:.3px}
+.ai-card .sig{font-size:14px;font-weight:700;padding:2px 10px;border-radius:20px;margin-bottom:8px}
+.ai-card .sig.buy{color:#b91c1c;background:rgba(220,38,38,.08)}
+.ai-card .sig.sell{color:#15803d;background:rgba(22,163,74,.08)}
+.ai-card .sig.hold{color:var(--ink-mute);background:var(--surface-2)}
+.ai-card .sig.strong_buy{color:#991b1b;background:rgba(220,38,38,.15)}
+.ai-card .sig.strong_sell{color:#166534;background:rgba(22,163,74,.15)}
+.ai-score{font-size:12px;color:var(--ink-mute);margin-bottom:3px;font-weight:500}
+.ai-reason{font-size:12px;color:var(--ink-dim);line-height:1.5;text-align:left;width:100%;border-top:1px solid var(--line-soft);padding-top:8px;margin-top:6px}
+.ai-reason em{font-style:normal;color:var(--ink-faint);font-size:10px;display:block;margin-top:4px}
+.ai-close{position:absolute;top:16px;right:18px;background:none;border:none;font-size:20px;color:var(--ink-mute);cursor:pointer;padding:4px}
+.ai-close:hover{color:var(--ink)}
 .modal h3{font-size:17px;font-weight:600}
 .modal .desc{font-size:13px;color:var(--ink-mute);line-height:1.6;margin:8px 0 16px}
 .set-group{padding:14px 0;border-top:1px solid var(--line-soft)}
@@ -633,6 +675,16 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
 
 <div class="overlay" id="share-overlay">
   <div class="modal share-wrap">
+
+<!-- AI 分析弹窗 -->
+<div class="overlay ai-overlay" id="ai-overlay">
+  <div class="modal" style="position:relative">
+    <button class="ai-close" id="ai-close">✕</button>
+    <div class="ai-code-title" id="ai-title"></div>
+    <div class="ai-final" id="ai-summary"></div>
+    <div class="ai-grid" id="ai-grid"></div>
+  </div>
+</div>
     <div id="share-card"></div>
     <div class="actions share-actions">
       <div class="share-mode" id="share-mode">
@@ -815,7 +867,7 @@ function renderHoldings(positions){
       <td>${indexBar(p.fear,true)}</td>
       <td>${indexBar(p.greed,true)}</td>
       <td>${indexBar(p.heat,true,p.day_chg)}</td>
-      <td class="op"><button class="row-del" data-code="${p.code}" title="删除持仓">×</button></td>
+      <td class="op"><button class="ai-btn" data-code="${p.code}" title="AI分析">分析</button><button class="row-del" data-code="${p.code}" title="删除持仓">×</button></td>
     </tr>`;
   }).join('');
   // 行点击 → 展开个股指数
@@ -1437,6 +1489,78 @@ function toast(msg,err){
   const t=$('#toast');t.textContent=msg;t.classList.toggle('err',!!err);t.classList.add('on');
   clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),2600);
 }
+
+/* ---------- AI 顾问分析 ---------- */
+const _aiResults = {}; // cache: {code: {opinions, aggregate, narrative}}
+
+function sigClass(sig) {
+  const m = {'strong_buy':'strong_buy','buy':'buy','strong_sell':'strong_sell','sell':'sell'};
+  return m[sig] || 'hold';
+}
+const AI_ICONS = {trend:'📈',contrarian:'🔮',risk:'⚡',valuation:'⚖️'};
+const AI_ROLES = {trend:'顺势猎手',contrarian:'反骨先知',risk:'风暴守夜人',valuation:'价值判官'};
+const AI_COLORS = {trend:'#2563eb',contrarian:'#7c3aed',risk:'#dc2626',valuation:'#059669'};
+
+async function runAi(code, btn) {
+  if (!btn) return;
+  btn.classList.remove('done'); btn.classList.add('loading');
+  btn.innerHTML = '';
+  const res = await api('/ai/' + encodeURIComponent(code), {method:'POST'});
+  btn.classList.remove('loading');
+  if (res && res.error) { btn.textContent='!'; btn.title=res.error; return; }
+  if (res && res.opinions) {
+    _aiResults[code] = res;
+    const sig = sigClass(res.aggregate.final_signal);
+    btn.className = 'ai-btn done sig-' + sig;
+    btn.innerHTML = `<strong>${sig.replace('_',' ').toUpperCase()}</strong>`;
+    btn.title = '点击查看 AI 顾问详情';
+  } else {
+    btn.textContent='?';
+  }
+}
+
+function openAiModal(code) {
+  const r = _aiResults[code];
+  if (!r) return;
+  $('#ai-title').textContent = (r.name||code) + ' · AI 专家分析';
+  const agg = r.aggregate;
+  const veto = agg.risk_vetoed ? '<span class="veto">⚠︎ 风险一票否决</span>' : '';
+  const sig = sigClass(agg.final_signal);
+  $('#ai-summary').innerHTML =
+    `<span class="lbl">最终意见</span><span class="sig" style="color:${sig==='sell'||sig==='strong_sell'?'var(--down)':sig==='buy'||sig==='strong_buy'?'var(--up)':'var(--ink-dim)'}">${agg.final_signal.toUpperCase()}</span>` +
+    (agg.total_score != null ? `总分 ${agg.total_score}` : '') +
+    veto;
+  let cards = '';
+  for (const o of r.opinions) {
+    const adv = o.advisor;
+    const sc = sigClass(o.signal);
+    const tools = (o.tools_used||[]).map(t => t.tool).join(', ');
+    cards +=
+      `<div class="ai-card">
+        <div class="ai-avatar ${adv}">${AI_ICONS[adv]||'💡'}</div>
+        <div class="ai-title">${adv==='trend'?'趋势':adv==='contrarian'?'逆向':adv==='risk'?'风险':'估值'}</div>
+        <div class="ai-sub">${AI_ROLES[adv]||''}</div>
+        <div class="sig ${sc}">${o.signal.replace('_',' ').toUpperCase()}<span class="ai-score">(${o.score>=0?'+':''}${o.score})</span></div>
+        <div class="ai-reason">${o.reasoning||'—'}${tools ? `<em>调用工具: ${tools}</em>` : ''}</div>
+      </div>`;
+  }
+  $('#ai-grid').innerHTML = cards;
+  $('#ai-overlay').classList.add('on');
+}
+
+// 全局委派 AI 按钮点击
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.ai-btn');
+  if (!btn) return;
+  const code = btn.dataset.code;
+  if (btn.classList.contains('done')) {
+    openAiModal(code);
+  } else if (!btn.classList.contains('loading')) {
+    runAi(code, btn);
+  }
+});
+$('#ai-close').onclick = () => $('#ai-overlay').classList.remove('on');
+$('#ai-overlay').addEventListener('click', e => { if (e.target === $('#ai-overlay')) $('#ai-overlay').classList.remove('on') });
 
 /* ---------- clock ---------- */
 function tick(){

@@ -419,6 +419,18 @@ def test_mail_api():
     return run_mail_job()
 
 
+# ---------- AI 顾问分析 ----------
+
+@router.post("/ai/{code}")
+def ai_analysis(code: str):
+    """运行 AI 4 顾问分析并返回含工具调用记录的结果。"""
+    from stockfu.ai.analyze import analyze
+    try:
+        return jsonable_encoder(analyze(code))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"AI 分析失败: {exc}")
+
+
 # ---- CSV 导入 / 导出（WebUI 工具栏：持仓 / 自选）-------------------------------
 # 自选 = asset 表（追踪股票清单）；持仓 = transaction 表（holding 由其移动加权派生）。
 # 导出 = 下载 CSV 文件；导入 = 上传 CSV 文件（合并 upsert，不删现有数据）。
