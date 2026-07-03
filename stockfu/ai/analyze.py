@@ -1,40 +1,85 @@
-"""AI 分析入口:取数 → 4 顾问各出意见 → 规则汇总 → LLM 润色成报告。
-
-完整链路。需要 .env 配好 LLM_*;顾问/汇总逻辑见 skills/ 与 synthesis.py。
-"""
+"""AI 分析入口:取数 → run_with_tools(4 顾问,含工具循环) → 汇总 → 润色"""
 from __future__ import annotations
 
-from stockfu.ai.client import chat_json
+import json
+
+from stockfu.ai.client import chat_completion
 from stockfu.ai.context import build_context
 from stockfu.ai.skills.advisors import ALL_ADVISORS
 from stockfu.ai.skills.advisors.base import AdvisorContext, Opinion
 from stockfu.ai.synthesis import aggregate, narrate
+from stockfu.ai.skills.tools import (discover_and_register, get_tools_for,
+                                     get_tool_descriptions_for, execute_tool,
+                                     clear_log)
 
 
-def run_advisor(advisor_cls, ctx: AdvisorContext) -> Opinion:
-    """跑单个顾问:拼 prompt → 调 LLM → 解析 Opinion。"""
+def run_with_tools(advisor_cls, ctx: AdvisorContext) -> Opinion:
+    """顾问分析(带工具循环): prompt → LLM(tool_calls) → 执行 → 回传 → 最终结果。"""
     a = advisor_cls()
-    parsed = chat_json(a.system_prompt(), a.build_user_message(ctx),
-                       max_tokens=400, temperature=0.2)
-    return a.parse(ctx, _to_text(parsed))
+    tools = get_tools_for(a.advisor_id)
 
+    # 拼接 system prompt + 工具描述
+    system = a.system_prompt()
+    desc = get_tool_descriptions_for(a.advisor_id)
+    if desc:
+        system += "\n\n" + desc
 
-def _to_text(parsed) -> str:
-    """chat_json 已返回 dict;parse 期望 raw 文本,这里回灌成 json 串。"""
-    import json
-    return json.dumps(parsed, ensure_ascii=False)
+    user = a.build_user_message(ctx)
+    messages: list[dict] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    tools_used_records: list[dict] = []
+    first_round = True
+
+    for _ in range(5):  # max 5 轮(防死循环)
+        resp = chat_completion(messages, tools=tools if first_round else None, temperature=0.2)
+        first_round = False
+        choice = resp["choices"][0]
+        finish = choice["finish_reason"]
+
+        if finish == "tool_calls":
+            msg = choice["message"]
+            messages.append({
+                "role": "assistant",
+                "content": msg.get("content", ""),
+                "tool_calls": msg["tool_calls"],
+            })
+            for tc in msg["tool_calls"]:
+                name = tc["function"]["name"]
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                result = execute_tool(name, code=ctx.code, **args)
+                tools_used_records.append({"tool": name, "args": args, "result": result})
+                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+        else:
+            content = choice["message"].get("content", "")
+            if not content:
+                content = "{}"
+            op = a.parse(ctx, content)
+            op.tools_used = tools_used_records
+            return op
+
+    return Opinion(
+        advisor=a.advisor_id, signal="hold",
+        score_adjustment=0, confidence=0.0,
+        reasoning=f"[工具调用超限] 最终: {messages[-1].get('content', '')[:200]}",
+    )
 
 
 def analyze(code: str) -> dict:
     """对单只股票跑完整 4 顾问分析。返回 {context, opinions, aggregate, narrative}。"""
-    ctx = build_context(code)
+    discover_and_register()
+    clear_log()
 
+    ctx = build_context(code)
     opinions: list[Opinion] = []
     for advisor_cls in ALL_ADVISORS:
         try:
-            opinions.append(run_advisor(advisor_cls, ctx))
+            opinions.append(run_with_tools(advisor_cls, ctx))
         except Exception as exc:  # noqa: BLE001
-            # 单个顾问失败不阻断整体(降级:记一个 hold 占位)
             opinions.append(Opinion(
                 advisor=advisor_cls.advisor_id, signal="hold",
                 score_adjustment=0, confidence=0.0,

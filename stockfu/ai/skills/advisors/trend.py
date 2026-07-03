@@ -29,6 +29,6 @@ class TrendAdvisor(BaseAdvisor):
 - heat≥75(过热)即便多头,也要在 reasoning 提示"热度偏高,追高风险"
 - 数据不足(如 ma_alignment 为空)→ 如实说"趋势样本不足"
 
-## 输出(单个 JSON 对象,字段同宪法约定)
-{{"signal":...,"score_adjustment":...,"confidence":...,"reasoning":...,"evidence":{{...}}}}
+## 输出
+严格按【宪法·铁律 4】的字段与类型输出单个 JSON 对象,不要 markdown 代码块、不要任何额外文字。
 """

@@ -29,6 +29,6 @@ class ValuationAdvisor(BaseAdvisor):
 - 叠加 dividend_yield 综合判断吸引力(高股息+低估值=更吸引)
 - pe_pct/pb_pct 为 null(样本<10)→ 明确说"估值样本不足,无法判断",score 0
 
-## 输出(单个 JSON 对象,字段同宪法约定)
-{{"signal":...,"score_adjustment":...,"confidence":...,"reasoning":...,"evidence":{{...}}}}
+## 输出
+严格按【宪法·铁律 4】的字段与类型输出单个 JSON 对象,不要 markdown 代码块、不要任何额外文字。
 """

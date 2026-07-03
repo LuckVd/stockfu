@@ -50,6 +50,41 @@ class Opinion:
     confidence: float       # 0.0 ~ 1.0
     reasoning: str
     evidence: dict = field(default_factory=dict)
+    tools_used: list[dict] = field(default_factory=list)
+
+
+_VALID_SIGNALS = {"strong_buy", "buy", "hold", "sell", "strong_sell"}
+
+
+def _norm_confidence(v) -> float:
+    """confidence → 0-1 float。只做无争议类型转换,**不做**语义词(low/high)等有损猜测——
+    模型应按宪法 schema 返回 0-1 小数;非数字/解析失败 → 默认 0.5(不崩,也不替模型瞎猜)。"""
+    if v is None:
+        return 0.5
+    if isinstance(v, bool):  # 注意先于 int 判断
+        return 1.0 if v else 0.0
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.5
+    return f / 100 if f > 1 else f  # 0-100 → 0-1(常见歧义、无损);0-1 原样
+
+
+def _norm_signal(v) -> str:
+    """signal 归一化到标准枚举;别名/非法值兜底为 hold。"""
+    s = str(v or "hold").strip().lower()
+    s = {"avoid": "sell", "reduce": "sell", "neutral": "hold",
+         "strongbuy": "strong_buy", "strongsell": "strong_sell"}.get(s, s)
+    return s if s in _VALID_SIGNALS else "hold"
+
+
+def _norm_score(v) -> int:
+    """score 钳制到 -20~+20(宪法铁律第 3 条)。"""
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError):
+        n = 0
+    return max(-20, min(20, n))
 
 
 class BaseAdvisor:
@@ -73,19 +108,20 @@ class BaseAdvisor:
         )
 
     def parse(self, ctx: AdvisorContext, raw: str) -> Opinion:
-        """解析 LLM 输出为 Opinion。
+        """解析 LLM 输出为 Opinion(业务层归一化 + 容错)。
 
-        TODO: 接入 json_repair 容错(见 references/tradingagents README 的鲁棒性设计)。
-        当前用标准 json.loads,等 stockfu/ai/client.py 建好后替换。
+        raw 已由 analyze._to_text 转为 JSON 串(client.chat_json 用 json_repair 修过语法);
+        这里再做语义归一化:confidence 兼容数字/百分比/语义词,signal 非法兜底 hold,
+        score 钳制 -20~+20。LLM 输出不可控,parse 必须防御(不能裸 float()/int())。
         """
         import json
 
-        parsed = json.loads(raw)  # noqa: 后续换 json_repair.repair_json(raw)
+        parsed = json.loads(raw)
         return Opinion(
             advisor=self.advisor_id,
-            signal=parsed.get("signal", "hold"),
-            score_adjustment=int(parsed.get("score_adjustment", 0)),
-            confidence=float(parsed.get("confidence", 0.5)),
+            signal=_norm_signal(parsed.get("signal")),
+            score_adjustment=_norm_score(parsed.get("score_adjustment", 0)),
+            confidence=_norm_confidence(parsed.get("confidence")),
             reasoning=parsed.get("reasoning", ""),
-            evidence=parsed.get("evidence", {}),
+            evidence=parsed.get("evidence") or {},
         )

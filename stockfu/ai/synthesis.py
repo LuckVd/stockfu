@@ -50,13 +50,14 @@ def aggregate(opinions: list[Opinion]) -> dict:
                 "score": o.score_adjustment,
                 "confidence": o.confidence,
                 "reasoning": o.reasoning,
+                "tools_used": o.tools_used,
             }
             for o in opinions
         ],
     }
 
 
-def narrate(agg: dict, *, max_tokens: int = 500) -> str:
+def narrate(agg: dict, *, max_tokens: int = 100000) -> str:
     """LLM 把汇总 + 4 顾问理由写成一段散户可读的解读。不重新打分。"""
     sys = (
         "你是 stockfu 综合分析师。下面是 4 个顾问(趋势/逆向/风险/估值)对一只股票的意见与规则汇总。"
