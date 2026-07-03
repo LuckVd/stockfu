@@ -382,14 +382,9 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
 .ai-final .veto{color:var(--down);margin-left:6px}
 .ai-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
 .ai-card{border:1px solid var(--line-soft);border-radius:12px;padding:14px;background:var(--surface-3);display:flex;flex-direction:column;align-items:center;text-align:center}
-.ai-avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:8px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.06)}
-.ai-avatar.trend{background:linear-gradient(135deg,#dbeafe,#bfdbfe);color:#2563eb}
-.ai-avatar.contrarian{background:linear-gradient(135deg,#f3e8ff,#e9d5ff);color:#7c3aed}
-.ai-avatar.risk{background:linear-gradient(135deg,#fee2e2,#fecaca);color:#dc2626}
-.ai-avatar.valuation{background:linear-gradient(135deg,#d1fae5,#a7f3d0);color:#059669}
-.ai-title{font-size:13px;font-weight:600;color:var(--ink);margin-bottom:2px}
-.ai-sub{font-size:10px;color:var(--ink-faint);font-weight:500;margin-bottom:8px;letter-spacing:.3px}
+.ai-avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:8px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.06)}
 .ai-card .sig{font-size:14px;font-weight:700;padding:2px 10px;border-radius:20px;margin-bottom:8px}
+.ai-title{font-size:13px;font-weight:600;color:var(--ink);margin-bottom:6px}
 .ai-card .sig.buy{color:#b91c1c;background:rgba(220,38,38,.08)}
 .ai-card .sig.sell{color:#15803d;background:rgba(22,163,74,.08)}
 .ai-card .sig.hold{color:var(--ink-mute);background:var(--surface-2)}
@@ -1497,9 +1492,12 @@ function sigClass(sig) {
   const m = {'strong_buy':'strong_buy','buy':'buy','strong_sell':'strong_sell','sell':'sell'};
   return m[sig] || 'hold';
 }
-const AI_ICONS = {trend:'📈',contrarian:'🔮',risk:'⚡',valuation:'⚖️'};
-const AI_ROLES = {trend:'顺势猎手',contrarian:'反骨先知',risk:'风暴守夜人',valuation:'价值判官'};
-const AI_COLORS = {trend:'#2563eb',contrarian:'#7c3aed',risk:'#dc2626',valuation:'#059669'};
+
+// SVG 人物剪影头像(不依赖外部图片)
+function avatarSvg(color) {
+  return `<svg width="48" height="48" viewBox="0 0 80 80" style="display:block"><circle cx="40" cy="26" r="14" fill="${color}" opacity=".18"/><path d="M14 74c0-14 12-22 26-22s26 8 26 22" fill="${color}" opacity=".12"/></svg>`;
+}
+const AVATAR_COLORS = {trend:'#2563eb',contrarian:'#7c3aed',risk:'#dc2626',valuation:'#059669'};
 
 async function runAi(code, btn) {
   if (!btn) return;
@@ -1513,7 +1511,7 @@ async function runAi(code, btn) {
     const sig = sigClass(res.aggregate.final_signal);
     btn.className = 'ai-btn done sig-' + sig;
     btn.innerHTML = `<strong>${sig.replace('_',' ').toUpperCase()}</strong>`;
-    btn.title = '点击查看 AI 顾问详情';
+    btn.title = '点击查看 AI 专家分析报告';
   } else {
     btn.textContent='?';
   }
@@ -1522,14 +1520,16 @@ async function runAi(code, btn) {
 function openAiModal(code) {
   const r = _aiResults[code];
   if (!r) return;
-  $('#ai-title').textContent = (r.name||code) + ' · AI 专家分析';
+  $('#ai-title').textContent = (r.name||code) + ' · AI 分析报告';
   const agg = r.aggregate;
-  const veto = agg.risk_vetoed ? '<span class="veto">⚠︎ 风险一票否决</span>' : '';
+  const veto = agg.risk_vetoed ? '<span class="veto">⚠ 风险顾问一票否决</span>' : '';
   const sig = sigClass(agg.final_signal);
+  const sigColor = sig==='sell'||sig==='strong_sell'?'var(--down)':sig==='buy'||sig==='strong_buy'?'var(--up)':'var(--ink-dim)';
   $('#ai-summary').innerHTML =
-    `<span class="lbl">最终意见</span><span class="sig" style="color:${sig==='sell'||sig==='strong_sell'?'var(--down)':sig==='buy'||sig==='strong_buy'?'var(--up)':'var(--ink-dim)'}">${agg.final_signal.toUpperCase()}</span>` +
-    (agg.total_score != null ? `总分 ${agg.total_score}` : '') +
+    `<span class="lbl">最终意见</span><span class="sig" style="color:${sigColor}">${agg.final_signal.replace('_',' ').toUpperCase()}</span>` +
+    (agg.total_score != null ? `　总分 ${agg.total_score}` : '') +
     veto;
+  const NAME_MAP = {trend:'趋势分析师',contrarian:'逆向分析师',risk:'风险分析师',valuation:'估值分析师'};
   let cards = '';
   for (const o of r.opinions) {
     const adv = o.advisor;
@@ -1537,11 +1537,10 @@ function openAiModal(code) {
     const tools = (o.tools_used||[]).map(t => t.tool).join(', ');
     cards +=
       `<div class="ai-card">
-        <div class="ai-avatar ${adv}">${AI_ICONS[adv]||'💡'}</div>
-        <div class="ai-title">${adv==='trend'?'趋势':adv==='contrarian'?'逆向':adv==='risk'?'风险':'估值'}</div>
-        <div class="ai-sub">${AI_ROLES[adv]||''}</div>
-        <div class="sig ${sc}">${o.signal.replace('_',' ').toUpperCase()}<span class="ai-score">(${o.score>=0?'+':''}${o.score})</span></div>
-        <div class="ai-reason">${o.reasoning||'—'}${tools ? `<em>调用工具: ${tools}</em>` : ''}</div>
+        <div class="ai-avatar" style="background:linear-gradient(135deg,${AVATAR_COLORS[adv]}15,${AVATAR_COLORS[adv]}08)">${avatarSvg(AVATAR_COLORS[adv])}</div>
+        <div class="ai-title">${NAME_MAP[adv]||adv}</div>
+        <div class="sig ${sc}">${o.signal.replace('_',' ').toUpperCase()}<span class="ai-score">（评分 ${o.score>=0?'+':''}${o.score}）</span></div>
+        <div class="ai-reason">${o.reasoning||'—'}${tools ? `<em>引用工具: ${tools}</em>` : ''}</div>
       </div>`;
   }
   $('#ai-grid').innerHTML = cards;
