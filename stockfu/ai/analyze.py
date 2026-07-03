@@ -56,9 +56,37 @@ def run_with_tools(advisor_cls, ctx: AdvisorContext) -> Opinion:
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
         else:
             content = choice["message"].get("content", "")
-            if not content:
-                content = "{}"
-            op = a.parse(ctx, content)
+            # reasoning 模型在工具调用后可能 content 为空(推理已够但没输出文本)
+            # → 追加一轮要求输出 JSON,并用 json_repair 容错
+            if not content and tools_used_records:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        '根据以上数据与工具结果,输出你的最终意见。'
+                        '只输出一个合法的JSON对象,禁止markdown代码块,禁止额外文字:'
+                        '{"signal":"buy","score_adjustment":0,"confidence":0.5,"reasoning":"...","evidence":{}}'
+                    ),
+                })
+                resp = chat_completion(messages, temperature=0.2)
+                raw = resp["choices"][0]["message"].get("content", "")
+                if raw:
+                    from json_repair import repair_json
+                    try:
+                        content = repair_json(raw)
+                    except Exception:  # noqa: BLE001
+                        content = "{}"
+                else:
+                    content = "{}"
+            try:
+                if not content:
+                    content = "{}"
+                op = a.parse(ctx, content)
+            except Exception:  # noqa: BLE001
+                op = Opinion(
+                    advisor=a.advisor_id, signal="hold",
+                    score_adjustment=0, confidence=0.0,
+                    reasoning=f"[格式化输出失败] {choice['finish_reason']}",
+                )
             op.tools_used = tools_used_records
             return op
 
