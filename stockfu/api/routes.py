@@ -419,16 +419,126 @@ def test_mail_api():
     return run_mail_job()
 
 
+@router.get("/config/llm")
+def get_llm_config_api():
+    """LLM 配置（api_key 脱敏为 has_api_key）。"""
+    from stockfu.config import get_llm_config
+    return get_llm_config()
+
+
+@router.put("/config/llm")
+def set_llm_config_api(payload: dict = Body(...)):
+    """保存 LLM 配置（任一项可选；空 api_key = 不改）。"""
+    from stockfu.config import get_llm_config, set_llm_config
+    set_llm_config(payload or {})
+    return get_llm_config()
+
+
+@router.post("/config/llm/test")
+def test_llm_api():
+    """测试 LLM 连通性（发一条极简消息探活，需已配置 base_url + api_key）。"""
+    from stockfu.ai.client import LLMError, chat
+    try:
+        reply = chat([{"role": "user", "content": "ping"}], max_tokens=8, timeout=20, retries=0)
+        return {"ok": True, "detail": "连接正常", "reply": (reply or "")[:80]}
+    except LLMError as exc:
+        return {"ok": False, "detail": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+
+
 # ---------- AI 顾问分析 ----------
+
+def _ai_key(code: str) -> str:
+    return f"ai_analysis:{code}"
+
+
+def _set_ai_pending(code: str) -> None:
+    """标记该股票正在分析中。刷新后前端据此恢复 loading 态,避免重复点击。"""
+    import json
+    from datetime import datetime
+    from stockfu.db import set_app_config
+    set_app_config(_ai_key(code), json.dumps({
+        "status": "pending",
+        "pending_since": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }, ensure_ascii=False))
+
+
+def _set_ai_done(code: str, result) -> None:
+    """分析完成(成功带 result / 异常或全降级带 None)。写最终状态、清除 pending。
+    signal 一并存,让前端 AiButton done 态零请求上色。"""
+    import json
+    from datetime import datetime
+    from stockfu.db import set_app_config
+    signal = (result or {}).get("aggregate", {}).get("final_signal") if result else None
+    set_app_config(_ai_key(code), json.dumps({
+        "status": "done",
+        "result": result,
+        "signal": signal,
+        "analyzed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }, ensure_ascii=False))
+
+
+from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _FutTimeout
+_AI_EXEC = _TPE(max_workers=2)
+
 
 @router.post("/ai/{code}")
 def ai_analysis(code: str):
-    """运行 AI 4 顾问分析并返回含工具调用记录的结果。"""
+    """运行 AI 4 顾问分析并返回含工具调用记录的结果。
+
+    整体 180s 超时兜底:analyze 内部工具取数(baostock/akshare)偶发 socket hang,
+    无超时会致 pending 永驻;超时则 _set_ai_done(None) 让前端恢复可重试。
+    """
     from stockfu.ai.analyze import analyze
+    _set_ai_pending(code)            # 先标记进行中(刷新后前端可恢复 loading)
     try:
-        return jsonable_encoder(analyze(code))
+        fut = _AI_EXEC.submit(lambda: jsonable_encoder(analyze(code)))
+        try:
+            result = fut.result(timeout=180)
+        except _FutTimeout:
+            _set_ai_done(code, None)
+            raise HTTPException(status_code=504, detail="AI 分析超时(180s),可能是数据源无响应,请稍后重试")
+    except HTTPException:
+        raise
     except Exception as exc:
+        _set_ai_done(code, None)     # 异常也要清 pending,避免僵尸态
         raise HTTPException(status_code=500, detail=f"AI 分析失败: {exc}")
+    _set_ai_done(code, result if result.get("opinions") else None)
+    return result
+
+
+@router.get("/ai/result/{code}")
+def get_ai_result(code: str):
+    """读取该股票 AI 分析状态:done(带 result)/ pending(分析中)/ none。"""
+    import json
+    from stockfu.db import get_app_config, has_app_config
+    if not has_app_config(_ai_key(code)):
+        return {"status": "none"}
+    try:
+        data = json.loads(get_app_config(_ai_key(code)))
+    except Exception:  # noqa: BLE001
+        return {"status": "none"}
+    if data.get("status") == "pending":
+        return {"status": "pending", "pending_since": data.get("pending_since"), "signal": data.get("signal")}
+    return {"status": "done", "result": data.get("result"), "signal": data.get("signal"),
+            "analyzed_at": data.get("analyzed_at")}
+
+
+# ---------- 个股 K 线（AI 报告迷你图用）----------
+@router.get("/quote/kline/{code}")
+def quote_kline(code: str, days: int = Query(30, ge=5, le=120)):
+    """个股收盘价序列（读 quote_snapshot；AI 报告 30 日迷你图用）。"""
+    from datetime import date, timedelta
+    from stockfu.models import QuoteSnapshot
+    start = date.today() - timedelta(days=days + 15)  # +15 缓冲跳过周末/节假日
+    with session_scope() as s:
+        rows = s.exec(select(QuoteSnapshot).where(
+            QuoteSnapshot.asset_code == code,
+            QuoteSnapshot.quote_date >= start,
+        ).order_by(QuoteSnapshot.quote_date)).all()
+    pts = [{"date": r.quote_date.isoformat(), "close": r.close} for r in rows[-days:]]
+    return {"code": code, "days": days, "points": pts}
 
 
 # ---- CSV 导入 / 导出（WebUI 工具栏：持仓 / 自选）-------------------------------

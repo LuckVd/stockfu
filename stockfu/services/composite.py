@@ -248,8 +248,16 @@ def compute_stock(code):
     if sm.get("buy_amount"):
         ext["margin_buy"] = (sm["buy_amount"], "greed")
     # 估值因子：PE/PB 历史分位（baostock，免费替代 tushare）
+    # baostock 进程级连接偶发掉线（_logged_in 仍 True、不重连 → query 静默返回空），
+    # 拿不到有效分位时 force_relogin 后重试 1-2 次，根治偶发空返回。
+    from stockfu.data.baostock_source import BaostockSource
     val_pcts = {}
-    pe_pb = _call_timeout(lambda: get_manager().baostock.get_pe_pb_percentile(code))
+    pe_pb = None
+    for _ in range(3):  # 首试 + 2 次重试
+        pe_pb = _call_timeout(lambda: get_manager().baostock.get_pe_pb_percentile(code))
+        if isinstance(pe_pb, tuple) and (pe_pb[0] is not None or pe_pb[1] is not None):
+            break
+        BaostockSource.force_relogin()  # 掉线 → 强制重连再试
     if isinstance(pe_pb, tuple):
         pe_pct, pb_pct = pe_pb
         if pe_pct is not None:

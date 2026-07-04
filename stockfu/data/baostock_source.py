@@ -31,15 +31,27 @@ class BaostockSource(DataSource):
     _logged_in: bool = False
 
     @classmethod
-    def _ensure_login(cls) -> bool:
+    def _ensure_login(cls, force: bool = False) -> bool:
         try:
             import baostock as bs
         except Exception:  # noqa: BLE001
             return False
-        if not cls._logged_in:
+        if force or not cls._logged_in:
+            if force:  # 重连前先 logout，清掉可能已掉线的旧连接
+                try:
+                    bs.logout()
+                except Exception:  # noqa: BLE001
+                    pass
             lg = bs.login()
             cls._logged_in = (getattr(lg, "error_code", "1") == "0")
         return cls._logged_in
+
+    @classmethod
+    def force_relogin(cls) -> bool:
+        """强制重新登录。baostock 是进程级全局连接，偶发掉线时 _logged_in 仍 True、
+        _ensure_login 不会重连 → 后续 query 静默失败返回空。调用方拿到空结果后
+        调此方法 logout+重新 login 即可恢复。"""
+        return cls._ensure_login(force=True)
 
     def _klines(self, code: str, days: int = 800) -> list[KlineBar]:
         if not self._ensure_login():

@@ -3,6 +3,9 @@
 读 IndexSnapshot 最新快照(快、不调网络),不实时重算 compute_stock
 (那会触发 baostock/资金流网络调用,8s 超时,不适合 AI 分析路径)。
 若某层快照缺失,对应字段为 None —— 顾问会如实说"无该维度信号"。
+
+例外:PE/PB 分位缺时,现调 baostock 单查补算(~1-2s,远轻于 compute_stock)
+并回填 IndexSnapshot,下次免算 —— 根治 compute 时 baostock 偶发失败留空。
 """
 from __future__ import annotations
 
@@ -50,6 +53,52 @@ def _latest_indices(session, level: str, scope: str) -> dict:
     return out
 
 
+def _fetch_pe_pb(code: str) -> tuple[float | None, float | None]:
+    """baostock 现算 PE/PB 分位(3 次重试 + 掉线重连,复用 composite 的稳健逻辑)。
+    仅 ~1-2s,远轻于 compute_stock 的全量网络调用。"""
+    try:
+        from stockfu.data.baostock_source import BaostockSource
+        from stockfu.data.manager import get_manager
+        bs = get_manager().baostock
+        pe_pb = None
+        for _ in range(3):
+            pe_pb = bs.get_pe_pb_percentile(code)
+            if pe_pb and (pe_pb[0] is not None or pe_pb[1] is not None):
+                return pe_pb
+            BaostockSource.force_relogin()
+        return pe_pb or (None, None)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _backfill_components(session, code: str, pe_pct: float | None, pb_pct: float | None) -> None:
+    """回填 pe_pct/pb_pct 到最新 stock IndexSnapshot 的 components,下次免现算。"""
+    if pe_pct is None and pb_pct is None:
+        return
+    try:
+        row = session.exec(
+            select(IndexSnapshot)
+            .where(
+                IndexSnapshot.level == "stock",
+                IndexSnapshot.scope == code,
+                IndexSnapshot.components.isnot(None),
+            )
+            .order_by(IndexSnapshot.snap_date.desc())
+        ).first()
+        if row is None:
+            return
+        existing = json.loads(row.components) if row.components else {}
+        if pe_pct is not None:
+            existing["pe_pct"] = pe_pct
+        if pb_pct is not None:
+            existing["pb_pct"] = pb_pct
+        row.components = json.dumps(existing, ensure_ascii=False)
+        session.add(row)
+        session.commit()
+    except Exception:  # noqa: BLE001  回填失败不影响本次(已现算填进 context)
+        pass
+
+
 def build_context(code: str) -> AdvisorContext:
     """从库构建顾问数据包。字段缺失即 None(顾问据此说"无信号")。"""
     with session_scope() as s:
@@ -86,6 +135,15 @@ def build_context(code: str) -> AdvisorContext:
         dividend_yield = round(ttm_cash / close * 100, 2) if close and ttm_cash else None
 
     sc = stock.get("_components", {})
+
+    # PE/PB 分位缺 → baostock 现算补 + 回填(下次免算)
+    if sc.get("pe_pct") is None or sc.get("pb_pct") is None:
+        pe_pct, pb_pct = _fetch_pe_pb(code)
+        if pe_pct is not None:
+            sc["pe_pct"] = pe_pct
+        if pb_pct is not None:
+            sc["pb_pct"] = pb_pct
+        _backfill_components(s, code, pe_pct, pb_pct)
 
     # ma_alignment(均线排列,纯本地,快)
     ma_align = ma_alignment(code) if code else None
