@@ -1,7 +1,7 @@
 """OpenAI 兼容 LLM 客户端(stockfu AI 顾问用)。
 
 设计:
-- 从 settings.llm_* 读配置(.env 注入,密钥不进代码/git)
+- 从 config.get_llm_*() 读配置(app_config 表优先，.env 回落；面板改完热生效，无需重启)
 - httpx 同步 POST {base_url}/chat/completions
 - json_repair 容错解析 LLM 的 JSON 输出(LLM 常吐带 ```json 代码块或缺逗号的串)
 - 超时 + 有限重试(线性退避)
@@ -18,7 +18,7 @@ from typing import Optional
 
 import httpx
 
-from stockfu.config import get_overseas_proxy, settings
+from stockfu.config import get_llm_api_key, get_llm_base_url, get_llm_model, get_overseas_proxy
 
 
 class LLMError(RuntimeError):
@@ -36,21 +36,21 @@ def chat(
     use_proxy: bool = False,
 ) -> str:
     """调用 chat completions,返回 assistant 文本。失败线性退避重试,最终抛 LLMError。"""
-    if not settings.llm_api_key or not settings.llm_base_url:
+    if not get_llm_api_key() or not get_llm_base_url():
         raise LLMError("LLM 未配置:请在 .env 设置 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL")
 
     # OpenAI 兼容惯例:base 含 /v1(如 https://api.openai.com/v1);用户若只给到根,
     # 自动补 /v1。opencode.ai 等中转 base 不带 /v1,需补。
-    url = settings.llm_base_url.rstrip("/")
+    url = get_llm_base_url().rstrip("/")
     if not url.endswith("/v1"):
         url += "/v1"
     url += "/chat/completions"
     headers = {
-        "Authorization": f"Bearer {settings.llm_api_key}",
+        "Authorization": f"Bearer {get_llm_api_key()}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": model or settings.llm_model,
+        "model": model or get_llm_model(),
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -85,19 +85,19 @@ def chat_completion(messages: list, *, model=None, temperature=0.3, max_tokens=1
     用于 function calling 场景:LLM 可能返回 tool_calls 而非 content;
     调用方需自行处理 tool 执行循环并继续对话。
     """
-    if not settings.llm_api_key or not settings.llm_base_url:
+    if not get_llm_api_key() or not get_llm_base_url():
         raise LLMError("LLM 未配置:请在 .env 设置 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL")
 
-    url = settings.llm_base_url.rstrip("/")
+    url = get_llm_base_url().rstrip("/")
     if not url.endswith("/v1"):
         url += "/v1"
     url += "/chat/completions"
     headers = {
-        "Authorization": f"Bearer {settings.llm_api_key}",
+        "Authorization": f"Bearer {get_llm_api_key()}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": model or settings.llm_model,
+        "model": model or get_llm_model(),
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,

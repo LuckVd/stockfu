@@ -282,3 +282,61 @@ def get_mail_config() -> dict:
 def is_mail_ready() -> bool:
     """是否具备发信条件（账号 + 密码 + 收件人）。enabled 由调用方另判。"""
     return bool(get_smtp_user() and get_smtp_pass() and get_mail_to())
+
+
+# ---------- LLM 配置（web 设置面板写入，AI 顾问用；回落 .env）----------
+# 与邮件/代理同机制：app_config 表持久化 + 内存缓存（set 时清空）。
+# ai/client.py 调 get_llm_*() 而非直接读 settings.llm_*，故面板改完无需重启即生效。
+_LLM_CACHE: dict[str, str] = {}
+
+
+def _llm_cfg(key: str, default: str) -> str:
+    if key in _LLM_CACHE:
+        return _LLM_CACHE[key]
+    from stockfu.db import get_app_config, has_app_config
+    v = get_app_config(key, default) if has_app_config(key) else default
+    _LLM_CACHE[key] = v
+    return v
+
+
+def _set_llm_cfg(key: str, value: str) -> None:
+    from stockfu.db import set_app_config
+    set_app_config(key, value)
+    _LLM_CACHE.clear()
+
+
+def get_llm_base_url() -> str:
+    """LLM 网关地址。优先面板设置，回落 .env 的 llm_base_url。"""
+    return _llm_cfg("llm_base_url", settings.llm_base_url)
+
+
+def get_llm_api_key() -> str:
+    """LLM API Key。优先面板设置，回落 .env。"""
+    return _llm_cfg("llm_api_key", settings.llm_api_key)
+
+
+def get_llm_model() -> str:
+    """LLM 模型名。优先面板设置，回落 .env。"""
+    return _llm_cfg("llm_model", settings.llm_model)
+
+
+def set_llm_config(data: dict) -> None:
+    """批量写入 LLM 配置（api_key 空串 = 不改；base_url/model 传 None = 不改）。"""
+    if data.get("llm_base_url") is not None:
+        _set_llm_cfg("llm_base_url", str(data["llm_base_url"]).strip())
+    if data.get("llm_model") is not None:
+        _set_llm_cfg("llm_model", str(data["llm_model"]).strip())
+    if data.get("llm_api_key"):              # 空串 = 不改
+        _set_llm_cfg("llm_api_key", str(data["llm_api_key"]).strip())
+
+
+def get_llm_config() -> dict:
+    """聚合读（api_key 脱敏为 has_api_key 布尔；source 标注值来自面板还是 .env）。"""
+    from stockfu.db import has_app_config
+    db_configured = any(has_app_config(k) for k in ("llm_base_url", "llm_api_key", "llm_model"))
+    return {
+        "llm_base_url": get_llm_base_url(),
+        "llm_model": get_llm_model(),
+        "has_api_key": bool(get_llm_api_key()),
+        "source": "db" if db_configured else "env",
+    }

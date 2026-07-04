@@ -114,6 +114,12 @@ def analyze(code: str) -> dict:
                 reasoning=f"[顾问调用失败] {type(exc).__name__}: {exc}",
             ))
 
+    # 全部顾问 LLM 调用失败(典型:API Key 失效 / 网关不通)→ 直接报错,
+    # 避免返回"4 个 hold"伪装成正常分析结论、误导用户。
+    call_failures = sum(1 for o in opinions if (o.reasoning or "").startswith("[顾问调用失败]"))
+    if opinions and call_failures == len(opinions):
+        return {"error": "LLM 调用失败:全部顾问未能获取 LLM 响应。请到「设置 → AI模型」检查 API Key 与网关,并点「测试连接」。"}
+
     agg = aggregate(opinions)
     try:
         report = narrate(agg)
