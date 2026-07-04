@@ -51,6 +51,23 @@ def quote_series(code: str, field: str, days: int) -> list[float]:
     return [getattr(r, field) for r in rows if getattr(r, field) is not None]
 
 
+def ma_alignment(code: str, lookback: int = 250) -> str | None:
+    """MA5/10/20 排列多头/空头/中性。
+
+    返回 "bullish"(MA5>MA10>MA20) / "bearish"(逆序) / "neutral"(交叉/无序) / None(样本<20 日)。"""
+    closes = quote_series(code, "close", lookback)
+    if len(closes) < 20:
+        return None
+    ma5 = sum(closes[-5:]) / 5
+    ma10 = sum(closes[-10:]) / 10
+    ma20 = sum(closes[-20:]) / 20
+    if ma5 > ma10 > ma20:
+        return "bullish"
+    if ma5 < ma10 < ma20:
+        return "bearish"
+    return "neutral"
+
+
 def factor_percentile(code: str, factor: str, field: str,
                       today_value: float | None) -> tuple[float | None, int, int]:
     """算某因子当日值在历史的分位。返回 (分位, 样本数, 窗口天数)。"""
