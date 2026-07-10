@@ -40,22 +40,43 @@ def percentile(series: Iterable[float], value: float | None) -> tuple[float | No
     return round((below + equal / 2) / n * 100, 2), n
 
 
-def quote_series(code: str, field: str, days: int) -> list[float]:
-    """从 quote_snapshot 读某字段近 days 日的序列。"""
-    start = date.today() - timedelta(days=days + 15)
+def quote_model_for(code: str):
+    """按 code 路由行情表。当前单表时代:所有 code → QuoteSnapshot。
+
+    feat 版拆表后此处分流(ETF→EtfQuoteDaily / 指数→IndexQuoteDaily),调用方零改动。
+    拆表重构恢复前,回测/算子统一走单表 QuoteSnapshot。
+    """
+    return QuoteSnapshot
+
+
+def quote_series(code: str, field: str, days: int, as_of: date | None = None) -> list[float]:
+    """从 quote_snapshot 读某字段近 days 日的序列。
+
+    Args:
+        code: 股票代码
+        field: 字段名 (close/open/high/low)
+        days: 回溯天数
+        as_of: 基准日期 (默认今天，回测时传入历史日期)
+
+    Returns:
+        价格序列列表
+    """
+    ref_date = as_of or date.today()
+    start = ref_date - timedelta(days=days + 15)
     with session_scope() as s:
         rows = s.exec(select(QuoteSnapshot).where(
             QuoteSnapshot.asset_code == code,
             QuoteSnapshot.quote_date >= start,
+            QuoteSnapshot.quote_date <= ref_date,  # 关键修复：限制在基准日期之前
         ).order_by(QuoteSnapshot.quote_date)).all()
     return [getattr(r, field) for r in rows if getattr(r, field) is not None]
 
 
-def ma_alignment(code: str, lookback: int = 250) -> str | None:
+def ma_alignment(code: str, lookback: int = 250, as_of: date | None = None) -> str | None:
     """MA5/10/20 排列多头/空头/中性。
 
     返回 "bullish"(MA5>MA10>MA20) / "bearish"(逆序) / "neutral"(交叉/无序) / None(样本<20 日)。"""
-    closes = quote_series(code, "close", lookback)
+    closes = quote_series(code, "close", lookback, as_of=as_of)
     if len(closes) < 20:
         return None
     ma5 = sum(closes[-5:]) / 5

@@ -1,0 +1,20 @@
+version: 1
+name: 估值+趋势+因子增强
+# 混合:2 LLM(估值/趋势) + 2 数学因子增强 + risk 一票否决。验证传统+LLM 混合编排。
+operators:
+  - {id: valuation, type: llm, weight: 1.2}
+  - {id: trend, type: llm, weight: 1.0}
+  - {id: momentum, type: math, weight: 0.8, params: {window: 20}}
+  - {id: value, type: math, weight: 0.6}
+  - {id: risk, type: llm, weight: 1.0, veto_role: true}
+aggregate:
+  method: risk_veto
+  thresholds: {strong_buy: 14, buy: 5, hold: -5, sell: -14}
+position: {mode: continuous, max_w: 0.15, dead: 3.0}
+debounce:
+  buy_cool_down_days: 5
+  max_target_step: 1.0
+  risk_confirm_days: 2
+  min_trade_weight: 0.0
+  sell_cooldown_days: 0
+  conf_gate: 0.3

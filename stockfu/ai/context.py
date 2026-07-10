@@ -32,13 +32,16 @@ CODE_SECTOR_FALLBACK = {
 }
 
 
-def _latest_indices(session, level: str, scope: str) -> dict:
-    """读某层(level/scope)最新的 fear/greed/heat + components。返回 {fear,greed,heat,_components}。"""
-    rows = session.exec(
-        select(IndexSnapshot)
-        .where(IndexSnapshot.level == level, IndexSnapshot.scope == scope)
-        .order_by(IndexSnapshot.snap_date.desc())
-    ).all()
+def _latest_indices(session, level: str, scope: str, as_of: date | None = None) -> dict:
+    """读某层(level/scope)截至 as_of 最新的 fear/greed/heat + components。
+
+    as_of=None 取全表最新(实盘);回测传 as_of 限定 snap_date<=as_of,防未来函数。
+    """
+    stmt = select(IndexSnapshot).where(
+        IndexSnapshot.level == level, IndexSnapshot.scope == scope)
+    if as_of is not None:
+        stmt = stmt.where(IndexSnapshot.snap_date <= as_of)
+    rows = session.exec(stmt.order_by(IndexSnapshot.snap_date.desc())).all()
     out: dict = {}
     comps: dict = {}
     for r in rows:
@@ -99,24 +102,28 @@ def _backfill_components(session, code: str, pe_pct: float | None, pb_pct: float
         pass
 
 
-def build_context(code: str) -> AdvisorContext:
-    """从库构建顾问数据包。字段缺失即 None(顾问据此说"无信号")。"""
+def build_context(code: str, as_of: date | None = None) -> AdvisorContext:
+    """从库构建顾问数据包。字段缺失即 None(顾问据此说"无信号")。
+
+    as_of: 回测基准日(None=实盘取最新)。所有取数 <=as_of,防未来函数。
+    """
     with session_scope() as s:
         asset = s.get(Asset, code)
         name = asset.name if asset else ""
         sector = (asset.sector or "").strip() or CODE_SECTOR_FALLBACK.get(code, "")
 
-        stock = _latest_indices(s, "stock", code)
-        market = _latest_indices(s, "market", "MARKET")
-        sector_idx = _latest_indices(s, "sector", sector) if sector else {}
+        stock = _latest_indices(s, "stock", code, as_of)
+        market = _latest_indices(s, "market", "MARKET", as_of)
+        sector_idx = _latest_indices(s, "sector", sector, as_of) if sector else {}
 
         holding = s.get(Holding, code)
         has_position = holding is not None and holding.shares > 0
 
-        # today_chg + 最新收盘价
-        q = s.exec(select(QuoteSnapshot).where(
-            QuoteSnapshot.asset_code == code,
-        ).order_by(QuoteSnapshot.quote_date.desc())).first()
+        # today_chg + 收盘价:as_of 当天(回测) / 最新(实盘)
+        qstmt = select(QuoteSnapshot).where(QuoteSnapshot.asset_code == code)
+        if as_of is not None:
+            qstmt = qstmt.where(QuoteSnapshot.quote_date <= as_of)
+        q = s.exec(qstmt.order_by(QuoteSnapshot.quote_date.desc())).first()
         close = q.close if q else None
         today_chg = q.pct_chg if q else None
 
@@ -125,8 +132,9 @@ def build_context(code: str) -> AdvisorContext:
         if has_position and close and holding.avg_cost:
             profit_pct = round((close - holding.avg_cost) / holding.avg_cost * 100, 2)
 
-        # dividend_yield(TTM 股息率 %)
-        one_year_ago = date.today() - timedelta(days=365)
+        # dividend_yield(TTM 股息率 %)—— 基于 as_of 回溯一年
+        ref = as_of or date.today()
+        one_year_ago = ref - timedelta(days=365)
         divs = s.exec(select(DividendEvent).where(
             DividendEvent.asset_code == code,
             DividendEvent.ex_date >= one_year_ago,
@@ -136,8 +144,8 @@ def build_context(code: str) -> AdvisorContext:
 
     sc = stock.get("_components", {})
 
-    # PE/PB 分位缺 → baostock 现算补 + 回填(下次免算)
-    if sc.get("pe_pct") is None or sc.get("pb_pct") is None:
+    # PE/PB 分位缺 → baostock 现算补 + 回填(仅实盘;回测不触网,value 算子走本地 valuation_percentile)
+    if as_of is None and (sc.get("pe_pct") is None or sc.get("pb_pct") is None):
         pe_pct, pb_pct = _fetch_pe_pb(code)
         if pe_pct is not None:
             sc["pe_pct"] = pe_pct
