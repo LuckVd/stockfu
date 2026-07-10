@@ -14,6 +14,7 @@
     python main.py --schedule      # 每日定时调度
     python main.py --export-csv [DIR]  # 导出市场数据为 CSV（默认 data/，可入 git）
     python main.py --import-csv [DIR]  # 从 CSV 合并导入回库（换机同步；upsert 不丢数据）
+    python main.py --backtest STRATEGY [--start --end --cash --codes --save]  # 回测（见 docs/BACKTEST.md）
     python main.py --serve         # FastAPI 服务
 """
 import argparse
@@ -42,7 +43,12 @@ def run_init_db() -> None:
     init_db()
     seed_samples()
     demo = seed_demo_holdings()
-    print(f"✓ 数据库已初始化；种子自选 + 演示持仓已写入: {demo}")
+    # 算子平台种子(operator/strategy 表 + active 指针);幂等,已有库不重复插
+    from stockfu.ai.operators.registry import discover_and_register
+    discover_and_register()
+    from stockfu.ai.operators.seed import seed_operators_and_strategies
+    seed_operators_and_strategies()
+    print(f"✓ 数据库已初始化；种子自选 + 演示持仓 + 算子平台已写入: {demo}")
 
 
 def run_trade(side: str, code: str, shares: str, price: str, d: str | None) -> None:
@@ -140,6 +146,40 @@ def run_config() -> None:
     run_wizard()
 
 
+def run_backtest(strategy: str, start: str | None, end: str | None,
+                 cash: float, codes: str | None, save: bool) -> None:
+    """回测：算子→策略→逐日 T+1 执行，输出绩效指标。
+
+    策略由 app_config('active_strategy_id') 决定;此处 --backtest STRATEGY 设置它。
+    详见 docs/BACKTEST.md。
+    """
+    from datetime import date, timedelta
+
+    from stockfu.db import set_app_config
+    set_app_config("active_strategy_id", strategy)
+    from stockfu.ai.operators.registry import discover_and_register
+    discover_and_register()
+    from stockfu.backtest.scheduler import run as _run
+
+    end_d = end or date.today().isoformat()
+    start_d = start or (date.today() - timedelta(days=365)).isoformat()
+    code_list = [c.strip() for c in codes.split(",") if c.strip()] if codes else None
+
+    scope = f"{len(code_list)}只票" if code_list else "全部A股自选"
+    print(f"回测 {strategy}  {start_d} → {end_d}  初始资金 {cash:,.0f}  ({scope}) …")
+    r = _run(code_list, start_d, end_d, initial_cash=cash)
+    m = r["metrics"]
+    bench = r["benchmark"][-1]["equity"] if r.get("benchmark") else None
+    bench_str = f" | 基准 {bench / cash * 100 - 100:.2f}%" if bench else " | 基准 N/A(ETF无数据)"
+    wr = m.get("win_rate")
+    wr_str = f" | 胜率 {wr}%" if wr is not None else ""
+    print(f"✓ 总收益 {m.get('total_return')}% | 年化 {m.get('annualized')}% | "
+          f"最大回撤 {m.get('max_drawdown')}% | 夏普 {m.get('sharpe')}{wr_str}{bench_str}\n"
+          f"  交易 {m.get('trade_count')}笔 | 期末权益 {m.get('final_equity')}")
+    if r.get("saved_to"):
+        print(f"  结果已保存: {r['saved_to']}")
+
+
 def _parse_tables(spec: str | None) -> list[str] | None:
     if not spec:
         return None
@@ -184,6 +224,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
     p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件")
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
+    p.add_argument("--backtest", metavar="STRATEGY", default=None,
+                   help="回测策略ID（如 bollinger_monthly）；详见 docs/BACKTEST.md")
+    p.add_argument("--start", default=None, help="回测起始日 YYYY-MM-DD（默认1年前）")
+    p.add_argument("--end", default=None, help="回测结束日 YYYY-MM-DD（默认今天）")
+    p.add_argument("--cash", type=float, default=1_000_000.0, help="回测初始资金（默认100万）")
+    p.add_argument("--codes", default=None, help="逗号分隔股票代码（默认全部A股自选）")
+    p.add_argument("--save", action="store_true", help="回测结果落盘到 data/backtest/")
     p.add_argument("--export-csv", nargs="?", const="data", default=None, metavar="DIR",
                    help="导出市场数据为 CSV 到 DIR（默认 data/）；配合 --tables / --all")
     p.add_argument("--import-csv", nargs="?", const="data", default=None, metavar="DIR",
@@ -226,6 +273,8 @@ def main() -> None:
         run_test_mail()
     elif args.config:
         run_config()
+    elif args.backtest:
+        run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save)
     elif args.export_csv is not None:
         run_export_csv(args.export_csv, _parse_tables(args.tables), args.all)
     elif args.import_csv is not None:

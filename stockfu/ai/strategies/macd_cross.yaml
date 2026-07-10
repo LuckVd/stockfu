@@ -1,0 +1,27 @@
+version: 1
+name: MACD金叉死叉
+# 单算子: 日/周 MACD 金叉买入,死叉卖出。全数学,不调 LLM → 回测秒级。
+operators:
+  - {id: macd_cross, type: math, weight: 1.0, params: {fast: 12, slow: 26, signal: 9}}
+aggregate:
+  method: weighted_sum
+  # 映射 macd_cross 评分 → final_signal:
+  #   >= 8  → strong_buy(10%仓位)
+  #   >= 4  → buy(6%)
+  #   >= -4 → hold(维持)
+  #   >= -8 → sell(清仓)
+  #   < -8  → strong_sell(清仓)
+  thresholds: {strong_buy: 8, buy: 4, hold: -4, sell: -8}
+position:
+  mode: discrete           # discrete 模式: 根据 targets 映射仓位
+  max_w: 0.15              # 单只最大15%
+  dead: 3.0
+  # 信��→目标仓位,由���略决定而非框架硬编码
+  targets: {strong_buy: 0.15, buy: 0.10, hold: ~, sell: 0.0, strong_sell: 0.0}
+debounce:
+  buy_cool_down_days: 3    # 买入后至少等3天
+  max_target_step: 1.0     # 不限单步加仓幅度
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  sell_cooldown_days: 0
+  conf_gate: 0.0
