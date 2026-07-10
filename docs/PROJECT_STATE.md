@@ -4,7 +4,7 @@
 > 定位：**StockFu·资产管理终端**，借鉴 `../daily_stock_analysis` 的多数据源 fallback 思想，TUI 为主 + FastAPI。
 
 ## 1. 一句话现状
-一个本地优先的综合资产管理 + 市场情绪终端：持仓管理、股息/网格、**三层(市场/板块/个股) fear/greed/heat 情绪指数**、历史回补。SQLite 存储，textual TUI + FastAPI。
+一个本地优先的综合资产管理 + 市场情绪终端：持仓管理、股息/网格、**三层(市场/板块/个股) fear/greed/heat 情绪指数**、历史回补、**AI 4 顾问**、**天级回测引擎（算子→策略→逐日执行，未来函数已防护）**。SQLite 存储，textual TUI + FastAPI。
 
 ## 2. 架构（5 层）
 ```
@@ -36,6 +36,8 @@ stockfu/
 │   │   ├── trading.py         # 交易录入(移动加权平均)
 │   │   └── backfill.py        # 历史回补(两融总量/连板/个股两融/股息率序列/板块K线/大盘资金流)
 │   ├── scheduler/jobs.py      # run_daily_job(行情+分红+ETF+三层指数) + backfill_kline + ensure_stock_data_and_index(加个股即算) + schedule
+│   ├── ai/                    # 实盘AI 4顾问(docs/AI_ADVISORS.md) + operators算子平台(13:7math+4llm+2聚合) + rebalancers选股层(3)
+│   ├── backtest/              # 回测引擎(见 docs/BACKTEST.md): VirtualAccount+T+1+真实费用+完整metrics, 四层架构(算子→策略→rebalancer→执行)
 │   ├── api/{server,routes}.py # FastAPI
 │   └── tui/{app,trade_screen}.py  # textual 看板 + 交易录入模态屏
 └── data/stockfu.db               # SQLite(全部历史,单文件可搬迁)
@@ -48,6 +50,8 @@ stockfu/
 - **板块资金流**：板块K线+成交额(同花顺4年,sector_snapshot)/板块当日主力净流入(sector_flow_snapshot每日攒)/大盘资金流10factor(factor_snapshot)；compute_sector接入板块成交额分位(heat)+资金流(greed/fear)
 - **TUI**：持仓看板(含个股恐慌/贪婪/热度三列) + 顶部市场fear/greed/heat(分档着色) + 按b/s交易录入；加个股自动后台补历史K线+算该股三层情绪指数
 - **API**：/portfolio /quote /dividend /grid /indices/{market,sector,stock,history} /fundflow /sentiment
+- **AI 顾问**：4 常驻顾问(趋势/逆向/风险/估值)+规则汇总+LLM润色，详见 `docs/AI_ADVISORS.md`
+- **回测引擎(四层架构)**：算子(7math+4llm)→策略(6)→rebalancer选股(top_n/cap_rank/pass_through)→T+1执行。算子结果全局缓存(operator_result,跨回测复用)+真实费用(佣/印/过)+完整metrics(夏普/胜率/超额)。CLI `--backtest` 走 scheduler.run；详见 `docs/BACKTEST.md`
 - **代理自动化**：setup_network(港美股走7890代理,国内源no_proxy直连)
 
 ## 4. 数据现状（关键）
@@ -75,6 +79,7 @@ python main.py --backfill 1825        # K线补5年
 python main.py --backfill-factors     # 两融总量+个股两融10天+股息率序列
 python main.py --backfill-limit 365   # 连板(限流分批,断点续传,多次跑)
 python main.py --fetch                # 每日抓取+算三层指数落库
+python main.py --backtest bollinger_monthly --start 2025-06-01 --end 2026-01-01 --codes 600519,000858 --save   # 回测(见 docs/BACKTEST.md)
 python main.py --schedule             # APScheduler每日定时(工作日15:30抓行情/16:00发邮件)
 python main.py                        # TUI看板
 python main.py --serve                # API(127.0.0.1:8787)
@@ -87,6 +92,7 @@ nohup python main.py --schedule >> data/schedule.log 2>&1 &
 - **情绪指数公式**：多因子→各历史分位→等权平均(CNN式)。fear=下行因子,greed=上行,heat=活跃
 - **历史窗口**：估值类(PE/PB/股息率)10年,情绪/量价类5年。当前K线已5年
 - **三层粒度**：index_snapshot(level=market/sector/stock, scope=MARKET/板块名/code)
+- **回测防未来函数**：取数一律带 `<= as_of` 上界(quote_series/IndexSnapshot)，信号用 T-1 数据、T+1 开盘执行；修复前 bollinger 虚高 +39.62%，堵漏后真实 -4.14%。详见 docs/BACKTEST.md
 - **代理**：mihomo 7890(港股/美股yfinance必须);国内源(akshare/efinance)no_proxy直连
 - **代理切节点**：9090 API无密码,主组🚀节点选择,新加坡最稳(见memory mihomo-proxy-switching)
 
@@ -104,11 +110,11 @@ nohup python main.py --schedule >> data/schedule.log 2>&1 &
 - pip：系统python PEP668,用`--break-system-packages`
 
 ## 8. 待办（P2 / 未来）
-- AI决策报告(接LLM key,config已预留LLM_*)、财经新闻、消息推送、React前端
+- 回测：classic_4advisors/hybrid 需 LLM key 才能回测(纯math策略已可用)；补 510300 ETF 历史激活基准；行情拆表(ETF/指数独立成表)尚未落地,当前 `quote_model_for` 单表路由
 - PE/PB历史分位：接tushare token(~200元)补全
 - 连板长期：多次--backfill-limit断点续传慢慢补
 - 板块轮动信号：连续N日净流入排名/板块间资金切换(历史地基已就位)
-- TUI多屏(个股/板块情绪详情屏)
+- TUI多屏(个股/板块情绪详情屏)；美股 quote_snapshot 抓取修复(AAPL 等为空)
 
 ## 9. 数据复用
 全部在 `data/stockfu.db`(SQLite单文件)。搬迁=拷这一个文件。已备份 `data/stockfu.db.bak.*`。日常--fetch增量,历史只增不减。

@@ -37,7 +37,8 @@ stockfu/
 │   ├── api/             # FastAPI 路由
 │   ├── tui/             # textual 终端看板
 │   ├── scheduler/       # 每日抓取/落库/推送
-│   └── ai/              # AI 决策报告
+│   ├── ai/              # AI 4顾问 + operators算子平台(13) + rebalancers选股层(3)
+│   └── backtest/        # 回测引擎(四层架构:算子→策略→选股→T+1执行,见 docs/BACKTEST.md)
 └── data/stockfu.db         # SQLite（运行时生成）
 ```
 
@@ -52,4 +53,5 @@ python main.py --serve       # 或启动 API（默认 127.0.0.1:8787）
 
 ## 状态
 
-🚧 MVP 开发中。优先级：数据层 → 存储 → 持仓/股息业务 → TUI 看板 → API，再做指数/资金流/AI/推送。
+🚧 MVP 开发中。已完成：数据层(多源 fallback) → 存储 → 持仓/股息业务 → TUI 看板 → API → 三层情绪指数 → 历史回补 → AI 4 顾问 → 四层架构回测引擎(算子缓存+选股+真实费用)。
+进行中：回测算子/策略打磨、前端整合。详见 `docs/PROJECT_STATE.md`。
