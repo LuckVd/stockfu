@@ -5,6 +5,8 @@
 4 个风格正交的常驻投资顾问（趋势/逆向/风险/估值）+ 规则汇总 + LLM 润色，
 基于 stockfu 已有的情绪指数/估值分位数据，给单只股票一句话决策解读。
 
+> 4 顾问同时作为 **LLM 算子**注册到 `stockfu/ai/operators/llm/advisors/`,供回测引擎按策略调用(`hybrid`/`classic_4advisors` 策略,需 LLM key);实盘分析仍走 `ai.analyze.analyze`。详见 `docs/BACKTEST.md`。
+
 ## 为什么是 4 顾问，不是别的
 
 调研了 daily_stock_analysis（15 策略路由）、TradingAgents（多空辩论）、PRISM-INSIGHT（13 agent）、FinRobot 后，选定「4 常驻顾问」路线：
