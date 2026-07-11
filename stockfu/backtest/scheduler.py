@@ -16,7 +16,7 @@ from stockfu.backtest import engine
 
 
 def _data_dir() -> str:
-    return os.path.join(os.path.dirname(__file__), "..", "..", "data", "backtest")
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "backtest"))
 
 
 def new_run_id() -> str:
