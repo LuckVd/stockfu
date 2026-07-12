@@ -8,6 +8,7 @@ run(codes, start, end): 跑完整回测。analyze 结果按 (code, as_of) 缓存
 from __future__ import annotations
 
 import dataclasses
+import gzip
 import json
 import os
 from datetime import date, datetime
@@ -17,6 +18,43 @@ from stockfu.backtest import engine
 
 def _data_dir() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "backtest"))
+
+
+def _open_result(path: str):
+    """按扩展名选择读取方式:.json.gz 走 gzip,.json 明文。向后兼容旧产物。"""
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8")
+    return open(path, encoding="utf-8")
+
+
+def _load_result(path: str) -> dict:
+    with _open_result(path) as f:
+        return json.load(f)
+
+
+def _write_meta(run_id: str, result: dict, data_path: str) -> str:
+    """写轻量摘要 {run_id}.meta.json(几 KB)。list_runs 只读它,避免对大产物全量解析。
+    含 codes 全集(788 个字符串仅几 KB),保证 list 返回结构与回退解析路径一致。"""
+    meta = {
+        "schema_version": result.get("schema_version", 1),
+        "run_id": run_id,
+        "strategy_id": result.get("strategy_id"),
+        "strategy_name": result.get("strategy_name"),
+        "start": result.get("start"),
+        "end": result.get("end"),
+        "days": result.get("days"),
+        "codes": result.get("codes", []),
+        "operators": result.get("operators"),
+        "metrics": result.get("metrics"),
+        "data_file": os.path.basename(data_path),
+        "data_size": os.path.getsize(data_path),
+    }
+    meta_path = os.path.join(_data_dir(), f"{run_id}.meta.json")
+    tmp = f"{meta_path}.tmp{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, default=str)
+    os.replace(tmp, meta_path)  # 原子写
+    return meta_path
 
 
 def new_run_id() -> str:
@@ -73,40 +111,98 @@ def run(codes: list[str], start, end, initial_cash: float = engine.INITIAL_CASH,
     result = engine.run_backtest(codes, start, end, initial_cash,
                                  analyze_fn=analyze_fn, max_workers=max_workers, debounce=db)
     result["run_id"] = run_id
+    # 落盘策略身份:engine 只拿到 analyze_fn 闭包、看不到策略,故在此补齐(cs 现成)。
+    # 同时记算子 id 列表,产物可追溯(策略名 + 算子指纹)。
+    result["strategy_id"] = cs.strategy_id
+    result["strategy_name"] = cs.name
+    result["operators"] = [op.get("id") for op in cs.operators if op.get("id")]
     os.makedirs(_data_dir(), exist_ok=True)
-    out = os.path.join(_data_dir(), f"{run_id}.json")
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, default=str)
+    out = os.path.join(_data_dir(), f"{run_id}.json.gz")
+    # 落盘副本:标 schema 版本。trades 完整保留(含 pending 调仓意图——信号复盘需要);
+    # 体积由 gzip + 摘要旁路(_write_meta)吸收,不再取舍。
+    persist = dict(result)
+    persist["schema_version"] = 1
+    # 原子写:先写 .tmp 再 os.replace,避免中断/崩溃留下半截损坏文件
+    # (list_runs 会静默吞掉损坏 JSON,表现为"回测凭空消失")。gzip 后体积约 1/6~1/10。
+    tmp = f"{out}.tmp{os.getpid()}"
+    with gzip.open(tmp, "wt", encoding="utf-8") as f:
+        json.dump(persist, f, ensure_ascii=False, default=str)
+    os.replace(tmp, out)
+    _write_meta(run_id, persist, out)  # 轻量摘要:list_runs 只读 meta,不碰大文件
     result["saved_to"] = out
     return result
 
 
 def list_runs() -> list[dict]:
-    """列出已保存的回测 run 摘要(最新在前)。"""
+    """列出已保存的回测 run 摘要(最新在前)。
+
+    优先读轻量 .meta.json(几 KB),避免对每个大产物(数 MB gz)全量解析——没旁路时
+    列 N 个回测是 O(N×filesize),几百 MB 解析会卡死前端。无 meta 的旧产物回退
+    _load_result 全量解析(向后兼容)。按 mtime 倒序(最新在前)。
+    """
     d = _data_dir()
     if not os.path.isdir(d):
         return []
-    out = []
-    for fn in sorted(os.listdir(d), reverse=True):
-        if not fn.endswith(".json"):
+    entries: list[tuple[float, dict]] = []  # (mtime, summary)
+    seen: set[str] = set()
+
+    # 1) 优先读 meta(每文件几 KB,不碰大产物)
+    for fn in os.listdir(d):
+        if not fn.endswith(".meta.json"):
             continue
+        rid = fn[:-len(".meta.json")]
+        mp = os.path.join(d, fn)
         try:
-            with open(os.path.join(d, fn), encoding="utf-8") as f:
-                r = json.load(f)
-            out.append({"run_id": r.get("run_id", fn[:-5]), "start": r.get("start"),
-                        "end": r.get("end"), "codes": r.get("codes"),
-                        "metrics": r.get("metrics")})
+            m = _load_result(mp)
         except Exception:  # noqa: BLE001
-            pass
-    return out
+            continue
+        seen.add(rid)
+        entries.append((os.path.getmtime(mp), {
+            "run_id": m.get("run_id", rid), "start": m.get("start"),
+            "end": m.get("end"), "codes": m.get("codes"),
+            "strategy_id": m.get("strategy_id"),
+            "strategy_name": m.get("strategy_name"),
+            "metrics": m.get("metrics"),
+            "data_file": m.get("data_file"), "data_size": m.get("data_size"),
+        }))
+
+    # 2) 无 meta 的旧产物:回退全量解析(仅扫 .json / .json.gz,跳过 .meta.json)
+    for fn in os.listdir(d):
+        if fn.endswith(".meta.json"):
+            continue
+        if fn.endswith(".json.gz"):
+            rid = fn[:-len(".json.gz")]
+        elif fn.endswith(".json"):
+            rid = fn[:-len(".json")]
+        else:
+            continue
+        if rid in seen:
+            continue
+        dp = os.path.join(d, fn)
+        try:
+            r = _load_result(dp)
+        except Exception:  # noqa: BLE001
+            continue
+        entries.append((os.path.getmtime(dp), {
+            "run_id": r.get("run_id", rid), "start": r.get("start"),
+            "end": r.get("end"), "codes": r.get("codes"),
+            "strategy_id": r.get("strategy_id"),
+            "strategy_name": r.get("strategy_name"),
+            "metrics": r.get("metrics"),
+            "data_file": fn, "data_size": os.path.getsize(dp),
+        }))
+
+    entries.sort(key=lambda x: -x[0])
+    return [e[1] for e in entries]
 
 
 def load_run(run_id: str) -> dict | None:
-    p = os.path.join(_data_dir(), f"{run_id}.json")
-    if not os.path.exists(p):
-        return None
-    with open(p, encoding="utf-8") as f:
-        return json.load(f)
+    d = _data_dir()
+    for ext in (".json.gz", ".json"):  # 优先读 gzip 新产物,回退明文旧产物
+        p = os.path.join(d, f"{run_id}{ext}")
+        if os.path.exists(p):
+            return _load_result(p)
+    return None
 
 
 def progress(run_id: str, codes: list[str], start, end) -> dict:
