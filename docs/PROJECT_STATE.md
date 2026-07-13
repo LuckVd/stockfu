@@ -4,7 +4,7 @@
 > 定位：**StockFu·资产管理终端**，借鉴 `../daily_stock_analysis` 的多数据源 fallback 思想，TUI 为主 + FastAPI。
 
 ## 1. 一句话现状
-一个本地优先的综合资产管理 + 市场情绪终端：持仓管理、股息/网格、**三层(市场/板块/个股) fear/greed/heat 情绪指数**、历史回补、**AI 4 顾问**、**天级回测引擎（算子→策略→逐日执行，未来函数已防护）**。SQLite 存储，textual TUI + FastAPI。
+一个本地优先的综合资产管理 + 市场情绪终端：持仓管理、股息/网格、**三层(市场/板块/个股) fear/greed/heat 情绪指数**、历史回补、**AI 4 顾问**、**天级回测引擎（算子→策略→逐日执行，未来函数已防护）**、**个股 PE/PB/PS 历史分位（baostock 全字段）**。SQLite 存储，textual TUI + FastAPI。
 
 ## 2. 架构（5 层）
 ```
@@ -13,18 +13,22 @@ stockfu/
 ├── stockfu/
 │   ├── config.py              # pydantic-settings + setup_network(代理自动化)
 │   ├── db.py                  # SQLModel engine + _migrate(开发期迁移) + seed
-│   ├── models.py              # Asset/Transaction/Holding/DividendEvent/QuoteSnapshot
-│   │                          #   /IndexSnapshot(三层scope)/FactorSnapshot/FundFlowSnapshot
-│   │                          #   /SectorSnapshot(板块K线)/SectorFlowSnapshot(板块资金流)/NewsItem
-│   ├── data/                  # 数据层(借鉴 daily_stock_analysis)
+│   ├── models.py              # Asset/Transaction/Holding/DividendEvent/StockBasic
+│   │                          #   /QuoteSnapshot(个股,含pe/pb/ps_ttm/pcf) /EtfQuoteDaily /IndexQuoteDaily
+│   │                          #   /IndexSnapshot(三层scope) /MarketFactorDaily /SectorSnapshot(板块K线)
+│   │                          #   /SectorFlowSnapshot(板块资金流) /StockExtDaily(个股资金流/两融) /NewsItem
+│   ├── data/                  # 数据层(7源 fallback, 借鉴 daily_stock_analysis)
 │   │   ├── base.py            # 市场识别/代码标准化/熔断器/TTL缓存/统一dataclass
 │   │   ├── dividend_parser.py # 分红解析("派息"列/10, TTM)
 │   │   ├── efinance_source.py # A股行情主力+日K(需传beg拉长历史)
+│   │   ├── baostock_source.py # A股日K全字段(peTTM/pbMRQ/换手率)+PE/PB分位(免费无token)
 │   │   ├── akshare_source.py  # A股分红+资金流+板块(同花顺K线/即时资金流/大盘资金流)+实时兜底
+│   │   ├── tencent/sina/pytdx_source.py # 行情/K线 backup源(多源互为fallback)
 │   │   ├── yfinance_source.py # 港美股行情+dividends+K线(period按days)
-│   │   └── manager.py         # DataProviderManager 多源fallback
+│   │   └── manager.py         # DataProviderManager 7源fallback
 │   ├── services/
 │   │   ├── factors.py         # 历史分位(估值类10年/情绪类5年窗口)
+│   │   ├── valuation.py       # 个股PE/PB历史分位(读QuoteSnapshot<=asof,无未来函数)
 │   │   ├── market_data.py     # 宏观因子(涨跌家数/连板/两融/北向/ERP/股东人数)
 │   │   ├── composite.py       # 三层 fear/greed/heat 合成(多因子分位等权)+SECTOR_MAP/SECTOR_THS_NAME+ext_pcts
 │   │   ├── indices.py         # 旧单因子fear/heat(保留fallback)
@@ -52,23 +56,27 @@ stockfu/
 - **API**：/portfolio /quote /dividend /grid /indices/{market,sector,stock,history} /fundflow /sentiment
 - **AI 顾问**：4 常驻顾问(趋势/逆向/风险/估值)+规则汇总+LLM润色，详见 `docs/AI_ADVISORS.md`
 - **回测引擎(四层架构)**：算子(7math+4llm)→策略(6)→rebalancer选股(top_n/cap_rank/pass_through)→T+1执行。算子结果全局缓存(operator_result,跨回测复用)+真实费用(佣/印/过)+完整metrics(夏普/胜率/超额)。CLI `--backtest` 走 scheduler.run；详见 `docs/BACKTEST.md`
+- **行情拆表**：QuoteSnapshot(个股,含pe/pb/ps_ttm/pcf/turnover) / EtfQuoteDaily(15只ETF,2021起) / IndexQuoteDaily(3指数,1990起) 三表分离,`quote_model_for` 按类型路由
+- **个股估值分位**：baostock 全字段(peTTM/pbMRQ)backfill 落 QuoteSnapshot;`valuation_percentile(code,as_of,years=5)` 本地算 PE/PB 历史分位(无网络/无未来函数)。PE 覆盖792只/PB 800只(2021起约5年)
 - **代理自动化**：setup_network(港美股走7890代理,国内源no_proxy直连)
 
 ## 4. 数据现状（关键）
 | 因子 | 历史 | 说明 |
 |------|------|------|
-| K线(波动/涨跌/成交/RS) | 5年(~1580条) | efinance A股传beg; yfinance period按days |
+| 个股日K | 2020起(94.5万行/801只) | QuoteSnapshot;efinance主力,baostock/tencent/sina/pytdx backup;含pe/pb/ps_ttm/pcf |
+| ETF日K | 2021起(1.6万行/15只) | EtfQuoteDaily(含510300);已拆表 |
+| 指数日K | 1990起(1.4万行/3个) | IndexQuoteDaily;已拆表 |
+| PE/PB/PS历史 | ✅有,2021起5年(PE792只/PB800只) | baostock全字段peTTM/pbMRQ落QuoteSnapshot;valuation.py算分位(原记❌无,已解决,无需tushare) |
 | 两融总量 | 11年(2000条) | stock_margin_sse 一次拉全 |
 | 股息率序列 | 5年(6083条) | 本地算=TTM分红/价格,受分红事件历史限制 |
 | 个股两融 | 近10天 | stock_margin_detail_sse(date)按日筛code |
 | 连板/涨停 | 近3周(限流) | stock_zt_pool_em(date),东财批量限流,断点续传 |
-| 分红事件 | 几年 | stock_history_dividend_detail "派息"列=每10股,/10 |
-| PE/PB历史 | ❌无 | legu付费/csindex失效,需tushare(~200元) |
+| 分红事件 | 2010起(344条/43只) | stock_history_dividend_detail "派息"列=每10股,/10 |
 | 北向 | ❌无 | 2024起停服 |
 | 涨跌家数 | ❌无 | legu不通/东财全量反爬 |
-| 板块指数K线+成交额 | 4年(988条) | 同花顺index_ths，绕东财限流；5行业板块 |
-| 板块主力净流入 | 当日起攒 | 同花顺fund_flow_industry即时；东财push2his历史源被限 |
-| 大盘资金流 | ~6个月 | stock_market_fund_flow，10个factor；东财限流时空 |
+| 板块指数K线+成交额 | 4年(8132条) | 同花顺index_ths，绕东财限流；5行业板块 |
+| 板块主力净流入 | 当日起攒(30条) | 同花顺fund_flow_industry即时；东财push2his历史源被限 |
+| 宏观因子(MarketFactorDaily) | 2015起(2439条) | 涨跌家数/连板/两融/ERP等10+factor；东财限流时空 |
 
 ## 5. 运行命令
 ```bash
@@ -90,14 +98,15 @@ nohup python main.py --schedule >> data/schedule.log 2>&1 &
 
 ## 6. 关键设计决策
 - **情绪指数公式**：多因子→各历史分位→等权平均(CNN式)。fear=下行因子,greed=上行,heat=活跃
-- **历史窗口**：估值类(PE/PB/股息率)10年,情绪/量价类5年。当前K线已5年
+- **历史窗口**：估值类(PE/PB/股息率)10年,情绪/量价类5年。当前K线已5年;PE/PB 仅5年(2021起),待 backfill 延至10年
 - **三层粒度**：index_snapshot(level=market/sector/stock, scope=MARKET/板块名/code)
 - **回测防未来函数**：取数一律带 `<= as_of` 上界(quote_series/IndexSnapshot)，信号用 T-1 数据、T+1 开盘执行；修复前 bollinger 虚高 +39.62%，堵漏后真实 -4.14%。详见 docs/BACKTEST.md
+- **估值数据源**：PE/PB/PS_TTM/PCF 由 baostock 全字段日K落 QuoteSnapshot(2021起约5年,免费无token);分位由 valuation.py 本地算,无需 tushare
 - **代理**：mihomo 7890(港股/美股yfinance必须);国内源(akshare/efinance)no_proxy直连
 - **代理切节点**：9090 API无密码,主组🚀节点选择,新加坡最稳(见memory mihomo-proxy-switching)
 
 ## 7. 已知数据坑（调试要点）
-- akshare 1.18：`stock_margin_account_sse`不存在→用`stock_margin_sse`;`stock_a_indicator_lg`不存在(PE历史无免费源)
+- akshare 1.18：`stock_margin_account_sse`不存在→用`stock_margin_sse`;`stock_a_indicator_lg`不存在→PE/PB 改走 baostock(peTTM/pbMRQ,免费,已落 QuoteSnapshot)
 - `stock_margin_detail_sse(date)`只接受date参数,返回全市场需筛code;今日数据常缺,往前找交易日
 - 东财反爬：`stock_zh_a_spot_em`(全量行情)/`stock_sector_fund_flow_rank`(板块)时不稳;`stock_zt_pool_em`批量限流→连板只能分批补
 - efinance：`get_realtime_quotes`已坏(报"行情参数不正确");`get_quote_history`**必须传beg**才拉长历史(默认只近期)
@@ -110,8 +119,8 @@ nohup python main.py --schedule >> data/schedule.log 2>&1 &
 - pip：系统python PEP668,用`--break-system-packages`
 
 ## 8. 待办（P2 / 未来）
-- 回测：classic_4advisors/hybrid 需 LLM key 才能回测(纯math策略已可用)；补 510300 ETF 历史激活基准；行情拆表(ETF/指数独立成表)尚未落地,当前 `quote_model_for` 单表路由
-- PE/PB历史分位：接tushare token(~200元)补全
+- 回测：classic_4advisors/hybrid 需 LLM key 才能回测(纯math策略已可用)；**激活回测基准**(ETF/指数行情已拆表落库,但引擎基准取数路径未接→基准常N/A)
+- 估值窗口：PE/PB 仅5年(2021起),backfill 延至10年匹配估值类分位窗口(baostock,无需tushare)
 - 连板长期：多次--backfill-limit断点续传慢慢补
 - 板块轮动信号：连续N日净流入排名/板块间资金切换(历史地基已就位)
 - TUI多屏(个股/板块情绪详情屏)；美股 quote_snapshot 抓取修复(AAPL 等为空)
