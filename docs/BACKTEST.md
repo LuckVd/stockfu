@@ -153,7 +153,8 @@ print(r["equity_curve"][-1])
 | `max_drawdown` | 权益曲线峰值到谷值 |
 | `sharpe` | 日收益均值 − 3%/252,÷ 日收益 std × √252 |
 | `win_rate` | 盈利交易占比 |
-| `benchmark_return` / `excess` | 沪深300 ETF(510300)对比;ETF 无历史数据时为 N/A |
+| `benchmark_return` / `excess` | 上证综指(sh000001,1990起);按交集区间算;无数据→None+reason |
+| `benchmark_window` | 基准实际可用区间 `{start,end}` |
 
 ## 9. 防未来函数(已验证)
 
@@ -177,4 +178,7 @@ look-ahead 最强检验——同一起点跑两次、终点不同,看"较早终�
 
 ## 10. 待办
 
-- **基准 N/A 的真因**(= 路线图 G02):行情拆表**已完成**(G01 done)——个股 `quote_snapshot` / ETF `etf_quote_daily` / 指数 `index_quote_daily` 三表分离,510300 ETF 已有 1237 条(2021 起)落在 `etf_quote_daily`。但回测引擎的 `_benchmark_curve` / `_get_quote_dict` 基准取数仍只读个股表 `quote_snapshot`,没接 `etf_quote_daily` → 基准常 N/A。激活 = 把基准取数切到 `etf_quote_daily`(超额收益指标随之可用)。数据已就位,纯接线工作。
+- G02 已激活：基准从 510300 ETF 改为上证综指 `sh000001`（1990 起 8673 条，覆盖所有回测区间）。
+  `_benchmark_curve` 直读 `IndexQuoteDaily` 表，不再经由 `quote_model_for`。
+  `--backfill-benchmark` 一次性回补全历史；`run_scheduled_fetch` 每日自动追加（akshare 优先、baostock 兜底，多源 fallback）。
+  基准窗口在 `metrics.benchmark_window` 可见；超额收益恒定产出。

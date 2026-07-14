@@ -7,8 +7,7 @@
 
 | 目标ID | 标题 | stage | owner | branch | worktree | merge_status | 备注 |
 |---|---|---|---|---|---|---|---|
-
-_暂无活跃目标。编排者用 `/ai-goal` + `/ai-dispatch` 发布;执行者用 `/ai-claim [id]` 领取(不带 id 则列出可领取目标)。_
+| G02 | 回测基准激活(任意区间+更新机制) | ready_to_claim | — | — | — | not_applicable | 基准=上证综指 sh000001;最小激活(不恢复全局拆表);缺口截断到交集。设计见 goals/G02.md,已确认待领取 |
 
 ## stage 图例
 

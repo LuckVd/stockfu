@@ -1,0 +1,38 @@
+goal_id: G02
+title: 回测基准激活(任意区间 + 更新机制)
+stage: reviewing          # 编排者评审完成(2026-07-14),F1-F3 已修+实证,待用户确认合并 → sync
+selected_option: "上证综指 sh000001(最小激活:仅接基准,不恢复全局拆表);缺口截断到交集区间"
+design_confirmed: true    # 用户已明确确认
+
+owner: "opencode"
+role: "implementer"
+worktree: null            # 执行者直接在 main 实现(偏离并行约定 F5),无 goal/g02 分支
+branch: null
+merge_status: review_passed  # 评审通过:F1 baostock 兜底(编排者修)+ F2/F3 清理;实证全部通过
+claimed_at: "2026-07-14"
+ready_for_review_at: "2026-07-14"
+
+blocked_by: []
+open_questions:
+  - "OQ1 基准可配置性:默认常量 sh000001,不加 CLI --benchmark(默认已定)"
+  - "OQ2 扩展指标:默认不做 alpha/beta/IR,仅 benchmark_return+excess+窗口(默认已定)"
+  - "OQ3 情绪层基准 indices.py/composite.py 不一并改(默认已定,超出范围)"
+  - "OQ4 孤儿表 etf_quote_daily / quote_model_for 保留现状,仅文档标注(默认已定)"
+implementation_steps:
+  - "T1 akshare_source.get_index_daily + models.IndexQuoteDaily"
+  - "T2 jobs.update_index_benchmark + 接 run_scheduled_fetch + --backfill-benchmark 回补"
+  - "T3 engine._benchmark_curve 切 IndexQuoteDaily + 交集截断 + _metrics 恒定产出 + main.py 输出"
+  - "T4 文档同步(BACKTEST.md §8/§10 + PROJECT_STATE) + prefix 防未来函数回归"
+test_scope:
+  - 单元·交集截断(backtest start < 基准首日)
+  - 单元·防未来(<=as_of + 前向填充 + 首日归一)
+  - 单元·update_index_benchmark 幂等 + gap 填充
+  - 集成·macd_cross 真实回测断言 benchmark_return/excess 非 None
+  - 防未来回归·A/B 前缀逐字节一致
+  - 边界·起点早于 1990 + 空表 → None+reason
+goal_candidates: []
+
+last_check_at: "2026-07-14"   # /ai-check 评审 + F1-F3 修复 + 实证(回测/前缀/更新机制)全通过
+last_security_scan_at: null
+last_deadcode_scan_at: null
+last_synced_at: null

@@ -79,7 +79,7 @@
 | 目标ID | 子目标ID | 名称 | 描述 | 状态 | 前置依赖 | 风险/阻塞 | 验收结果 | 测试状态 | 实现时间 | Commit ID | 备注 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | G01 | — | 行情拆表 | ETF/指数独立成表，替换 `quote_model_for` 单表路由 | done | — | — | accepted | passed | — | — | 代码已完成(QuoteSnapshot 个股 / EtfQuoteDaily / IndexQuoteDaily 三表)，本次核实修正文档 |
-| G02 | — | 回测基准激活 | ETF/指数行情数据已就位，接回测引擎基准取数路径，激活超额收益基准(当前 N/A) | planned | — | 引擎基准读取未接 etf/index_quote_daily | pending | not_started | — | — | 候选；510300(2021起)与指数历史已落库 |
+| G02 | — | 回测基准激活 | ETF/指数行情数据已就位，接回测引擎基准取数路径，激活超额收益基准(当前 N/A) | done | — | 已解决:基准=sh000001,直读IndexQuoteDaily,run_scheduled_fetch每日更新 | accepted | passed | 2026-07-14 | — | 回测基准已激活;基准=上证综指(1990起),_benchmark_curve 直读 index_quote_daily |
 | G03 | — | LLM 策略回测 | classic_4advisors / hybrid 策略可回测（纯 math 策略已可用） | planned | — | 需 LLM key | pending | not_started | — | — | 候选 |
 | G04 | — | 估值窗口延至 10 年 | baostock 已提供 PE/PB 5 年历史(2021 起)，继续 backfill 延长至 10 年，匹配估值类分位窗口 | planned | — | baostock 个股历史深度受限 | pending | not_started | — | — | 候选；PE/PB 分位已可用(valuation.py) |
 | G05 | — | 连板长期回补 | 多次 `--backfill-limit` 断点续传补连板/涨停长期序列 | planned | — | 东财 `stock_zt_pool_em` 限流 | pending | not_started | — | — | 候选；机械补数 |
@@ -91,6 +91,6 @@
 
 - **数据源依赖免费源**：akshare/efinance/yfinance 各有限流/反爬，稳定性受限（见 `docs/PROJECT_STATE.md` 第 7 节"已知数据坑"）。
 - **估值窗口偏短**：PE/PB 历史仅 5 年(2021 起，baostock 已落库、`valuation.py` 分位已实现)，估值类分位理想需 10 年窗口（G04）。
-- **回测基准未激活**：ETF/指数行情数据已就位，但回测引擎基准取数路径未接 → 基准常 N/A，超额收益指标受限（G02）。
+- **G02 已完成**：回测基准已激活——基准 = 上证综指 sh000001（IndexQuoteDaily 1990 起），`_benchmark_curve` 直读不走 `quote_model_for`，`run_scheduled_fetch` 每日更新。超额收益指标恒定产出。
 - **北向/涨跌家数停服**：2024 起北向停服；涨跌家数东财全量反爬，宏观因子部分缺失。
 - 步骤级实现问题放在 `goals/<id>.md` 的 `Blockers`，不在此记录。
