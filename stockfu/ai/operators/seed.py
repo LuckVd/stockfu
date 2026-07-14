@@ -35,8 +35,9 @@ _STRATEGIES = [
     "pure_factor",
     "hybrid",
     "macd_cross",
-    "bollinger_monthly",
+    "momentum_breakout",
     "dual_bollinger",
+    "bollinger_reversion",
 ]
 
 _STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"

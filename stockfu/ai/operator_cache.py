@@ -48,6 +48,7 @@ def _detail_json(r: OpResult) -> str:
         "reasoning": r.reasoning,
         "evidence": r.evidence or {},
         "tools_used": r.tools_used or [],
+        "raw_score": r.raw_score,   # 未 clamp 的连续强度(排序用);旧记录无此键→None→退化 score
     }, ensure_ascii=False, default=str)
 
 
@@ -79,6 +80,7 @@ def get_operator_result(code: str, as_of, operator_id: str,
         target_weight=row.target_weight,
         value=row.value,
         veto=row.veto,
+        raw_score=d.get("raw_score"),   # 旧记录无此键→None→聚合时退化为 score
     )
 
 

@@ -17,7 +17,7 @@
 """
 from __future__ import annotations
 
-from stockfu.ai.rebalancers.base import Rebalancer
+from stockfu.ai.rebalancers.base import Rebalancer, _cross_section_percentiles
 from stockfu.ai.rebalancers.registry import register
 
 
@@ -48,8 +48,9 @@ class TopNPicker(Rebalancer):
         if not all_codes:
             return {}
 
-        # ── ① 全市场排序(score×confidence 降序, risk_vetoed 沉底) ──
-        ranked = self._rank_stocks(all_codes, meta)
+        # ── ① 全市场排序:横截面百分位(raw 连续强度)× confidence 降序 ──
+        pct = _cross_section_percentiles(meta, all_codes)
+        ranked = self._rank_stocks(all_codes, meta, pct)
         target_set = set(ranked[:top_n])                 # 想持有的
         top10pct = set(ranked[:max(1, len(ranked) // 10)])  # 前 10% 保护线
 
@@ -170,15 +171,16 @@ class TopNPicker(Rebalancer):
     # ================================================================
 
     @staticmethod
-    def _rank_stocks(codes: set[str],
-                     meta: dict) -> list[str]:
-        """按 score×confidence 降序排列, risk_vetoed 沉底。"""
+    def _rank_stocks(codes: set[str], meta: dict,
+                     pct: dict[str, float]) -> list[str]:
+        """按 横截面百分位 × confidence 降序排列, risk_vetoed 沉底。
+
+        百分位用未 clamp 的 raw 算(头部连续可分,治撞顶同分);code 作最终 tiebreaker 保可复现。
+        """
         def _priority(code: str) -> float:
             m = (meta or {}).get(code, {})
             if m.get("risk_vetoed"):
                 return -99999.0
-            s = m.get("score") or 0.0
-            c = m.get("confidence") or 0.0
-            return s * c
+            return pct.get(code, 0.0) * (m.get("confidence") or 0.0)
 
-        return sorted(codes, key=_priority, reverse=True)
+        return sorted(codes, key=lambda c: (-_priority(c), c))

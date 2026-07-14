@@ -29,9 +29,10 @@ class DataProviderManager:
         # 分红数据低频（一年几次），缓存 1 小时，避免每次刷新自选都全量联网拉取
         self._dividend_cache = TTLCache(3600)
         self._index_cache = TTLCache(300)
-        # 行情 / K 线优先级：efinance(东财)→tencent→sina→pytdx→baostock(独立梯队)→akshare→yfinance
-        self._quote_order: list = [self.efinance, self.tencent, self.sina, self.pytdx,
-                                   self.baostock, self.akshare, self.yfinance]
+        # 行情 / K 线优先级：baostock(权威日K EOD)→efinance(PE/PB/name+兜底)→tencent→sina→pytdx→akshare→yfinance
+        # baostock 无 get_quote(继承 base 返回 None)→ CN 取实时盘自动降级 efinance；港美股被 supports={CN} 跳过
+        self._quote_order: list = [self.baostock, self.efinance, self.tencent, self.sina, self.pytdx,
+                                   self.akshare, self.yfinance]
 
     def _ordered_for(self, market: str) -> list:
         return [s for s in self._quote_order if market in s.supports]

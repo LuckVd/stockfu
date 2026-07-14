@@ -37,3 +37,28 @@ class Rebalancer:
         返回:    {code: 最终目标仓位或 None},覆盖 desired ∪ current 全集
         """
         raise NotImplementedError(f"{type(self).__name__}.adjust 未实现")
+
+
+def _cross_section_percentiles(meta: dict[str, dict], codes) -> dict[str, float]:
+    """横截面百分位(0=最弱,1=最强),供 rebalancer 排名。
+
+    用 meta[code]['raw'](未 clamp 的连续强度)在当天全市场排名。纯截面操作:只用
+    t 日各票的 raw(均 <=as_of 算出),不触碰 t+1 → 无未来函数泄露。
+    同 raw 的票取平均秩(并列);raw 缺失(旧缓存/None)按 0 计,退化为最弱。
+    """
+    items = [(c, float((meta.get(c) or {}).get("raw") or 0.0)) for c in codes]
+    items.sort(key=lambda x: (x[1], x[0]))   # raw 升序,code 兜底保稳定
+    n = len(items)
+    if n <= 1:
+        return {c: 0.5 for c, _ in items}
+    pct: dict[str, float] = {}
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and items[j + 1][1] == items[i][1]:
+            j += 1
+        p = (i + j) / 2 / (n - 1)             # 平均秩 → [0,1]
+        for k in range(i, j + 1):
+            pct[items[k][0]] = p
+        i = j + 1
+    return pct
