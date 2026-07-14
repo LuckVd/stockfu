@@ -124,6 +124,25 @@ class FactorSnapshot(SQLModel, table=True):
         "level", "scope", "factor", "snap_date", name="uq_factor_scope_date"),)
 
 
+class IndexQuoteDaily(SQLModel, table=True):
+    """指数日线行情（上证综指 etc.），供回测基准使用。
+    
+    表已存在（G01 遗存），仅作 ORM 映射，不重建。
+    """
+    __tablename__ = "index_quote_daily"
+    id: int | None = Field(default=None, primary_key=True)
+    asset_code: str = Field(index=True)
+    quote_date: date = Field(index=True)
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float = 0.0
+    pct_chg: float | None = None
+    volume: float | None = None
+    amount: float | None = None
+    __table_args__ = (UniqueConstraint("asset_code", "quote_date", name="uq_index_quote_code_date"),)
+
+
 class FundFlowSnapshot(SQLModel, table=True):
     """ETF 份额资金流向天级快照（份额变化 ≈ 大资金净申赎）。"""
     __tablename__ = "fundflow_snapshot"

@@ -7,12 +7,12 @@
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from sqlmodel import select
 
 from stockfu.db import init_db, session_scope
-from stockfu.models import (Asset, FundFlowSnapshot, QuoteSnapshot)
+from stockfu.models import (Asset, FundFlowSnapshot, IndexQuoteDaily, QuoteSnapshot)
 
 # 指数基准 + 资金流追踪标的：宽基 & 热门行业 ETF
 INDEX_ETFS = [
@@ -189,6 +189,66 @@ def backfill_kline(code: str, days: int = 90) -> int:
     return n
 
 
+def update_index_benchmark(code: str = "sh000001") -> int:
+    """查 index_quote_daily 最新日期 → 拉 gap → 幂等 upsert。
+
+    akshare 指数日线（index_zh_a_hist）走国内直连（no_proxy）。
+    返回新增行数。
+    """
+    akshare_symbol = code[2:]  # sh000001 → 000001
+    with session_scope() as s:
+        last_row = s.exec(
+            select(IndexQuoteDaily).where(
+                IndexQuoteDaily.asset_code == code
+            ).order_by(IndexQuoteDaily.quote_date.desc()).limit(1)
+        ).first()
+    last_date = last_row.quote_date if last_row else None
+    today = date.today()
+    if last_date and last_date >= today:
+        return 0
+    start = (last_date + timedelta(days=1)).isoformat() if last_date else "1990-01-01"
+    end = today.isoformat()
+    from stockfu.data.akshare_source import get_index_daily
+    rows = get_index_daily(akshare_symbol, start, end)
+    if not rows:
+        return 0
+    n = 0
+    with session_scope() as s:
+        for r in rows:
+            existing = s.exec(select(IndexQuoteDaily).where(
+                IndexQuoteDaily.asset_code == code,
+                IndexQuoteDaily.quote_date == r["quote_date"],
+            )).first()
+            if existing:
+                continue
+            s.add(IndexQuoteDaily(**r))
+            n += 1
+        s.commit()
+    return n
+
+
+def run_backfill_benchmark(code: str = "sh000001") -> dict:
+    """一次性回补整个指数历史（从最早日期到今天），首次部署用。"""
+    from stockfu.data.akshare_source import get_index_daily
+    n = 0
+    with session_scope() as s:
+        existing = s.exec(select(IndexQuoteDaily).where(
+            IndexQuoteDaily.asset_code == code
+        )).all()
+        have_dates = {r.quote_date for r in existing}
+    # 全量拉取（1990 至今）
+    today = date.today()
+    rows = get_index_daily(code[2:], "1990-01-01", today.isoformat())
+    new_rows = [r for r in rows if r["quote_date"] not in have_dates]
+    if new_rows:
+        with session_scope() as s:
+            for r in new_rows:
+                s.add(IndexQuoteDaily(**r))
+            s.commit()
+        n = len(new_rows)
+    return {"code": code, "total": len(rows), "new": n, "have_before": len(have_dates)}
+
+
 def run_backfill(days: int = 90) -> dict:
     """回填宽基/行业 ETF + 自选 + 板块自身K线 + 大盘资金流 的历史，供指数/情绪计算。"""
     init_db()
@@ -308,8 +368,9 @@ def run_scheduled_fetch() -> dict:
         ok2, fail = _batch_fetch_today(fail)
         ok.extend(ok2)
 
-    # 主要指数当日行情落盘
+    # 主要指数当日行情落盘 + 基准 sh000001 日线更新
     _upsert_index_quotes()
+    update_index_benchmark("sh000001")
     # 板块当日主力资金流（即时，每日攒历史；落库后供 compute_sector 用）
     from stockfu.services import backfill as bf
     sector_flow = bf.backfill_sector_flow_today()

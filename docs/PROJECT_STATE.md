@@ -119,7 +119,8 @@ nohup python main.py --schedule >> data/schedule.log 2>&1 &
 - pip：系统python PEP668,用`--break-system-packages`
 
 ## 8. 待办（P2 / 未来）
-- 回测：classic_4advisors/hybrid 需 LLM key 才能回测(纯math策略已可用)；**激活回测基准**(ETF/指数行情已拆表落库,但引擎基准取数路径未接→基准常N/A)
+- **回测基准 G02 已激活**：基准 = 上证综指 sh000001(IndexQuoteDaily);_benchmark_curve 直读不走 quote_model_for;run_scheduled_fetch 每日更新;benchmark_return/excess/benchmark_window 恒定产出
+- classic_4advisors/hybrid 需 LLM key 才能回测(纯math策略已可用)
 - 估值窗口：PE/PB 仅5年(2021起),backfill 延至10年匹配估值类分位窗口(baostock,无需tushare)
 - 连板长期：多次--backfill-limit断点续传慢慢补
 - 板块轮动信号：连续N日净流入排名/板块间资金切换(历史地基已就位)

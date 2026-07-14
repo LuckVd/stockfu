@@ -110,6 +110,12 @@ def run_backfill_factors() -> None:
     print(f"补股息率历史序列: {dy}")
 
 
+def run_backfill_benchmark() -> None:
+    from stockfu.scheduler.jobs import run_backfill_benchmark as _run
+
+    print(f"回补回测基准 sh000001 历史日线…")
+    print(f"✓ {_run()}")
+
 def run_backfill_limit(days: int) -> None:
     from stockfu.services import backfill as bf
 
@@ -169,12 +175,20 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     print(f"回测 {strategy}  {start_d} → {end_d}  初始资金 {cash:,.0f}  ({scope}) …")
     r = _run(code_list, start_d, end_d, initial_cash=cash)
     m = r["metrics"]
-    bench = r["benchmark"][-1]["equity"] if r.get("benchmark") else None
-    bench_str = f" | 基准 {bench / cash * 100 - 100:.2f}%" if bench else " | 基准 N/A(ETF无数据)"
+    bench_ret = m.get("benchmark_return")
+    window = m.get("benchmark_window")
+    if bench_ret is not None:
+        win_str = f" 基准窗口 {window['start']}~{window['end']}" if window else ""
+        bench_str = f" | 基准 {bench_ret}%{win_str}"
+    else:
+        reason = m.get("benchmark_reason", "N/A")
+        bench_str = f" | 基准 {reason}"
     wr = m.get("win_rate")
     wr_str = f" | 胜率 {wr}%" if wr is not None else ""
+    excess = m.get("excess")
+    excess_str = f" | 超额 {excess}%" if excess is not None else ""
     print(f"✓ 总收益 {m.get('total_return')}% | 年化 {m.get('annualized')}% | "
-          f"最大回撤 {m.get('max_drawdown')}% | 夏普 {m.get('sharpe')}{wr_str}{bench_str}\n"
+          f"最大回撤 {m.get('max_drawdown')}% | 夏普 {m.get('sharpe')}{wr_str}{bench_str}{excess_str}\n"
           f"  交易 {m.get('trade_count')}笔 | 期末权益 {m.get('final_equity')}")
     if r.get("saved_to"):
         print(f"  结果已保存: {r['saved_to']}")
@@ -220,6 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补 两融总量历史 + 个股两融近10天 + 股息率历史序列")
     p.add_argument("--backfill-limit", type=int, nargs="?", const=365,
                    help="回补 连板/涨停历史（默认365天，限速，慢，建议后台）")
+    p.add_argument("--backfill-benchmark", action="store_true",
+                   help="回补回测基准 sh000001 历史日线（首次部署用）")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
     p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件")
@@ -265,6 +281,8 @@ def main() -> None:
         run_backfill_factors()
     elif args.backfill_limit is not None:
         run_backfill_limit(args.backfill_limit)
+    elif args.backfill_benchmark:
+        run_backfill_benchmark()
     elif args.schedule:
         run_schedule()
     elif args.clean_quotes:

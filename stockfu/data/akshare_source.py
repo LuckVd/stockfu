@@ -57,6 +57,59 @@ def _call_df(candidates):
     return None, None, errors
 
 
+def get_index_daily(symbol: str, start: str, end: str) -> list[dict]:
+    """拉取指数日线行情（akshare 优先，baostock 兜底）。
+
+    多源 fallback：先 akshare index_zh_a_hist；akshare 未装/失败/空 → 降级 baostock
+    （baostock 已装、支持指数日线 sh.000001 等）。symbol: 指数代码，如 "000001"（上证综指）。
+    返回 list[dict]，每 dict 含 asset_code/quote_date/open/high/low/close/pct_chg/volume/amount。
+    两者都失败 → 返回 []（调用方据此判定本次未更新）。
+
+    列名映射：000001 → asset_code="sh000001"（StockFu 代码规范）。
+    """
+    rows = _get_index_daily_akshare(symbol, start, end)
+    if rows:
+        return rows
+    from stockfu.data.baostock_source import get_index_daily_baostock
+    return get_index_daily_baostock(symbol, start, end)
+
+
+def _get_index_daily_akshare(symbol: str, start: str, end: str) -> list[dict]:
+    """akshare 指数日线（index_zh_a_hist）；未装/失败/空 → 返回 []。"""
+    with direct_connection():
+        try:
+            import akshare as ak
+        except Exception:
+            return []
+        try:
+            df = ak.index_zh_a_hist(symbol=symbol, period="daily",
+                                     start_date=start, end_date=end)
+        except Exception:
+            return []
+    if df is None or df.empty:
+        return []
+    asset_code = f"sh{symbol}"  # 000001 → sh000001
+    results: list[dict] = []
+    for _, r in df.iterrows():
+        try:
+            d = pd.to_datetime(r["日期"]).date()
+            close_val = float(r["收盘"])
+            results.append({
+                "asset_code": asset_code,
+                "quote_date": d,
+                "open": float(r["开盘"]) if pd.notna(r.get("开盘")) else None,
+                "high": float(r["最高"]) if pd.notna(r.get("最高")) else None,
+                "low": float(r["最低"]) if pd.notna(r.get("最低")) else None,
+                "close": close_val,
+                "pct_chg": float(r["涨跌幅"]) if pd.notna(r.get("涨跌幅")) else None,
+                "volume": float(r["成交量"]) if pd.notna(r.get("成交量")) else None,
+                "amount": float(r["成交额"]) if pd.notna(r.get("成交额")) else None,
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    return results
+
+
 class AkshareSource(DataSource):
     name = "akshare"
     supports = {Market.CN, Market.HK, Market.US}

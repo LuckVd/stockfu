@@ -18,6 +18,14 @@ def _bs_code(code: str) -> str:
     return ("sh." if code[0] in ("6", "9", "5") else "sz.") + code
 
 
+def _index_bs_symbol(symbol: str) -> str:
+    """指数代码 → baostock 格式：399xxx → sz.（深证系列），其余(000xxx 上证系列) → sh.。
+
+    与股票 _bs_code 不同：000001/000300/000016 等指数属上证，不能按首位 0 判深证。
+    """
+    return ("sz." if symbol.startswith("399") else "sh.") + symbol
+
+
 def _f(v) -> Optional[float]:
     try:
         return float(v) if v not in (None, "") else None
@@ -131,3 +139,43 @@ class BaostockSource(DataSource):
         pe_pct = F.percentile(pes, cur_pe)[0] if pes and cur_pe else None
         pb_pct = F.percentile(pbs, cur_pb)[0] if pbs and cur_pb else None
         return pe_pct, pb_pct
+
+
+def get_index_daily_baostock(symbol: str, start: str, end: str) -> list[dict]:
+    """baostock 指数日线（akshare 不可用时的 fallback，供回测基准更新用）。
+
+    symbol: 指数代码，如 "000001"（上证综指）。start/end: "YYYY-MM-DD"。
+    返回 list[dict]，结构与 akshare_source.get_index_daily 一致：
+    asset_code=f"sh{symbol}"（399xxx → sz）、quote_date/open/high/low/close/pct_chg/volume/amount。
+    baostock 未装/未登录/查询失败 → 返回 []。
+    """
+    if not BaostockSource._ensure_login():
+        return []
+    import baostock as bs
+    try:
+        rs = bs.query_history_k_data_plus(
+            _index_bs_symbol(symbol),
+            "date,open,high,low,close,pctChg,volume,amount",
+            start_date=start, end_date=end, frequency="d")
+    except Exception:  # noqa: BLE001
+        return []
+    asset_code = ("sz" if symbol.startswith("399") else "sh") + symbol
+    results: list[dict] = []
+    while getattr(rs, "error_code", "1") == "0" and rs.next():
+        row = rs.get_row_data()
+        try:
+            d = datetime.strptime(row[0], "%Y-%m-%d").date()
+            close_val = _f(row[4])
+            if close_val is None:
+                continue
+            results.append({
+                "asset_code": asset_code,
+                "quote_date": d,
+                "open": _f(row[1]), "high": _f(row[2]), "low": _f(row[3]),
+                "close": close_val,
+                "pct_chg": _f(row[5]),
+                "volume": _f(row[6]), "amount": _f(row[7]),
+            })
+        except (KeyError, ValueError, TypeError, IndexError):
+            continue
+    return results

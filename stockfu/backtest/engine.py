@@ -28,7 +28,7 @@ COMMISSION_RATE = 0.0003      # 券商佣金 万3(双边)
 MIN_COMMISSION = 5.0          # 最低 5 元/笔
 STAMP_DUTY_RATE = 0.0005      # 印花税 0.05%(仅卖出,2023-08 起)
 TRANSFER_FEE_RATE = 0.00001   # 过户费 0.001%(双边,2022 起沪深统一)
-BENCHMARK = "510300"          # 沪深300 ETF
+BENCHMARK = "sh000001"        # 上证综指（回测基准，1990 起）
 
 
 @dataclass
@@ -121,10 +121,11 @@ class VirtualAccount:
 
 
 def _get_quote_dict(codes: list[str], as_of: date, field: str = "close") -> dict[str, float]:
-    """取单日单字段 → {code: value}。按 code 路由个股/ETF/指数三表(quote_model_for)。
+    """取单日单字段 → {code: value}，个股回测信号路径用。
 
-    拆表后 510300 等 ETF 不在 quote_snapshot(已迁 etf_quote_daily)、指数在
-    index_quote_daily,必须按 code 分组查对应表;codes 混合时分组后合并。
+    注：quote_model_for 当前为单表(一律 QuoteSnapshot——G01 拆表已回滚，见 G02 OQ4)，
+    故此处实际只查 quote_snapshot；ETF/指数不在该表。回测基准(_benchmark_curve)
+    单独直读 IndexQuoteDaily，不经此函数。
     """
     from stockfu.services.factors import quote_model_for
     groups: dict[type, list[str]] = {}
@@ -163,16 +164,23 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
 
 
 def _metrics(equity_curve: list[dict], benchmark: list[dict],
-             initial: float, days: int) -> dict:
-    """算绩效:总收益/年化/最大回撤/夏普/胜率(基准对比)。"""
+             initial: float, days: int,
+             bench_window: dict | None = None) -> dict:
+    """算绩效:总收益/年化/最大回撤/夏普/胜率(基准对比)。
+
+    bench_window: {"start","end"} 基准实际可用窗口。excess 按交集算:
+    取 equity_curve 在基准窗口内的子段,与该窗口的 benchmark_return 对比。
+    """
     import math
 
     eq = [p["equity"] for p in equity_curve]
     bm = [p["equity"] for p in benchmark] if benchmark else []
     out: dict = {}
 
+    total_r = None
     if eq and initial > 0:
-        out["total_return"] = round((eq[-1] / initial - 1) * 100, 2)
+        total_r = (eq[-1] / initial - 1) * 100
+        out["total_return"] = round(total_r, 2)
         if days > 0 and eq[-1] > 0:
             out["annualized"] = round(((eq[-1] / initial) ** (252 / days) - 1) * 100, 2)
         peak, max_dd = eq[0], 0.0
@@ -189,25 +197,40 @@ def _metrics(equity_curve: list[dict], benchmark: list[dict],
         else:
             out["sharpe"] = None
 
+    # 基准:按交集窗口算 excess（total_return 已在上方设置，此处只引用，不重算）
+    out["benchmark_window"] = bench_window
     if bm and bm[0] > 0:
         out["benchmark_return"] = round((bm[-1] / bm[0] - 1) * 100, 2)
-        out["excess"] = round(out.get("total_return", 0) - out["benchmark_return"], 2)
+        out["excess"] = round((out.get("total_return") or 0.0) - out["benchmark_return"], 2)
+    else:
+        out["benchmark_return"] = None
+        out["excess"] = None
+        out["benchmark_reason"] = "无数据（index_quote_daily 无对应区间数据）"
 
     return out
 
 
-def _benchmark_curve(code: str, days: list[date]) -> list[dict]:
-    """基准(code)在 days 上的归一化净值曲线(首日=INITIAL_CASH)。
+def _benchmark_curve(code: str, days: list[date]) -> tuple[list[dict], dict | None]:
+    """基准(code)在 days 上的归一化净值曲线(首日=INITIAL_CASH)，返回 (曲线, 窗口信息)。
 
-    按 code 路由对应行情表(ETF→etf_quote_daily / 指数→index_quote_daily / 个股→quote_snapshot)。
+    直读 IndexQuoteDaily（不走 quote_model_for，指数独立表）。
+    窗口信息 = {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} 或 None（无数据）。
+    交集截断：早于基准首日的 days 不产出曲线点，由调用方按交集算 excess。
     """
     if not days:
-        return []
-    from stockfu.services.factors import quote_model_for
-    model = quote_model_for(code)
+        return [], None
+    from stockfu.models import IndexQuoteDaily
     with session_scope() as s:
-        rows = {r.quote_date: r.close for r in s.exec(select(model).where(
-            model.asset_code == code, model.quote_date.in_(days))).all() if r.close}
+        rows = {r.quote_date: r.close for r in s.exec(
+            select(IndexQuoteDaily).where(
+                IndexQuoteDaily.asset_code == code,
+                IndexQuoteDaily.quote_date >= min(days),
+                IndexQuoteDaily.quote_date <= max(days),
+            )).all() if r.close}
+    if not rows:
+        return [], None
+    sorted_dates = sorted(rows.keys())
+    window = {"start": sorted_dates[0].isoformat(), "end": sorted_dates[-1].isoformat()}
     out, last = [], None
     for d in days:
         c = rows.get(d)
@@ -219,7 +242,7 @@ def _benchmark_curve(code: str, days: list[date]) -> list[dict]:
         base = out[0]["equity"]
         for p in out:
             p["equity"] = round(p["equity"] / base * INITIAL_CASH, 2)
-    return out
+    return out, window
 
 
 def _trade_calendar_days(start: date, end: date) -> list[date]:
@@ -463,12 +486,13 @@ def run_backtest(codes: list[str], start: date, end: date,
         })
 
     # ---- 绩效 ----
-    benchmark = _benchmark_curve(BENCHMARK, days)
+    benchmark, bench_window = _benchmark_curve(BENCHMARK, days)
     filled = [t for t in trades if t.get("status") != "pending"]
     win = [t for t in filled if t.get("pnl") is not None and t["pnl"] > 0]
     loss = [t for t in filled if t.get("pnl") is not None and t["pnl"] <= 0]
 
-    metrics = _metrics(equity_curve, benchmark, initial_cash, len(days))
+    metrics = _metrics(equity_curve, benchmark, initial_cash, len(days),
+                        bench_window=bench_window)
     metrics["trade_count"] = len(filled)
     metrics["win_rate"] = round(len(win) / (len(win) + len(loss)) * 100, 1) if (win or loss) else None
     metrics["total_fee"] = round(acct.fee_paid, 2)
