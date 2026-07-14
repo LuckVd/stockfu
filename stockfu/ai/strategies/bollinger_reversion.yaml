@@ -18,9 +18,9 @@ aggregate:
 
 position:
   mode: continuous
-  max_w: 0.12
-  dead: 2.0
-  targets: {strong_buy: 0.12, buy: 0.08, hold: ~, sell: 0.0, strong_sell: 0.0}
+  max_w: 0.20
+  dead: 3.0
+  targets: {strong_buy: 0.20, buy: 0.12, hold: ~, sell: 0.0, strong_sell: 0.0}
 
 debounce:
   buy_cool_down_days: 3
