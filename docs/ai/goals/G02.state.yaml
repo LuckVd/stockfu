@@ -1,6 +1,6 @@
 goal_id: G02
 title: 回测基准激活(任意区间 + 更新机制)
-stage: reviewing          # 编排者评审完成(2026-07-14),F1-F3 已修+实证,待用户确认合并 → sync
+stage: done               # /ai-sync 完成(2026-07-14):已合并 main(commit 775e881),实证全通过
 selected_option: "上证综指 sh000001(最小激活:仅接基准,不恢复全局拆表);缺口截断到交集区间"
 design_confirmed: true    # 用户已明确确认
 
@@ -8,7 +8,7 @@ owner: "opencode"
 role: "implementer"
 worktree: null            # 执行者直接在 main 实现(偏离并行约定 F5),无 goal/g02 分支
 branch: null
-merge_status: review_passed  # 评审通过:F1 baostock 兜底(编排者修)+ F2/F3 清理;实证全部通过
+merge_status: merged      # 已合并到 main(775e881);编排者评审 + F1-F3 修复后入库
 claimed_at: "2026-07-14"
 ready_for_review_at: "2026-07-14"
 
@@ -35,4 +35,4 @@ goal_candidates: []
 last_check_at: "2026-07-14"   # /ai-check 评审 + F1-F3 修复 + 实证(回测/前缀/更新机制)全通过
 last_security_scan_at: null
 last_deadcode_scan_at: null
-last_synced_at: null
+last_synced_at: "2026-07-14"  # /ai-sync:roadmap/change-log/state 回写完成,commit 775e881

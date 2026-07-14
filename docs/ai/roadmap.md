@@ -79,7 +79,7 @@
 | 目标ID | 子目标ID | 名称 | 描述 | 状态 | 前置依赖 | 风险/阻塞 | 验收结果 | 测试状态 | 实现时间 | Commit ID | 备注 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | G01 | — | 行情拆表 | ETF/指数独立成表，替换 `quote_model_for` 单表路由 | done | — | — | accepted | passed | — | — | 代码已完成(QuoteSnapshot 个股 / EtfQuoteDaily / IndexQuoteDaily 三表)，本次核实修正文档 |
-| G02 | — | 回测基准激活 | ETF/指数行情数据已就位，接回测引擎基准取数路径，激活超额收益基准(当前 N/A) | done | — | 已解决:基准=sh000001,直读IndexQuoteDaily,run_scheduled_fetch每日更新 | accepted | passed | 2026-07-14 | — | 回测基准已激活;基准=上证综指(1990起),_benchmark_curve 直读 index_quote_daily |
+| G02 | — | 回测基准激活 | ETF/指数行情数据已就位，接回测引擎基准取数路径，激活超额收益基准(当前 N/A) | done | — | 已解决:基准=sh000001,直读IndexQuoteDaily,run_scheduled_fetch每日更新 | accepted | passed | 2026-07-14 | 775e881 | 回测基准已激活;基准=上证综指(1990起),_benchmark_curve 直读 index_quote_daily |
 | G03 | — | LLM 策略回测 | classic_4advisors / hybrid 策略可回测（纯 math 策略已可用） | planned | — | 需 LLM key | pending | not_started | — | — | 候选 |
 | G04 | — | 估值窗口延至 10 年 | baostock 已提供 PE/PB 5 年历史(2021 起)，继续 backfill 延长至 10 年，匹配估值类分位窗口 | planned | — | baostock 个股历史深度受限 | pending | not_started | — | — | 候选；PE/PB 分位已可用(valuation.py) |
 | G05 | — | 连板长期回补 | 多次 `--backfill-limit` 断点续传补连板/涨停长期序列 | planned | — | 东财 `stock_zt_pool_em` 限流 | pending | not_started | — | — | 候选；机械补数 |
