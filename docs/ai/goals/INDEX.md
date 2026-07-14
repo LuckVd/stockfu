@@ -7,7 +7,7 @@
 
 | 目标ID | 标题 | stage | owner | branch | worktree | merge_status | 备注 |
 |---|---|---|---|---|---|---|---|
-| G02 | 回测基准激活(任意区间+更新机制) | ready_to_claim | — | — | — | not_applicable | 基准=上证综指 sh000001;最小激活(不恢复全局拆表);缺口截断到交集。设计见 goals/G02.md,已确认待领取 |
+| G02 | 回测基准激活(任意区间+更新机制) | done | — | — | — | merged | 已合并 775e881(main,未推送)。基准=上证综指 sh000001;最小激活;实证通过。见 goals/G02.md |
 
 ## stage 图例
 
