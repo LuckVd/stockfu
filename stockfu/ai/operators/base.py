@@ -35,6 +35,9 @@ class OpResult:
 
     score: 该算子对总分的加权前贡献(LLM 算子=-20~+20 的 score_adjustment;
            数学算子由强度×基准算出,Aggregator 汇总时再乘 YAML 配的 weight)。
+    raw_score: 未 clamp 的连续强度(排序用)。score 被 ±20 clamp 会压平头部区分度,
+           raw_score 保留 clamp 前的连续值供 rebalancer 横截面排名;None=该算子无
+           连续信息(离散算子/LLM/旧缓存)→ 聚合时退化为 score。
     value: 数学算子的原始数值(RSI=32/momentum_pct=65),供前端展示/批量预计算/调试。
     veto:  一票否决位(risk 类算子或 risk_veto aggregator 设置 → Aggregator 强制 sell)。
     """
@@ -42,6 +45,7 @@ class OpResult:
     type: str = "math"                     # math | llm | aggregator
     signal: str = "hold"                   # strong_buy/buy/hold/sell/strong_sell
     score: float = 0.0
+    raw_score: float | None = None         # 未 clamp 连续强度(排序用);None→退化 score
     weight: float = 1.0                    # 策略 YAML 配的权重(汇总时用)
     confidence: float = 0.5                # 0-1
     reasoning: str = ""

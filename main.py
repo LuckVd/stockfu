@@ -225,7 +225,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件")
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
     p.add_argument("--backtest", metavar="STRATEGY", default=None,
-                   help="回测策略ID（如 bollinger_monthly）；详见 docs/BACKTEST.md")
+                   help="回测策略ID（如 macd_cross / bollinger_reversion）；详见 docs/BACKTEST.md")
     p.add_argument("--start", default=None, help="回测起始日 YYYY-MM-DD（默认1年前）")
     p.add_argument("--end", default=None, help="回测结束日 YYYY-MM-DD（默认今天）")
     p.add_argument("--cash", type=float, default=1_000_000.0, help="回测初始资金（默认100万）")

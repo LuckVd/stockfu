@@ -301,6 +301,7 @@ def run_backtest(codes: list[str], start: date, end: date,
     _risk_streak: dict[str, int] = {}  # code → risk 连续否决天数(确认棒状态)
 
     equity_curve: list[dict] = []
+    holdings_curve: list[dict] = []          # 每日逐票持仓快照(完整持仓记录,供直观回看)
     trades: list[dict] = []
     pending_target: dict[str, float] = {}  # {code: target_weight} 待次日开盘执行
     last_close: dict[str, float] = {}       # code → 最近有收盘价交易日的价(停牌日估值用)
@@ -402,7 +403,8 @@ def run_backtest(codes: list[str], start: date, end: date,
             _sig[code] = signal
             _veto[code] = risk_vetoed
             meta[code] = {"score": total_score, "confidence": confidence,
-                          "signal": signal, "risk_vetoed": risk_vetoed}
+                          "signal": signal, "risk_vetoed": risk_vetoed,
+                          "raw": agg.get("total_raw", total_score)}
 
         # 3b. 仓位调整层:desired全集 + current全集 → 最终目标仓位(独立基础架构,从 app_config 取)
         current_weights = {c: s["weight"] for c, s in snap.items()}   # 全集(含未覆盖持仓)
@@ -435,6 +437,30 @@ def run_backtest(codes: list[str], start: date, end: date,
             "date": as_of.isoformat(),
             "equity": round(acct.equity(last_close), 2),
         })
+        # ---- Record: 逐票持仓快照(完整持仓记录;停牌持仓用 last_close 估值,不漏) ----
+        eq_total = acct.equity(last_close)
+        day_pos = []
+        for c, p in acct.positions.items():
+            if p.shares <= 0:
+                continue
+            px = close_prices.get(c) or last_close.get(c, 0.0)
+            mv = p.shares * px
+            day_pos.append({
+                "code": c,
+                "shares": p.shares,
+                "avg_cost": round(p.avg_cost, 4),
+                "close": round(px, 4),
+                "mkt_val": round(mv, 2),
+                "pnl": round(mv - p.shares * p.avg_cost, 2),   # 浮动盈亏(未扣费)
+                "weight": round(mv / eq_total, 4) if eq_total > 0 else 0.0,
+            })
+        day_pos.sort(key=lambda x: -x["mkt_val"])
+        holdings_curve.append({
+            "date": as_of.isoformat(),
+            "cash": round(acct.cash, 2),
+            "equity": round(eq_total, 2),
+            "positions": day_pos,
+        })
 
     # ---- 绩效 ----
     benchmark = _benchmark_curve(BENCHMARK, days)
@@ -465,6 +491,7 @@ def run_backtest(codes: list[str], start: date, end: date,
 
     return {
         "equity_curve": equity_curve,
+        "holdings_curve": holdings_curve,
         "benchmark": benchmark,
         "trades": trades,
         "metrics": metrics,

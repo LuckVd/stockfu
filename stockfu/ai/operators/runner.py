@@ -135,6 +135,7 @@ class CompiledStrategy:
         aggregate = {
             "final_signal": summary.signal,
             "total_score": summary.score,
+            "total_raw": summary.raw_score if summary.raw_score is not None else summary.score,
             "risk_vetoed": summary.veto,
             "ai_target_weight": summary.target_weight,
             "confidence": summary.confidence,

@@ -1,7 +1,9 @@
 version: 1
-name: 月线布林带+动量混合
-# 月线布林带(均值回归) + 动量(趋势确认) 双因子互补。
-# 布林带买超卖卖超买,动量确认趋势方向,避免逆势接飞刀。
+name: 月线动量突破
+# 真实行为(实测确认,2026-07):动量 + 趋势主导选股,月线布林仅作弱反向权重。
+# 动量 raw_score 不封顶(ret×2)+ 趋势满格 ±20,加权后盖过月线布林(最多 ±7.2),
+# 故选出的全是 20 日最强动量股(布林多在喊 sell)。配合 top_n_picker 锁仓 20 天顺势吃趋势。
+# ⚠️ 这是动量追涨策略,不是均值回归;真正买超卖的见 bollinger_reversion。
 operators:
   - {id: monthly_bollinger, type: math, weight: 1.2, params: {window: 20, std_dev: 2.0}}
   - {id: momentum, type: math, weight: 0.6, params: {window: 20}}

@@ -23,17 +23,20 @@ class ValueOperator(BaseOperator):
                             signal="hold", score=0.0, confidence=0.3,
                             reasoning="PE 分位样本不足")
         if pct < 20:                                     # 低估→买
-            score = max(5.0, 20 * (1 - pct / 20))          # ±10→±20(统一对齐 LLM)
+            raw = 20 * (1 - pct / 20)                      # ±10→±20(统一对齐 LLM)
+            score = max(5.0, raw)
             signal = "buy"
             reasoning = f"PE 分位 {pct:.0f}% 偏低,估值有吸引力"
         elif pct > 80:                                   # 高估→卖
-            score = min(-5.0, -20 * (1 - (100 - pct) / 20))
+            raw = -20 * (1 - (100 - pct) / 20)
+            score = min(-5.0, raw)
             signal = "sell"
             reasoning = f"PE 分位 {pct:.0f}% 偏高,估值偏贵"
         else:
+            raw = 0.0
             score = 0.0
             signal = "hold"
             reasoning = f"PE 分位 {pct:.0f}% 合理区间"
         return OpResult(operator=self.operator_id, type="math", value=round(pct, 1),
-                        signal=signal, score=round(score, 1), confidence=0.6,
+                        signal=signal, score=round(score, 1), raw_score=round(raw, 2), confidence=0.6,
                         reasoning=reasoning)
