@@ -12,3 +12,6 @@ __pycache__/
 docs/ai/notes.md
 docs/ai/notes-*.md
 references/
+# 临时回测跑分脚本(根目录 run_*.py)与运行时日志
+/run_*.py
+data/*.log
