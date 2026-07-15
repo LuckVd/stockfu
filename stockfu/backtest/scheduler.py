@@ -1,9 +1,10 @@
-"""回测 LLM 调度: temp=0 + ai_report 库表缓存(read-first)+ 进度 + 产物保存。
+"""回测调度: 注入 CompiledStrategy + temp=0(确定性)+ 单日批量预读缓存 + 产物保存。
 
-run(codes, start, end): 跑完整回测。analyze 结果按 (code, as_of) 缓存到 ai_report 表,
-与实盘 run_ai_analysis 共用同一数据源——命中复用、未命中跑 LLM 落库。同区间重跑自动
-跳过已入库的 LLM 调用(调仓序列每次重算,纯内存秒级)。改策略参数无需新 run_id(分析不依赖
-策略参数,只 PositionManager 依赖)。产物存 data/backtest/{run_id}.json。
+run(codes, start, end): 跑完整回测。算子级缓存在 operator_result 表(math/llm 全局复用,
+read-through),engine Phase 2 前单日批量预读命中注入各 analyze(_make_prefetch_fn)→ 跳过
+逐 (code,as_of,算子) 的 get_operator_result 往返。同区间重跑命中缓存秒级;改策略参数无需
+新 run_id(算子缓存不依赖策略参数,只 PositionManager 依赖)。产物存 data/backtest/{run_id}.json.gz
++ {run_id}.meta.json(轻量摘要,list_runs 只扫 meta)。
 """
 from __future__ import annotations
 
@@ -66,15 +67,32 @@ def _make_cached_analyze(strategy=None, temperature: float = 0.0):
 
     算子级缓存在 strategy.analyze 内部(read-through operator_result,math/llm 全局复用),
     这里仅注入 active 策略 + temp=0(回测确定性)。holding_override 透传(仓位层用,
-    信号层已去持仓依赖,不影响算子输出/缓存指纹)。
+    信号层已去持仓依赖,不影响算子输出/缓存指纹)。cache_prefill 由 engine 批量预读注入
+    (见 _make_prefetch_fn),命中跳过逐次 get_operator_result 往返。
     """
     if strategy is None:
         from stockfu.ai.operators.runner import get_active_strategy
         strategy = get_active_strategy()
 
-    def _fn(code, as_of, holding_override):
+    def _fn(code, as_of, holding_override, cache_prefill=None):
         return strategy.analyze(code, as_of=as_of, holding_override=holding_override,
-                                temperature=temperature)
+                                temperature=temperature, cache_prefill=cache_prefill)
+    return _fn
+
+
+def _make_prefetch_fn(strategy=None, temperature: float = 0.0):
+    """返回 prefetch_fn(codes, as_of) → {(code, op_id): OpResult}:单日批量预读算子缓存。
+
+    与 _make_cached_analyze 同 strategy+temperature 配对(engine Phase 2 前调一次)。
+    指纹在策略编译时算一次(CompiledStrategy._ensure_op_meta),不依赖 code/as_of →
+    一次 SELECT 取回当日全部命中。
+    """
+    if strategy is None:
+        from stockfu.ai.operators.runner import get_active_strategy
+        strategy = get_active_strategy()
+
+    def _fn(codes, as_of):
+        return strategy.prefetch_cache(codes, as_of, temperature=temperature)
     return _fn
 
 
@@ -100,6 +118,7 @@ def run(codes: list[str], start, end, initial_cash: float = engine.INITIAL_CASH,
     cs = get_active_strategy()
     run_id = run_id or new_run_id()
     analyze_fn = _make_cached_analyze(cs)
+    prefetch_fn = _make_prefetch_fn(cs)
     # 基线=active 策略 YAML 的 StrategyDebounce;显式覆盖参数(非 None)替换对应字段
     db = cs.debounce_params
     overrides = {"buy_cool_down_days": buy_cool_down_days, "max_target_step": max_target_step,
@@ -109,7 +128,8 @@ def run(codes: list[str], start, end, initial_cash: float = engine.INITIAL_CASH,
                  "conf_gate": conf_gate}
     db = dataclasses.replace(db, **{k: v for k, v in overrides.items() if v is not None})
     result = engine.run_backtest(codes, start, end, initial_cash,
-                                 analyze_fn=analyze_fn, max_workers=max_workers, debounce=db)
+                                 analyze_fn=analyze_fn, prefetch_fn=prefetch_fn,
+                                 max_workers=max_workers, debounce=db)
     result["run_id"] = run_id
     # 落盘策略身份:engine 只拿到 analyze_fn 闭包、看不到策略,故在此补齐(cs 现成)。
     # 同时记算子 id 列表,产物可追溯(策略名 + 算子指纹)。
@@ -203,44 +223,3 @@ def load_run(run_id: str) -> dict | None:
         if os.path.exists(p):
             return _load_result(p)
     return None
-
-
-def progress(run_id: str, codes: list[str], start, end) -> dict:
-    """查 operator_result 算进度(已覆盖 (code,���易日,算子) 数 / 总数)。供前端轮询。
-
-    active 策略的算子集决定 total;run_id 仅为前端状态���留。算子级缓存下,每 (code,as_of)
-    需算 len(算子) 个算子结果,已落库数 / 总数 = 进度。
-    按当前 fingerprint 过滤统计:改了 prompt/params 后旧缓存不计入 done(进度更精确)。
-    """
-    from stockfu.ai.operator_cache import (compute_fingerprint,
-                                           count_operator_results)
-    from stockfu.ai.operators.runner import (_load_operator_meta,
-                                             get_active_strategy)
-    from stockfu.ai.operators.registry import get_operator_class
-    cs = get_active_strategy()
-    op_ids = [op["id"] for op in cs.operators if op.get("id")]
-    days = engine._trade_calendar_days(start, end)
-    total = len(days) * len(codes) * max(len(op_ids), 1)
-
-    # 按当前 fingerprint 统计(避免改了 prompt/params 后旧缓存��计为 done)
-    fp_map: dict[str, str] = {}
-    for spec in cs.operators:
-        oid = spec.get("id")
-        if not oid:
-            continue
-        cls = get_operator_class(oid)
-        if cls is None:
-            continue
-        params = dict(spec.get("params") or {})
-        if cls.type == "llm":
-            prompt, version = _load_operator_meta(oid)
-            fp_map[oid] = compute_fingerprint(
-                "llm", version=version, prompt=prompt,
-                temperature=params.get("temperature", 0.0))
-        elif cls.type == "math":
-            _, version = _load_operator_meta(oid)
-            fp_map[oid] = compute_fingerprint("math", version=version, params=params)
-        # aggregator 不缓存,跳过
-    done = count_operator_results(codes, start, end, op_ids, fingerprints=fp_map)
-    return {"done": done, "total": total,
-            "pct": round(done / total * 100, 1) if total else 0.0}

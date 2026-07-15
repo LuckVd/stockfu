@@ -245,23 +245,27 @@ class OperatorResult(SQLModel, table=True):
 
     去持仓依赖后所有算子(math/llm)纯市场数据 → 同输入全局任意复用(跨策略/跨回测)。
     aggregator 不缓存(纯函数重算廉价)。fingerprint:math=hash(params)/llm=hash(prompt+temp)。
-    核心列提独立列便于 SQL 查询/统计;reasoning/evidence/tools_used 进 detail JSON(回放)。
+    核心列提独立列便于 SQL 查询/统计。raw_score 提独立列(热路径:rebalancer 排名用全精度,
+    冷热一致);math 行 detail=NULL(reasoning/evidence/tools_used 回测不用),LLM 行 detail
+    仍存 reasoning/evidence/tools_used(昂贵 LLM 产物)。复合唯一键覆盖全部热路径查询,
+    四个单列索引已删(见 db._migrate)。
     """
     __tablename__ = "operator_result"
     id: int | None = Field(default=None, primary_key=True)
-    asset_code: str = Field(index=True)
-    as_of: date = Field(index=True)
-    operator_id: str = Field(index=True)            # momentum / trend / ...
-    operator_type: str = Field(default="math")      # math | llm(aggregator 不入库)
-    fingerprint: str = Field(index=True)            # 输入摘要(16位 sha1);prompt 改→自动失效
+    asset_code: str = Field()
+    as_of: date = Field()
+    operator_id: str = Field()                       # momentum / trend / ...
+    operator_type: str = Field(default="math")       # math | llm(aggregator 不入库)
+    fingerprint: str = Field()                       # 输入摘要(16位 sha1);prompt 改→自动失效
     # 核心列(可 SQL 查询/统计)
-    signal: str | None = None                       # strong_buy/buy/hold/sell/strong_sell
+    signal: str | None = None                        # strong_buy/buy/hold/sell/strong_sell
     score: float | None = None
+    raw_score: float | None = None                   # 未 clamp 的连续强度(排序用);热路径独立列
     confidence: float | None = None
     veto: bool = False
     target_weight: float | None = None
-    value: float | None = None                      # math 算子原始值(供 ctx.factors 共享)
-    detail: str | None = None                       # JSON: {reasoning,evidence,tools_used}(回放)
-    updated_at: str | None = None                   # "YYYY-MM-DD HH:MM"
+    value: float | None = None                       # math 算子原始值(供 ctx.factors 共享)
+    detail: str | None = None                        # JSON: {reasoning,evidence,tools_used};math=NULL,LLM 存
+    updated_at: str | None = None                    # "YYYY-MM-DD HH:MM"
     __table_args__ = (UniqueConstraint("asset_code", "as_of", "operator_id", "fingerprint",
                                        name="uq_op_result_code_date_op_fp"),)

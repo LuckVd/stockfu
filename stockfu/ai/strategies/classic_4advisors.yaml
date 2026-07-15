@@ -9,7 +9,7 @@ operators:
   - {id: valuation, type: llm, weight: 1.0}
 aggregate:
   method: risk_veto
-position: {mode: discrete, max_w: 0.15, dead: 3.0}
+position: {mode: discrete, max_w: 0.10, dead: 3.0}
 debounce:
   buy_cool_down_days: 5
   max_target_step: 1.0

@@ -13,7 +13,7 @@ aggregate:
 
 position:
   mode: continuous
-  max_w: 0.15
+  max_w: 0.10
   dead: 3.0
 
 debounce:

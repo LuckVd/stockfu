@@ -4,13 +4,9 @@ __pycache__/
 *.pyc
 .venv/
 .env
-# ClaudeDevKit: 只忽略机器本地权限缓存与并行 worktree 物理目录,
-# 框架本体(agents/commands/hooks/skills/settings.json)需随仓库共享,不能整体忽略 .claude/
+# Claude Code: 只忽略本地权限缓存与 worktree 物理目录
 .claude/settings.local.json
 .claude/worktrees/
-# 敏感本地笔记(框架约定:绝对不上传)
-docs/ai/notes.md
-docs/ai/notes-*.md
 references/
 # 临时回测跑分脚本(根目录 run_*.py)与运行时日志
 /run_*.py

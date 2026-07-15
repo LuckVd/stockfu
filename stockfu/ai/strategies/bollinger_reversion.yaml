@@ -18,9 +18,9 @@ aggregate:
 
 position:
   mode: continuous
-  max_w: 0.20
+  max_w: 0.10
   dead: 3.0
-  targets: {strong_buy: 0.20, buy: 0.12, hold: ~, sell: 0.0, strong_sell: 0.0}
+  # continuous 模式按 total_score 线性映射到 max_w,targets 仅 discrete 生效(已删死代码)
 
 debounce:
   buy_cool_down_days: 3

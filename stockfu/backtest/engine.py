@@ -22,6 +22,7 @@ from datetime import date
 from sqlmodel import select, and_
 
 from stockfu.db import session_scope
+from stockfu.backtest.cash_scaler import scale_buys_to_cash
 
 INITIAL_CASH = 1_000_000.0
 COMMISSION_RATE = 0.0003      # 券商佣金 万3(双边)
@@ -29,6 +30,14 @@ MIN_COMMISSION = 5.0          # 最低 5 元/笔
 STAMP_DUTY_RATE = 0.0005      # 印花税 0.05%(仅卖出,2023-08 起)
 TRANSFER_FEE_RATE = 0.00001   # 过户费 0.001%(双边,2022 起沪深统一)
 BENCHMARK = "sh000001"        # 上证综指（回测基准，1990 起）
+
+# 资金分配 / 风控默认值(对标 rqalpha order_target_portfolio_smart + backtrader Margin 思路,
+# 详见 docs/ARCHITECTURE_REVIEW.md):
+#   - 总仓安全阀留 cash sleeve,保证 Σ目标 ≤ max_gross → 执行层现金够、不夹断丢目标
+#   - 规则止损补文档承诺(旧 BACKTEST.md 写"-3%止损"但代码缺失;此处参数化,A股 -3% 太敏感)
+DEFAULT_MAX_GROSS = 0.90      # Σ目标权重上限(留 10% 现金;对所有 rebalancer 生效)
+DEFAULT_STOP_LOSS = 0.08      # 个股成本止损:浮亏达此比例 → 强制清仓
+DEFAULT_PORTFOLIO_BRAKE = 0.10  # 组合回撤刹车:equity 较峰值回撤达此值 → 全局临时降仓一半
 
 
 @dataclass
@@ -83,7 +92,11 @@ class VirtualAccount:
             buy_value = min(delta, self.cash)
             shares = int(buy_value / price / 100) * 100   # A 股整百股
             if shares <= 0:
-                if pos.shares == 0 and self.cash >= price * 100:
+                # 建仓特例:目标增量不足 100 股但现金够 1 手(+费用)时建最小仓。
+                # 预检必须纳入费用 —— 旧版只判 price*100,扣 cost+fee 后 cash 会落到约 -5 元。
+                est_cost = price * 100
+                est_fee = max(est_cost * COMMISSION_RATE, MIN_COMMISSION) + est_cost * TRANSFER_FEE_RATE
+                if pos.shares == 0 and self.cash >= est_cost + est_fee:
                     shares = 100
                 else:
                     return None
@@ -158,6 +171,20 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
     return 0.0, "unavailable"
 
 
+def _apply_gross_cap(final: dict[str, float | None], max_gross: float) -> dict[str, float | None]:
+    """总仓位安全阀:若 Σ正值权重 > max_gross,等比缩放所有正值权重到 Σ=max_gross。
+
+    max_gross >= 1.0 或无正值 → 原样返回(不限制)。留 cash sleeve = 1 - max_gross。
+    """
+    if max_gross >= 1.0:
+        return final
+    gross = sum(w for w in final.values() if w)
+    if gross <= max_gross or gross <= 0:
+        return final
+    factor = max_gross / gross
+    return {c: (w * factor if w else w) for c, w in final.items()}
+
+
 # =====================================================================
 # 绩效计算
 # =====================================================================
@@ -194,8 +221,20 @@ def _metrics(equity_curve: list[dict], benchmark: list[dict],
             mean = sum(rets) / len(rets)
             std = (sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)) ** 0.5
             out["sharpe"] = round(mean / std * math.sqrt(252), 2) if std > 0 else 0.0
+            # sortino:仅用下行波动(负收益),衡量"坏波动"风险调整收益
+            downside = [r for r in rets if r < 0]
+            if len(downside) >= 2:
+                dstd = (sum(r * r for r in downside) / (len(downside) - 1)) ** 0.5
+                out["sortino"] = round(mean / dstd * math.sqrt(252), 2) if dstd > 0 else 0.0
+            else:
+                out["sortino"] = None
+            # calmar:年化收益 / 最大回撤(风险调整,越大越好)
+            mdd = out.get("max_drawdown")
+            if out.get("annualized") is not None and mdd and mdd > 0:
+                out["calmar"] = round(out["annualized"] / mdd, 2)
         else:
             out["sharpe"] = None
+            out["sortino"] = None
 
     # 基准:按交集窗口算 excess（total_return 已在上方设置，此处只引用，不重算）
     out["benchmark_window"] = bench_window
@@ -265,6 +304,7 @@ def _trade_calendar_days(start: date, end: date) -> list[date]:
 
 def run_backtest(codes: list[str], start: date, end: date,
                  initial_cash: float = INITIAL_CASH, analyze_fn=None,
+                 prefetch_fn=None,
                  max_workers: int = 4, buy_cool_down_days: int = 5,
                  max_target_step: float = 1.0,
                  risk_confirm_days: int = 1,
@@ -273,7 +313,10 @@ def run_backtest(codes: list[str], start: date, end: date,
                  min_trade_weight: float = 0.0,
                  sell_cooldown_days: int = 0,
                  conf_gate: float = 0.0,
-                 debounce=None) -> dict:
+                 debounce=None,
+                 max_gross: float = DEFAULT_MAX_GROSS,
+                 stop_loss_pct: float = DEFAULT_STOP_LOSS,
+                 portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE) -> dict:
     """回测主循环:T+1开盘执行 + 三层架构(信号→仓位→执行)。
 
     每个交易日 as_of 内:
@@ -281,8 +324,10 @@ def run_backtest(codes: list[str], start: date, end: date,
       2. 用 as_of 收盘数据跑 AI → 计算目标仓位
       3. 仓位层(PositionManager)边沿触发+买入冷却 → 挂起,次日开盘执行
 
-    analyze_fn(code, as_of, holding_override) 默认用 ai.analyze;
-    scheduler 注入带 temp=0/断点续跑缓存的版本。
+    analyze_fn(code, as_of, holding_override[, cache_prefill]) 默认用 ai.analyze;
+    scheduler 注入带 temp=0/断点续跑缓存的版本。prefetch_fn(codes, as_of) 可选:Phase 2
+    前单日批量预读算子缓存 → 注入 analyze 的 cache_prefill(跳过逐次 get_operator_result
+    往返);为 None 时退回原路径。analyze_fn 须能接 cache_prefill(第 4 参)才用预读。
 
     去抖旋钮(默认均为原行为;按业界 whipsaw 应对机制设计,治 5 条根因):
       buy_cool_down_days: 两次**买入**间最少交易日间隔(减仓不限)。
@@ -306,10 +351,22 @@ def run_backtest(codes: list[str], start: date, end: date,
         min_trade_weight = debounce.min_trade_weight
         sell_cooldown_days = debounce.sell_cooldown_days
         conf_gate = debounce.conf_gate
+        # 资金分配/风控:yaml risk 段可选配置(StrategyDebounce 字段 None=未配,用 engine 默认)
+        _v = getattr(debounce, "max_gross", None)
+        if _v is not None: max_gross = _v
+        _v = getattr(debounce, "stop_loss_pct", None)
+        if _v is not None: stop_loss_pct = _v
+        _v = getattr(debounce, "portfolio_brake_dd", None)
+        if _v is not None: portfolio_brake_dd = _v
     # 仓位调整层:独立基础架构,从 app_config 取(解耦于策略)
     from stockfu.ai.rebalancers import get_active_rebalancer, get_rebalancer_params
     rebalancer = get_active_rebalancer()
     rebalancer_params = get_rebalancer_params()
+    # max_gross 优先级:app_config rebalancer_params > yaml debounce > 默认。让 cap_and_rank
+    # 内部竞争额度与 engine 层安全阀用同一值,避免 pass_through/top_n_picker 不限仓导致现金被吃光。
+    _mp = rebalancer_params.get("max_gross")
+    if _mp is not None:
+        max_gross = float(_mp)
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from stockfu.ai.action import PositionManager, resolve_action, compute_target_weight
     from stockfu.ai.analyze import analyze as default_analyze
@@ -328,6 +385,8 @@ def run_backtest(codes: list[str], start: date, end: date,
     trades: list[dict] = []
     pending_target: dict[str, float] = {}  # {code: target_weight} 待次日开盘执行
     last_close: dict[str, float] = {}       # code → 最近有收盘价交易日的价(停牌日估值用)
+    peak_equity: float = float(initial_cash)  # 组合回撤刹车:追踪回测内权益峰值
+    cash_constraint_hits: int = 0             # 当日买单触发现金缩放的天数(可观测,对标 backtrader Margin)
 
     for as_of in days:
         close_prices = _get_quote_dict(codes, as_of, "close")
@@ -335,28 +394,50 @@ def run_backtest(codes: list[str], start: date, end: date,
             continue
         last_close.update(close_prices)   # 停牌日 close 缺失时,沿用上一交易日价估值(不记 0)
 
-        # ---- Phase 1: 执行前日挂单(以今日开盘价;停牌无法成交的顺延次日,不丢弃) ----
+        # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌顺延次日不丢弃)----
+        # 先卖后买 + 买单等比缩放到可用现金(对标 rqalpha order_target_portfolio_smart):
+        #   卖单先成交释放现金 → 买单再用释放后的现金;买单总额 > 现金时用 safety 标量等比
+        #   缩放,不逐笔 min(delta,cash) 夹断丢目标。各方向内部按 code 排序保跨进程可复现。
         if pending_target:
             open_prices = _get_quote_dict(codes, as_of, "open")
             still_pending: dict[str, float] = {}
-            for code, target_weight in list(pending_target.items()):
-                # 如果 open 缺失,用 close 兜底
+            sells: list[tuple[str, float, float, str]] = []   # (code, target_weight, px, source)
+            buys: list[tuple[str, float, float, str]] = []
+            for code, target_weight in sorted(pending_target.items()):
                 if code not in open_prices and code in close_prices:
                     open_prices[code] = close_prices[code]
                 px, source = _get_trade_price(code, open_prices, close_prices)
                 if px <= 0:
-                    # 停牌当日无法成交:保留挂单至下一个有报价的交易日(原 clear() 会永久丢信号)
-                    still_pending[code] = target_weight
+                    still_pending[code] = target_weight       # 停牌顺延,不丢信号
                     continue
-                cur_w = acct.weight(code, open_prices)
-                act = resolve_action(cur_w, target_weight)
-                tr = acct.apply_action(code, act, target_weight, px, open_prices)
+                act = resolve_action(acct.weight(code, open_prices), target_weight)
+                if act in ("sell", "reduce"):
+                    sells.append((code, target_weight, px, source))
+                elif act in ("buy", "add"):
+                    buys.append((code, target_weight, px, source))
+                # act == "hold":差额过小,跳过(apply_action 内也会过滤碎单)
+
+            def _exec(code, tw, px, source, **extra):
+                tr = acct.apply_action(code, resolve_action(acct.weight(code, open_prices), tw),
+                                        tw, px, open_prices)
                 if tr:
-                    tr["date"] = as_of.isoformat()
-                    tr["signal"] = None
-                    tr["reason"] = "open_exec"
-                    tr["price_source"] = source
+                    tr.update(date=as_of.isoformat(), signal=None, reason="open_exec",
+                              price_source=source, **extra)
                     trades.append(tr)
+
+            # 1a. 先执行所有卖单(按 code 序)——释放现金给买单
+            for code, tw, px, source in sells:
+                _exec(code, tw, px, source)
+            # 1b. 买单等比缩放到可用现金(卖单释放后),再执行(按 code 序)
+            scaled, safety, constrained = scale_buys_to_cash(
+                acct, [(c, tw, px) for c, tw, px, _ in buys], open_prices,
+                commission_rate=COMMISSION_RATE, transfer_fee_rate=TRANSFER_FEE_RATE,
+                min_commission=MIN_COMMISSION)
+            if constrained:
+                cash_constraint_hits += 1
+            for (code, _tw, px, source), (_c, scaled_tw, _p) in zip(buys, scaled):
+                _exec(code, scaled_tw, px, source,
+                      **({"cash_scaled": round(safety, 4)} if constrained else {}))
             pending_target = still_pending
 
         # ---- Phase 2: 收盘快照 + AI 分析 ----
@@ -372,8 +453,15 @@ def run_backtest(codes: list[str], start: date, end: date,
             }
 
         results: dict[str, dict] = {}
+        # 单日批量预读缓存:一次 SELECT 取回当日全部 (code,算子) 命中,注入各 analyze。
+        # 跳过逐 (code,as_of,算子) 的 get_operator_result 往返 —— 大样本主力提速。
+        # prefill=None(无 prefetch_fn)时退回原 3 参调用,向后兼容默认 ai.analyze 路径。
+        prefill = prefetch_fn(list(snap.keys()), as_of) if prefetch_fn else None
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"]): c for c in snap}
+            if prefill is not None:
+                fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"], prefill): c for c in snap}
+            else:
+                fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"]): c for c in snap}
             for f in as_completed(fut):
                 c = fut[f]
                 try:
@@ -422,6 +510,16 @@ def run_backtest(codes: list[str], start: date, end: date,
                 target_weight = None
                 signal = "hold"
 
+            # 个股成本止损(规则化风控,补 BACKTEST.md 承诺但缺失的代码):浮亏达 stop_loss → 强制清仓。
+            # stop_loss_pct=0 关闭;仅对持仓且策略想持有/加仓(target>0)时介入,不与已清仓重复。
+            if stop_loss_pct > 0 and current_w > 0 and target_weight not in (0.0, None):
+                _pos = acct.positions.get(code)
+                _px = close_prices.get(code, 0.0)
+                if (_pos and _pos.shares > 0 and _pos.avg_cost > 0 and _px > 0
+                        and _px / _pos.avg_cost - 1 <= -stop_loss_pct):
+                    target_weight = 0.0
+                    signal = "stop_loss"
+
             desired[code] = target_weight
             _sig[code] = signal
             _veto[code] = risk_vetoed
@@ -437,8 +535,20 @@ def run_backtest(codes: list[str], start: date, end: date,
             params=rebalancer_params,
         )
 
+        # 组合回撤刹车(规则化风控):equity 较回测峰值回撤达阈值 → 全局临时降仓一半(风险优先)。
+        if portfolio_brake_dd > 0:
+            _cur_eq = acct.equity(last_close)
+            peak_equity = max(peak_equity, _cur_eq)
+            if peak_equity > 0 and _cur_eq / peak_equity - 1 <= -portfolio_brake_dd:
+                final = {c: (w * 0.5 if w else w) for c, w in final.items()}
+        # 总仓安全阀:Σ目标权重 ≤ max_gross(留 1-max_gross 现金,对所有 rebalancer 生效)→
+        # 保证执行层买单总额 ≤ 可投资现金,不夹断丢目标。超限等比缩放所有正值权重。
+        final = _apply_gross_cap(final, max_gross)
+
         # 3c. 边沿触发 + 冷却(遍历 final 全集;未覆盖维持的 code 过 should_act 是 no-op)
-        for code, target_weight in final.items():
+        # sorted by code:final 经 rebalancer 的 set 构造、顺序随哈希随机化漂移;
+        # 排序后挂单入 pending_target 的序确定 → 次日 Phase 1 执行序确定(见上)。
+        for code, target_weight in sorted(final.items()):
             current_w = current_weights[code]
             should, target, reason = pm.should_act(
                 code, target_weight, current_w, as_of, days,
@@ -496,6 +606,13 @@ def run_backtest(codes: list[str], start: date, end: date,
     metrics["trade_count"] = len(filled)
     metrics["win_rate"] = round(len(win) / (len(win) + len(loss)) * 100, 1) if (win or loss) else None
     metrics["total_fee"] = round(acct.fee_paid, 2)
+    # 组合层指标(从 holdings_curve 算,对标 zipline ledger gross leverage + 单仓集中度):
+    _gross = [sum(p["weight"] for p in d.get("positions", [])) for d in holdings_curve]
+    metrics["avg_gross_leverage"] = round(sum(_gross) / len(_gross) * 100, 1) if _gross else None
+    metrics["max_gross_leverage"] = round(max(_gross) * 100, 1) if _gross else None
+    metrics["max_single_weight"] = round(
+        max((p["weight"] for d in holdings_curve for p in d.get("positions", [])), default=0.0) * 100, 1)
+    metrics["cash_constraint_hits"] = cash_constraint_hits   # 买单被现金缩放的天数(可观测)
     metrics["final_equity"] = round(
         acct.equity(last_close) if last_close else initial_cash, 2
     )
@@ -509,7 +626,10 @@ def run_backtest(codes: list[str], start: date, end: date,
         "min_trade_weight": min_trade_weight,
         "sell_cooldown_days": sell_cooldown_days,
         "conf_gate": conf_gate,
-        "execution": "T+1_open",
+        "max_gross": max_gross,
+        "stop_loss_pct": stop_loss_pct,
+        "portfolio_brake_dd": portfolio_brake_dd,
+        "execution": "T+1_open_sell_first",
         "rebalancer": rebalancer.rebalancer_id,
     }
 

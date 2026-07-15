@@ -14,10 +14,10 @@ aggregate:
   thresholds: {strong_buy: 8, buy: 4, hold: -4, sell: -8}
 position:
   mode: discrete           # discrete 模式: 根据 targets 映射仓位
-  max_w: 0.15              # 单只最大15%
+  max_w: 0.10              # 单只最大10%
   dead: 3.0
-  # 信��→目标仓位,由���略决定而非框架硬编码
-  targets: {strong_buy: 0.15, buy: 0.10, hold: ~, sell: 0.0, strong_sell: 0.0}
+  # 信号→目标仓位,由策略决定而非框架硬编码
+  targets: {strong_buy: 0.10, buy: 0.08, hold: ~, sell: 0.0, strong_sell: 0.0}
 debounce:
   buy_cool_down_days: 3    # 买入后至少等3天
   max_target_step: 1.0     # 不限单步加仓幅度

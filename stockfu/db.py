@@ -3,7 +3,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from stockfu import models  # noqa: F401  —— 注册所有表
@@ -18,10 +18,36 @@ engine = create_engine(
 )
 
 
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_conn, _record):
+    """每连接设 SQLite pragma(G09 性能优化):
+
+    - busy_timeout 先设:journal_mode 切 WAL 需短暂写锁,先挂超时避免首连竞争 SQLITE_BUSY;
+      多进程(scheduler 写 / 回测读)写竞争时等 5s 而非立即报错。
+    - journal_mode=WAL:DB header 持久(首连设一次即持久,后续连接幂等返回 'wal');
+      读不阻塞写、写不阻塞读,冷启动批量写缓存省 fsync。
+    - synchronous=NORMAL:WAL 下 commit 不强制 fsync(WAL 刷盘由 checkpoint 兜底),
+      冷启动写快一个量级;FULL(=2)在 WAL 模式下无额外安全收益。
+
+    副作用:产生 data/stockfu.db-wal / -shm 旁路文件。备份/搬迁前先
+    `PRAGMA wal_checkpoint(TRUNCATE)` 把 -wal 并回主库,即可照旧单文件拷贝
+    (见 CLAUDE.md / docs/BACKTEST.md 性能段)。
+    """
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA busy_timeout=5000")
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.close()
+
+
 def _migrate() -> None:
     """开发期迁移：
     1) 旧 index_snapshot 缺 scope/level 列则重建（仅丢指数数据，可 --fetch 重算）；
-    2) quote_snapshot 补 turnover 列（SQLModel create_all 不改已有表）。
+    2) quote_snapshot 补 turnover 列（SQLModel create_all 不改已有表）；
+    3) operator_result 补 raw_score 列（从 detail JSON 提为独立列；一次性回填见 docs）；
+    4) operator_result 删 4 个冗余单列索引（复合唯一键 uq_op_result_code_date_op_fp
+       已覆盖全部热路径查询：全键等值 + asset_code 前导的 IN/Between）。孤儿清理
+       （seed.py）改全表扫，罕见可接受。
     不动 quote/dividend/holding 数据。"""
     insp = inspect(engine)
     if insp.has_table("index_snapshot"):
@@ -34,6 +60,20 @@ def _migrate() -> None:
         if "turnover" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE quote_snapshot ADD COLUMN turnover FLOAT"))
+    if insp.has_table("operator_result"):
+        cols = [c["name"] for c in insp.get_columns("operator_result")]
+        if "raw_score" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE operator_result ADD COLUMN raw_score FLOAT"))
+        # 删 4 个冗余单列索引（复合唯一键最左前缀/前导列已覆盖）。DROP IF EXISTS 幂等。
+        existing = {ix["name"] for ix in insp.get_indexes("operator_result")}
+        redundant = ["ix_operator_result_asset_code", "ix_operator_result_as_of",
+                     "ix_operator_result_operator_id", "ix_operator_result_fingerprint"]
+        to_drop = [name for name in redundant if name in existing]
+        if to_drop:
+            with engine.begin() as conn:
+                for name in to_drop:
+                    conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
 
 
 def init_db() -> None:

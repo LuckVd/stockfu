@@ -114,8 +114,13 @@ print(r["equity_curve"][-1])
 | 方案 | 逻辑 |
 |------|------|
 | `pass_through` | desired 原样透传(等价"无选股层") |
-| `cap_and_rank` | 总仓位上限(`max_gross=0.95`)+ 增仓按**横截面百分位×confidence** 排序竞争额度 |
+| `cap_and_rank` | 总仓位上限(`max_gross=0.90`)+ 增仓按**横截面百分位×confidence** 排序竞争额度 |
 | `top_n_picker` | **每日全市场按横截面百分位(raw 连续强度)排名选 Top N(默认 10)+ 建仓锁定(20 日)+ Top10% 保护 + 限换手(每日 ≤2 只)** |
+
+> **max_gross 总仓安全阀**(engine 层,本轮新增,对所有 rebalancer 生效,默认 0.90):Σ目标权重
+> ≤ max_gross,留 1−max_gross 现金(cash sleeve)。优先级:`rebalancer_params.max_gross`
+> > yaml `risk.max_gross` > 默认 0.90。配合执行层"先卖后买 + 买单等比缩放",保证买单总额
+> ≤ 可投资现金、不夹断丢目标(详见 `docs/ARCHITECTURE_REVIEW.md`)。
 
 > **为什么用横截面百分位而非 score**:score 的 ±20 clamp 让头部强势股集体撞顶、无区分度(实测首日 top10 曾只有 1 个不同值,边界票随进程抖动)。rebalancer 在 `adjust` 内对全市场 `raw`(`total_raw`)算当天百分位 [0,1] → 头部连续可分(top10 全不同),`code` 作最终 tiebreaker 保可复现。**纯截面操作**:只用 t 日各票 raw(均 `<=as_of`),不触碰 t+1 → 无未来函数。
 
@@ -132,6 +137,20 @@ print(r["equity_curve"][-1])
 
 **效果**:首次回测算 + 写缓存;同区间重跑 / 跨策略复用时秒级(直接读缓存)。首次大样本(如 788 票 × 全年)较慢是正常投入。
 
+### 性能(G09:meta 缓存 + 索引策略 + WAL)
+
+热缓存天级回测的三个加速杠杆(纯基础设施,**不改信号**——优化前后 metrics 逐值一致,已回归验证):
+
+- **算子元信息进程级缓存**:`_load_operator_meta`(`runner.py`)挂 `@functools.lru_cache`,同进程内每个算子只查 1 次 `operator` 表;`CompiledStrategy._ensure_op_meta` 再做实例级缓存(每策略 + temperature 算一次)。砍掉旧的"每 (code, as_of, 算子) 一次 session 开闭"路径。
+- **复合唯一键覆盖热路径**:`operator_result` 唯一复合索引 `uq_op_result_code_date_op_fp(asset_code, as_of, operator_id, fingerprint)` 覆盖全部查询点(全键等值 / `asset_code` 前导 IN / 单日批量预读);4 个单列索引已删(`models.py` 去 `index=True` + `db._migrate` 幂等 `DROP INDEX`)。`EXPLAIN QUERY PLAN` 均走复合索引,无全表扫。
+- **WAL 模式**:`db.py` connect 监听器每连接设 `journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000`。读不阻塞写(scheduler daemon 写入期回测读不 `SQLITE_BUSY`)、冷启动批量写缓存省 fsync。
+
+> **WAL 备份 / 搬迁**:开 WAL 产生 `data/stockfu.db-wal` / `-shm` 旁路文件。备份或搬迁前先 checkpoint 把 -wal 并回主库,即可照旧单文件拷贝:
+> ```bash
+> python3 -c "import sqlite3;sqlite3.connect('data/stockfu.db').execute('PRAGMA wal_checkpoint(TRUNCATE)')"
+> ```
+> 或直接一并拷 `.db` + `.db-wal` + `.db-shm` 三文件。`python3 main.py --vacuum`(停 daemon/回测时跑)用 `VACUUM INTO` 原子重建主库回收空闲页(先备份 `.bak.G09`)。
+
 ## 7. 执行模型(`engine.py`)
 
 按**交易日**步进(akshare 交易日历;离线时自动 fallback 到 `quote_snapshot` 历史行情日):
@@ -142,7 +161,11 @@ print(r["equity_curve"][-1])
 
 **费用**(VirtualAccount,贴近真实):佣金万 3(最低 5 元/笔,双边)+ 印花税 0.05%(仅卖出)+ 过户费 0.001%(双边);A 股整百股。
 
-**约束**:单股 `max_weight=0.15`、买入冷却 5 日、卖出冷却 3 日、总权益 `-3%` 止损。
+**资金分配 / 风控约束**(本轮对标 rqalpha/backtrader 升级,详见 `docs/ARCHITECTURE_REVIEW.md`):
+- 单仓 `max_w=0.10`、总仓 `max_gross=0.90`(留 10% cash sleeve,对所有 rebalancer 生效)
+- **先卖后买 + 买单等比缩放**(`engine.py` Phase1 + `cash_scaler.py`):卖单先释放现金,买单用 `safety` 标量等比缩放到可用现金(对标 rqalpha P 控制器),不逐笔 `min(delta,cash)` 夹断丢目标
+- 个股成本止损 `stop_loss=8%`(浮亏→清仓)、组合回撤刹车 `portfolio_brake=10%`(→全局降仓一半);均可在 yaml `risk:` 段覆盖
+- 买入冷却 5 日、卖出冷却 3 日(策略 debounce 可配)
 
 ## 8. 绩效指标口径(`_metrics`)
 
@@ -151,8 +174,13 @@ print(r["equity_curve"][-1])
 | `total_return` | (末值−初始)/初始 |
 | `annualized` | `(末/初)^(252/天数)−1`(按交易日,口径准) |
 | `max_drawdown` | 权益曲线峰值到谷值 |
-| `sharpe` | 日收益均值 − 3%/252,÷ 日收益 std × √252 |
-| `win_rate` | 盈利交易占比 |
+| `sharpe` | 日收益均值 ÷ 日收益 std × √252(未减无风险利率;旧文档"−3%/252"为口径误) |
+| `sortino` | 日收益均值 ÷ **下行**收益 std × √252(仅负收益计波动,本轮新增) |
+| `calmar` | 年化收益 ÷ 最大回撤(本轮新增) |
+| `avg/max_gross_leverage` | 平均/最大总仓位占比 %(从 holdings_curve 算,本轮新增) |
+| `max_single_weight` | 最大单仓占比 %(实时,随股价漂移可超 max_w) |
+| `cash_constraint_hits` | 买单被现金等比缩放的天数(可观测,对标 backtrader Margin) |
+| `win_rate` | 盈利交易占比(按调仓动作;按交易回合统计见 P2-8) |
 | `benchmark_return` / `excess` | 上证综指(sh000001,1990起);按交集区间算;无数据→None+reason |
 | `benchmark_window` | 基准实际可用区间 `{start,end}` |
 
@@ -182,3 +210,4 @@ look-ahead 最强检验——同一起点跑两次、终点不同,看"较早终�
   `_benchmark_curve` 直读 `IndexQuoteDaily` 表，不再经由 `quote_model_for`。
   `--backfill-benchmark` 一次性回补全历史；`run_scheduled_fetch` 每日自动追加（akshare 优先、baostock 兜底，多源 fallback）。
   基准窗口在 `metrics.benchmark_window` 可见；超额收益恒定产出。
+- **G09 回测性能优化已完成（2026-07-15）**：operator meta 进程级 `lru_cache` + 删 4 冗余单列索引（复合唯一键覆盖热路径）+ WAL/`synchronous=NORMAL`/`busy_timeout` + `--vacuum` 维护工具。回归验证：优化前后 metrics + `equity_curve` + `trades` 逐字节一致（防未来函数红线通过）。详见 §6「性能」段。

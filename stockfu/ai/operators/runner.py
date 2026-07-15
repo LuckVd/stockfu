@@ -12,6 +12,7 @@ debounce_kwargs 属性把 YAML 的 position+debounce 翻译成 engine.run_backte
 """
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, field
 
 import yaml
@@ -37,6 +38,10 @@ class StrategyDebounce:
     max_weight: float = 0.15
     total_dead: float = 3.0
     targets: dict | None = None  # 信号→仓位映射表(YAML position.targets传入,None=用框架默认)
+    # 资金分配/风控(可选,YAML risk 段配;None=未配,用 engine 默认)
+    max_gross: float | None = None
+    stop_loss_pct: float | None = None
+    portfolio_brake_dd: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -50,6 +55,9 @@ class StrategyDebounce:
             "max_weight": self.max_weight,
             "total_dead": self.total_dead,
             "targets": self.targets or {},
+            "max_gross": self.max_gross,
+            "stop_loss_pct": self.stop_loss_pct,
+            "portfolio_brake_dd": self.portfolio_brake_dd,
         }
 
 
@@ -62,10 +70,59 @@ class CompiledStrategy:
     aggregate: dict = field(default_factory=dict)
     position: dict = field(default_factory=dict)
     debounce: dict = field(default_factory=dict)
+    risk: dict = field(default_factory=dict)
 
     # ---- engine 注入接口 ----
+    def _ensure_op_meta(self, temperature: float):
+        """算子元信息预算(每策略+temperature 算一次,缓存于实例):
+        [(spec, cls, fp, prompt, version)]。
+
+        复刻 analyze 内的指纹计算(has_llm 时 params 注入 temperature),保证批量预读
+        prefetch_cache 的 (op_id, fp) 键与单点读 get_operator_result 完全一致。
+        干掉原本每 (code,as_of,算子) 一次的 _load_operator_meta + compute_fingerprint
+        DB 往返(Operator.version 实际恒 0,版本由 prompt 驱动;此处只读一次)。"""
+        cache = getattr(self, "_op_meta_cache", None)
+        if cache is None:
+            cache = {}
+            self._op_meta_cache = cache  # type: ignore[attr-defined]
+        if temperature in cache:
+            return cache[temperature]
+        from stockfu.ai.operator_cache import compute_fingerprint
+        has_llm = any(op.get("type") == "llm" for op in self.operators)
+        meta = []
+        for spec in self.operators:
+            cls = get_operator_class(spec["id"])
+            if cls is None:
+                raise ValueError(f"未知算子 '{spec['id']}'(策略 {self.strategy_id})")
+            params = dict(spec.get("params") or {})
+            if has_llm:
+                params["temperature"] = temperature
+            prompt = None
+            if cls.type == "llm":
+                prompt, version = _load_operator_meta(cls.operator_id)
+                fp = compute_fingerprint("llm", version=version, prompt=prompt,
+                                         temperature=params.get("temperature"))
+            elif cls.type == "math":
+                _, version = _load_operator_meta(cls.operator_id)
+                fp = compute_fingerprint("math", version=version, params=params)
+            else:  # aggregator(不应在 self.operators,保险)
+                fp = None
+            meta.append((spec, cls, fp, prompt, version))
+        cache[temperature] = meta
+        return meta
+
+    def prefetch_cache(self, codes: list[str], as_of,
+                       temperature: float = 0.0) -> dict:
+        """单日批量预读缓存(回测 engine Phase 2 前调一次,主线程):
+        一次 SELECT 取回 (codes × as_of × 算子集) 全部命中 → {(code, op_id): OpResult}。
+        命中预填注入各 analyze,跳过逐 (code,as_of,算子) 的 get_operator_result 往返。"""
+        from stockfu.ai.operator_cache import get_operator_results_batch
+        meta = self._ensure_op_meta(temperature)
+        op_fps = [(spec["id"], fp) for spec, cls, fp, _, _ in meta if fp is not None]
+        return get_operator_results_batch(codes, as_of, op_fps)
+
     def analyze(self, code: str, as_of=None, holding_override=None,
-                temperature: float = 0.2) -> dict:
+                temperature: float = 0.2, cache_prefill: dict | None = None) -> dict:
         from stockfu.ai.context import build_context
         from stockfu.ai.synthesis import narrate
 
@@ -80,30 +137,22 @@ class CompiledStrategy:
 
         # 1. 跑所有叶子算子(math 先跑,结果进 ctx.factors 供 llm 算子参考)。
         #    算子级缓存:math/llm read-through(operator_result),aggregator 不缓存。
-        from stockfu.ai.operator_cache import (compute_fingerprint,
-                                               get_operator_result,
+        #    算子元信息(指纹/prompt/version)预算一次(_ensure_op_meta);cache_prefill
+        #    命中则跳过 get_operator_result 往返,miss 仍落单行计算+upsert。
+        from stockfu.ai.operator_cache import (get_operator_result,
                                                save_operator_result)
+        meta = self._ensure_op_meta(temperature)
         results = []
-        for spec in self.operators:
-            cls = get_operator_class(spec["id"])
-            if cls is None:
-                raise ValueError(f"未知算子 '{spec['id']}'(策略 {self.strategy_id})")
+        for spec, cls, fp, prompt, version in meta:
             params = dict(spec.get("params") or {})
             if has_llm:
                 params["temperature"] = temperature
 
-            # 算指纹→命中复用/miss→run+save(aggregator 跳过,纯函数重算廉价)
+            # 命中复用:预填 → 单点读;miss → run+save(aggregator fp=None 跳过缓存)
             r = None
-            fp = None
-            prompt = None
-            if cls.type == "llm":
-                prompt, version = _load_operator_meta(cls.operator_id)
-                fp = compute_fingerprint("llm", version=version, prompt=prompt,
-                                         temperature=params.get("temperature"))
-                r = get_operator_result(code, as_of, spec["id"], fp)
-            elif cls.type == "math":
-                _, version = _load_operator_meta(cls.operator_id)
-                fp = compute_fingerprint("math", version=version, params=params)
+            if cache_prefill is not None and fp is not None:
+                r = cache_prefill.get((code, spec["id"]))
+            if r is None and fp is not None:
                 r = get_operator_result(code, as_of, spec["id"], fp)
 
             if r is None:
@@ -161,9 +210,10 @@ class CompiledStrategy:
 
     @property
     def debounce_params(self) -> StrategyDebounce:
-        """把 position+debounce YAML 段编译成 StrategyDebounce(类型安全)。"""
+        """把 position+debounce+risk YAML 段编译成 StrategyDebounce(类型安全)。"""
         d = self.debounce or {}
         p = self.position or {}
+        rk = self.risk or {}
         return StrategyDebounce(
             buy_cool_down_days=d.get("buy_cool_down_days", 5),
             max_target_step=d.get("max_target_step", 1.0),
@@ -175,6 +225,9 @@ class CompiledStrategy:
             max_weight=p.get("max_w", 0.15),
             total_dead=p.get("dead", 3.0),
             targets=p.get("targets"),
+            max_gross=rk.get("max_gross"),
+            stop_loss_pct=rk.get("stop_loss"),
+            portfolio_brake_dd=rk.get("portfolio_brake"),
         )
 
     @property
@@ -183,8 +236,16 @@ class CompiledStrategy:
         return self.debounce_params.to_dict()
 
 
+@functools.lru_cache(maxsize=None)
 def _load_operator_meta(operator_id: str) -> tuple[str | None, int]:
-    """从 operator 表读 LLM 算子 prompt + version。prompt=None→算子用 advisor.system_prompt() 兜底。"""
+    """从 operator 表读 LLM 算子 prompt + version。prompt=None→算子用 advisor.system_prompt() 兜底。
+
+    进程级缓存(G09):operator 表仅 14 行、seed 期低频变更,同进程内每个 operator_id
+    只查 1 次 DB。调用点仅 _ensure_op_meta(已实例级缓存),此 lru_cache 让同进程内
+    第二个 CompiledStrategy 实例(如 API 连跑多次回测)也 0 session 开闭。
+    失效:改 operator 表 prompt/version 后重启进程即清空(fingerprint 含 version,
+    跨次回测自动失效);低频运维动作,不加手动清缓存 hook。
+    """
     from stockfu.db import session_scope
     from stockfu.models import Operator
     with session_scope() as s:
@@ -217,6 +278,7 @@ def compile_strategy(yaml_text: str) -> CompiledStrategy:
         aggregate=cfg.get("aggregate", {}),
         position=cfg.get("position", {}),
         debounce=cfg.get("debounce", {}),
+        risk=cfg.get("risk", {}),
     )
 
 
