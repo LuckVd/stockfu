@@ -11,6 +11,7 @@
     python main.py --backfill-factors    # 回补 两融总量历史 + 个股两融近10天 + 股息率历史序列
     python main.py --backfill-limit [N]  # 回补 连板/涨停历史（默认365天，限速1次/秒+断点续传，慢，建议后台跑）
     python main.py --fetch         # 每日抓取行情/分红/ETF + 算三层情绪指数
+    python main.py --vacuum        # VACUUM 重建主库(回收空闲页,先备份;停 daemon/回测时跑)
     python main.py --schedule      # 每日定时调度
     python main.py --export-csv [DIR]  # 导出市场数据为 CSV（默认 data/，可入 git）
     python main.py --import-csv [DIR]  # 从 CSV 合并导入回库（换机同步；upsert 不丢数据）
@@ -135,6 +136,45 @@ def run_clean_quotes() -> None:
     print(f"✓ 清理非交易日快照: {clean_quote_snapshots()}")
 
 
+def run_vacuum() -> None:
+    """VACUUM INTO 新文件 + 原子替换(先备份)。停 daemon/回测时跑。
+
+    G09 维护工具:删冗余索引 / cleanup_operator_results 全表扫 DELETE 后会留空闲页,
+    跑此回收空间。freelist=0 时无瘦身(纯整理)。VACUUM 不能在事务内跑→AUTOCOMMIT;
+    VACUUM INTO 产出含已提交 WAL 数据的独立新库,os.replace 原子换主库后删旧 -wal/-shm,
+    下次连接由 connect 监听器自动恢复 WAL 模式并重建旁路文件。
+    """
+    import os
+    import shutil
+    from pathlib import Path
+
+    from stockfu.config import DATA_DIR
+    from stockfu.db import engine
+
+    db = DATA_DIR / "stockfu.db"
+    bak = DATA_DIR / "stockfu.db.bak.G09"
+    vac = DATA_DIR / "stockfu.db.vac"
+    if not db.exists():
+        print(f"✗ 库不存在: {db}")
+        return
+    print(f"备份 {db} → {bak} …")
+    shutil.copy2(db, bak)
+    if vac.exists():
+        vac.unlink()
+    before = db.stat().st_size
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.exec_driver_sql(f"VACUUM INTO '{vac}'")
+    engine.dispose()                       # 释放指向旧 inode 的池连接,否则 os.replace 后写丢失
+    os.replace(vac, db)                    # 原子替换
+    for suf in ("-wal", "-shm"):           # 旧旁路失效(VACUUM INTO 已含其数据),删之,首连重建
+        p = Path(str(db) + suf)
+        if p.exists():
+            p.unlink()
+    after = db.stat().st_size
+    print(f"✓ VACUUM 完成: {before / 1024 / 1024:.1f}MB → {after / 1024 / 1024:.1f}MB;备份 {bak}")
+    print("  (下次连接自动重建 -wal/-shm 并恢复 WAL 模式)")
+
+
 def run_test_mail() -> None:
     import time
 
@@ -238,6 +278,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补回测基准 sh000001 历史日线（首次部署用）")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
+    p.add_argument("--vacuum", action="store_true",
+                   help="VACUUM INTO 原子重建主库(先备份 .bak.G09);停 daemon/回测时跑,回收空闲页")
     p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件")
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
     p.add_argument("--backtest", metavar="STRATEGY", default=None,
@@ -287,6 +329,8 @@ def main() -> None:
         run_schedule()
     elif args.clean_quotes:
         run_clean_quotes()
+    elif args.vacuum:
+        run_vacuum()
     elif args.test_mail:
         run_test_mail()
     elif args.config:

@@ -4,6 +4,7 @@
 
 ## 冷启动(新会话先读)
 - **`docs/PROJECT_STATE.md`** — 工作日志/冷启动手册:一句话现状、5 层架构、运行命令、数据现状表、已知数据坑、待办。**先读这份接上下文**。
+- `docs/ROADMAP.md` — 项目路线图(总体架构 + G0x 进度表 + 长期目标 + 开放风险)
 - `docs/BACKTEST.md` — 回测引擎(四层架构 + scheduler + 算子缓存 + 完整 metrics)
 - `docs/AI_ADVISORS.md` — 实盘 AI 4 顾问(4 顾问同时作为 LLM 算子供回测)
 
@@ -21,14 +22,14 @@ nohup python3 main.py --schedule >> data/schedule.log 2>&1 &   # daemon:定时�
 ## 关键约定(踩坑点)
 - **Python 用 `python3`**(`python` 不存在);系统 Python PEP668,pip 装 包加 `--break-system-packages`
 - **代理**:港美股(yfinance)走 7890(`source /opt/clash/proxy.sh`);国内源(akshare/efinance)no_proxy 直连
-- **数据全在 `data/stockfu.db`**(SQLite 单文件,搬迁=拷贝它;已备份 `data/stockfu.db.bak.*`);回测结果在 `data/backtest/`(已 gitignore,运行时产物)
+- **数据全在 `data/stockfu.db`**(SQLite 单文件,**WAL 模式**;搬迁=拷贝它——**WAL 下先 `PRAGMA wal_checkpoint(TRUNCATE)` 或一并拷 -wal/-shm**;已备份 `data/stockfu.db.bak.*`);回测结果在 `data/backtest/`(已 gitignore,运行时产物)
 - **回测防未来函数**:取数严格 `<= as_of`;`build_context(code, as_of=None)` / `ma_alignment(code, lookback, as_of=None)` 都支持 as_of,实盘不传=取最新
 - **量化平台四层**(`stockfu/ai/` + `stockfu/backtest/`):
   - 算子 `operators/`(7 math + 4 llm + 2 聚合,共 13)
   - 策略 `strategies/*.yaml` + DB strategy 表(6 个;active 走 `app_config.active_strategy_id`)
   - 选股 `rebalancers/`(pass_through / cap_and_rank / top_n_picker;active 走 `app_config.active_rebalancer_id`)
   - 执行 `backtest/engine.py`(VirtualAccount + T+1 开盘 + 真实费用 + 完整 metrics)+ `scheduler.py`(注入 CompiledStrategy + 算子缓存)
-- **算子缓存** `operator_result` 表:同 `(code, as_of, fingerprint)` 全局复用,首次回测慢(算+写),后续读缓存秒级
+- **算子缓存** `operator_result` 表:同 `(code, as_of, fingerprint)` 全局复用,首次回测慢(算+写),后续读缓存秒级。**G09 性能**:复合唯一键覆盖热路径(4 单列索引已删)+ meta 进程级 `lru_cache` + WAL/`synchronous=NORMAL`/`busy_timeout`;`python3 main.py --vacuum`(停 daemon 时跑)回收空闲页
 - **行情已拆表**:`QuoteSnapshot`(个股,含 pe/pb/ps_ttm/pcf) / `EtfQuoteDaily` / `IndexQuoteDaily` 三表分离;`quote_model_for` 仍仅返 QuoteSnapshot;**回测基准 G02 已激活**:基准=上证综指 sh000001(1990起,`index_quote_daily`),`_benchmark_curve` 直读不走 `quote_model_for`;`run_scheduled_fetch` 每日更新;`--backfill-benchmark` 全量回补
 
 ## 状态

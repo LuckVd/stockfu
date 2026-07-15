@@ -56,6 +56,7 @@ stockfu/
 - **API**：/portfolio /quote /dividend /grid /indices/{market,sector,stock,history} /fundflow /sentiment
 - **AI 顾问**：4 常驻顾问(趋势/逆向/风险/估值)+规则汇总+LLM润色，详见 `docs/AI_ADVISORS.md`
 - **回测引擎(四层架构)**：算子(7math+4llm)→策略(6)→rebalancer选股(top_n/cap_rank/pass_through)→T+1执行。算子结果全局缓存(operator_result,跨回测复用)+真实费用(佣/印/过)+完整metrics(夏普/胜率/超额)。CLI `--backtest` 走 scheduler.run；详见 `docs/BACKTEST.md`
+- **回测性能优化(G09)**：operator meta 进程级 lru_cache + 删 4 冗余单列索引(复合唯一键覆盖热路径)+ WAL/synchronous=NORMAL/busy_timeout + `--vacuum` 维护工具。优化前后 metrics 逐值一致(防未来函数红线通过,详见 BACKTEST.md §6)
 - **行情拆表**：QuoteSnapshot(个股,含pe/pb/ps_ttm/pcf/turnover) / EtfQuoteDaily(15只ETF,2021起) / IndexQuoteDaily(3指数,1990起) 三表分离,`quote_model_for` 按类型路由
 - **个股估值分位**：baostock 全字段(peTTM/pbMRQ)backfill 落 QuoteSnapshot;`valuation_percentile(code,as_of,years=5)` 本地算 PE/PB 历史分位(无网络/无未来函数)。PE 覆盖792只/PB 800只(2021起约5年)
 - **代理自动化**：setup_network(港美股走7890代理,国内源no_proxy直连)
@@ -77,6 +78,7 @@ stockfu/
 | 板块指数K线+成交额 | 4年(8132条) | 同花顺index_ths，绕东财限流；5行业板块 |
 | 板块主力净流入 | 当日起攒(30条) | 同花顺fund_flow_industry即时；东财push2his历史源被限 |
 | 宏观因子(MarketFactorDaily) | 2015起(2439条) | 涨跌家数/连板/两融/ERP等10+factor；东财限流时空 |
+| 算子缓存(operator_result) | 565万行(跨回测复用) | 复合唯一键覆盖热路径,4单列索引已删;meta lru_cache+WAL+NORMAL,见 BACKTEST.md §6 |
 
 ## 5. 运行命令
 ```bash
@@ -127,4 +129,4 @@ nohup python main.py --schedule >> data/schedule.log 2>&1 &
 - TUI多屏(个股/板块情绪详情屏)；美股 quote_snapshot 抓取修复(AAPL 等为空)
 
 ## 9. 数据复用
-全部在 `data/stockfu.db`(SQLite单文件)。搬迁=拷这一个文件。已备份 `data/stockfu.db.bak.*`。日常--fetch增量,历史只增不减。
+全部在 `data/stockfu.db`(SQLite单文件,**WAL 模式**)。搬迁=拷这一个文件——**WAL 下先 `PRAGMA wal_checkpoint(TRUNCATE)` 或一并拷 -wal/-shm**;`--vacuum` 回收空闲页。已备份 `data/stockfu.db.bak.*`。日常--fetch增量,历史只增不减。

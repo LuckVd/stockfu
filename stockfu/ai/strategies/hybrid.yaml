@@ -10,7 +10,7 @@ operators:
 aggregate:
   method: risk_veto
   thresholds: {strong_buy: 14, buy: 5, hold: -5, sell: -14}
-position: {mode: continuous, max_w: 0.15, dead: 3.0}
+position: {mode: continuous, max_w: 0.10, dead: 3.0}
 debounce:
   buy_cool_down_days: 5
   max_target_step: 1.0

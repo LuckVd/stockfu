@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from typing import Iterable
 
 from sqlmodel import select
 
@@ -44,30 +43,30 @@ def _is_failure(r: OpResult) -> bool:
 
 
 def _detail_json(r: OpResult) -> str:
+    """LLM 行的 detail JSON(math 行不写 detail=None)。raw_score 已提独立列,不进 JSON。"""
     return json.dumps({
         "reasoning": r.reasoning,
         "evidence": r.evidence or {},
         "tools_used": r.tools_used or [],
-        "raw_score": r.raw_score,   # 未 clamp 的连续强度(排序用);旧记录无此键→None→退化 score
     }, ensure_ascii=False, default=str)
 
 
-def get_operator_result(code: str, as_of, operator_id: str,
-                        fingerprint: str) -> OpResult | None:
-    """命中缓存 → 重建 OpResult;否则 None。weight 由 runner 汇总时按策略 YAML 赋,不入库。"""
-    with session_scope() as s:
-        row = s.exec(select(OperatorResult).where(
-            OperatorResult.asset_code == code,
-            OperatorResult.as_of == as_of,
-            OperatorResult.operator_id == operator_id,
-            OperatorResult.fingerprint == fingerprint,
-        )).first()
-    if row is None or not row.detail:
-        return None
-    try:
-        d = json.loads(row.detail)
-    except (json.JSONDecodeError, TypeError):
-        return None
+def _row_to_opresult(row: "OperatorResult") -> OpResult:
+    """从 DB 行重建 OpResult(单点读 get_operator_result 与批量读 get_operator_results_batch
+    共用,保证字段映射逐字一致 —— 行为漂移会改回测结果)。
+
+    raw_score 优先取独立列(全精度,冷热一致);列为 NULL(回填前的旧行)回退 detail JSON。
+    detail 为空(math 行)时 reasoning/evidence/tools_used 取默认值(math 回测不用)。
+    """
+    d: dict = {}
+    if row.detail:
+        try:
+            d = json.loads(row.detail)
+        except (json.JSONDecodeError, TypeError):
+            d = {}
+    raw = row.raw_score
+    if raw is None:
+        raw = d.get("raw_score")  # 回填前旧行:raw_score 仍在 detail 里
     return OpResult(
         operator=row.operator_id,
         type=row.operator_type,
@@ -80,13 +79,69 @@ def get_operator_result(code: str, as_of, operator_id: str,
         target_weight=row.target_weight,
         value=row.value,
         veto=row.veto,
-        raw_score=d.get("raw_score"),   # 旧记录无此键→None→聚合时退化为 score
+        raw_score=raw,
     )
+
+
+def get_operator_result(code: str, as_of, operator_id: str,
+                        fingerprint: str) -> OpResult | None:
+    """命中缓存 → 重建 OpResult;否则 None。weight 由 runner 汇总时按策略 YAML 赋,不入库。
+
+    行存在即命中(核心数据在独立列;math 行 detail=NULL 也算命中)。"""
+    with session_scope() as s:
+        row = s.exec(select(OperatorResult).where(
+            OperatorResult.asset_code == code,
+            OperatorResult.as_of == as_of,
+            OperatorResult.operator_id == operator_id,
+            OperatorResult.fingerprint == fingerprint,
+        )).first()
+    if row is None:
+        return None
+    return _row_to_opresult(row)
+
+
+def get_operator_results_batch(
+    codes: list[str], as_of, op_fps: list[tuple[str, str]]
+) -> dict[tuple[str, str], OpResult]:
+    """单日批量读缓存:一次 SELECT 取回 (codes × as_of × 算子集) 全部命中行。
+
+    替代回测里每个 (code,as_of,算子) 一次 get_operator_result 的 N×M 次往返 ——
+    engine Phase 2 提交线程池前调一次,把 dict 注入各 analyze 作预填缓存。
+
+    op_fps: [(operator_id, fingerprint), ...] 策略叶子算子的 (id, 指纹) 对
+      (指纹不依赖 code/as_of,策略编译时算一次即可,见 CompiledStrategy._op_meta)。
+    返回 {(asset_code, operator_id): OpResult};miss 的组合不在 dict(调用方落 miss 计算+upsert)。
+    按 (operator_id, fingerprint) 对精确过滤,防指纹跨算子碰撞误命中。
+    """
+    codes = codes or []
+    op_fps = op_fps or []
+    if not codes or not op_fps:
+        return {}
+    op_ids = [oid for oid, _ in op_fps]
+    fps = [fp for _, fp in op_fps]
+    valid_pairs = set(op_fps)
+    out: dict[tuple[str, str], OpResult] = {}
+    with session_scope() as s:
+        rows = s.exec(select(OperatorResult).where(
+            OperatorResult.as_of == as_of,
+            OperatorResult.asset_code.in_(codes),
+            OperatorResult.operator_id.in_(op_ids),
+            OperatorResult.fingerprint.in_(fps),
+        )).all()
+    for row in rows:
+        if (row.operator_id, row.fingerprint) not in valid_pairs:
+            continue
+        out[(row.asset_code, row.operator_id)] = _row_to_opresult(row)
+    return out
 
 
 def save_operator_result(code: str, as_of, operator_id: str, fingerprint: str,
                          result: OpResult, op_type: str) -> bool:
-    """upsert 一条算子缓存。失败结果不落库(返回 False),重跑时重试。"""
+    """upsert 一条算子缓存。失败结果不落库(返回 False),重跑时重试。
+
+    raw_score 写独立列(全精度);math 行 detail=NULL(回测不读 reasoning/evidence/tools_used,
+    省 JSON 序列化+存储),LLM 行 detail 存 reasoning/evidence/tools_used(昂贵 LLM 产物)。
+    """
     if _is_failure(result):
         return False
     with session_scope() as s:
@@ -101,43 +156,14 @@ def save_operator_result(code: str, as_of, operator_id: str, fingerprint: str,
         row.operator_type = op_type
         row.signal = result.signal
         row.score = result.score
+        row.raw_score = result.raw_score
         row.confidence = result.confidence
         row.veto = result.veto
         row.target_weight = result.target_weight
         row.value = result.value
-        row.detail = _detail_json(result)
+        row.detail = None if op_type == "math" else _detail_json(result)
         row.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
         if row.id is None:
             s.add(row)
         s.commit()
     return True
-
-
-def count_operator_results(codes: list[str], start, end,
-                           operator_ids: Iterable[str]) -> int:
-    """[start,end] 内 codes 的指定算子集已落库行数(回测 progress 用)。
-
-    语义:已覆盖的 (code, 交易日, 算子) 组合数,反映真实剩余计算量。
-    active 策略的算子 id 由调用方从 CompiledStrategy.operators 取。
-    fingerprints: {operator_id: fingerprint} 可选过滤,改了 prompt/params 后旧缓存不计入进度。
-    """
-    codes = codes or []
-    oids = list(operator_ids or [])
-    if not codes or not oids:
-        return 0
-    with session_scope() as s:
-        rows = s.exec(select(OperatorResult.id).where(
-            OperatorResult.asset_code.in_(codes),
-            OperatorResult.as_of.between(start, end),
-            OperatorResult.operator_id.in_(oids),
-        )).all()
-    if fingerprints:
-        fp_set = set(fingerprints.values())
-        with session_scope() as s:
-            rows = s.exec(select(OperatorResult.id).where(
-                OperatorResult.asset_code.in_(codes),
-                OperatorResult.as_of.between(start, end),
-                OperatorResult.operator_id.in_(oids),
-                OperatorResult.fingerprint.in_(list(fp_set)),
-            )).all()
-    return len(rows)

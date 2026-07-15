@@ -103,7 +103,9 @@ def seed_operators_and_strategies() -> int:
     if not has_app_config("active_rebalancer_id"):
         set_app_config("active_rebalancer_id", "pass_through")
     if not has_app_config("rebalancer_params"):
-        set_app_config("rebalancer_params", json.dumps({"max_gross": 0.95}))
+        # max_gross: 总仓安全阀(engine 层对所有 rebalancer 生效),默认留 10% 现金;
+        # max_w: top_n_picker 单仓上限(对齐策略层 max_w=0.10)。
+        set_app_config("rebalancer_params", json.dumps({"max_gross": 0.90, "max_w": 0.10}))
 
     # 清理 operator_result 孤儿缓存(算子已不在 operator 表的历史缓存)
     cleaned = cleanup_operator_results()
@@ -117,6 +119,10 @@ def cleanup_operator_results() -> int:
 
     算子从注册表移除 → 不再被 seed upsert → 不在 operator 表 → 其历史缓存成孤儿。
     active 策略用到的算子必在 operator 表,不会被误删(回测结果不变,仅清空间)。
+
+    注:此 DELETE 仅按 operator_id 过滤(无 asset_code 前导),复合唯一键用不上 →
+    走全表扫(5.6M 行,数秒~十几秒)。这是罕见 init 期维护操作,可接受;
+    operator_id 单列索引已作为冗余删除(复合键覆盖全部热路径查询)。
     """
     from sqlalchemy import text
 

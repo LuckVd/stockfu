@@ -9,7 +9,7 @@ operators:
 aggregate:
   method: weighted_sum
   thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
-position: {mode: continuous, max_w: 0.12, dead: 2.5}
+position: {mode: continuous, max_w: 0.10, dead: 2.5}
 debounce:
   buy_cool_down_days: 3
   max_target_step: 1.0
