@@ -184,6 +184,15 @@ print(r["equity_curve"][-1])
 | `benchmark_return` / `excess` | 上证综指(sh000001,1990起);按交集区间算;无数据→None+reason |
 | `benchmark_window` | 基准实际可用区间 `{start,end}` |
 
+### 口径变更(2026-07-15:砍回测 LLM 算子 + 铲除 ±20/signal 体系)
+
+- **score**:算子直出**连续值**(删 ±20 clamp;原 `raw_score` 并入 `score`)。各算子保留满强度刻度(momentum ±20=±10%涨幅 / bollinger 跌破下轨≈20 / value 低估≈20),但不硬截断 → 头部连续可分。
+- **signal**:降级为**派生标签**(`score_to_signal` 从 total_score 派生,仅供展示/审计),**不参与仓位决策**。
+- **仓位映射**:统一 **continuous 连续映射** `_total_to_weight(total/score_full → max_w)`;`score_full` 满仓刻度参数化(默认 20,策略 yaml `position.score_full` 可配,如 `macd_cross=10`)。discrete 模式 + `_SIGNAL_TARGET` 表已删,所有策略走 continuous。
+- **OpResult**:删 `raw_score`/`evidence`/`tools_used`(剩 10 字段)。算子缓存指纹纳入**源码 hash**(`sha1(inspect.getsource(cls))`,治 P2-5:改算子代码自动失效旧缓存,不再依赖人工 bump version)。
+- **回测 LLM 算子下线**(`operators/llm/` 整目录删);`hybrid`/`classic_4advisors` 策略废弃;active 默认改 `pure_factor`。**实盘 AI 4 顾问**(`ai/skills` 的 Opinion)独立链路保留,不受影响。
+- **行为影响**:属行为改变类——同策略 metrics 不与旧基准逐值一致(连续映射替代 discrete 阶跃),但**确定性**(同参双跑全等)+ **防未来函数**(前缀一致性)红线均通过。
+
 ## 9. 防未来函数(已验证)
 
 - `services.factors.quote_series(code, field, days, as_of)` —— 查询带 `quote_date <= as_of` 上界
@@ -211,3 +220,46 @@ look-ahead 最强检验——同一起点跑两次、终点不同,看"较早终�
   `--backfill-benchmark` 一次性回补全历史；`run_scheduled_fetch` 每日自动追加（akshare 优先、baostock 兜底，多源 fallback）。
   基准窗口在 `metrics.benchmark_window` 可见；超额收益恒定产出。
 - **G09 回测性能优化已完成（2026-07-15）**：operator meta 进程级 `lru_cache` + 删 4 冗余单列索引（复合唯一键覆盖热路径）+ WAL/`synchronous=NORMAL`/`busy_timeout` + `--vacuum` 维护工具。回归验证：优化前后 metrics + `equity_curve` + `trades` 逐字节一致（防未来函数红线通过）。详见 §6「性能」段。
+
+## 11. 因子诊断层（alphalens 思路，阶段2 / 2026-07-15）
+
+单算子连续 `score` 独立量化为 IC / 分位收益 / 换手 / 衰减——**验证单个因子不必搭整条策略管道**（治"每只票每天必须跑全管道"冗长 + 补因子研究工作流缺口）。G10 铲除 ±20 后 score 连续可分，本层直接消费它。
+
+### 怎么跑
+
+```bash
+python3 main.py --factor-diag momentum \
+    --start 2025-01-02 --end 2025-06-30 \
+    --codes all --periods 1,5,10,21 --quantiles 5 --save
+```
+
+| 参数 | 说明 | 默认 |
+|------|------|------|
+| `--factor-diag OPERATOR` | math 算子 ID（如 `momentum` / `macd_cross` / `value`） | 必填 |
+| `--start` / `--end` | 信号区间 | 1 年前 → 今天 |
+| `--codes` | 标的池；`all`/`stocks`/`market`=全市场个股(quote_snapshot 801 票)；逗号分隔=显式；不传=自选(Asset cn 52 票) | 自选 |
+| `--periods` | 前向收益周期(交易日)，逗号分隔 | `1,5,10,21` |
+| `--quantiles` | 分位桶数 | 5 |
+| `--primary-period` | 分位收益/换手主周期(衰减 IC 表覆盖全部 periods) | 5 |
+| `--params` | 算子参数 JSON（如 `'{"window":10}'`） | 算子 `PARAMS_SCHEMA` |
+| `--save` | 落盘 `data/factor_diag/diag-*.json`（已 gitignore） | 不存 |
+
+输出四件套（纯 Python，无 numpy/pandas 依赖，与 `_metrics` 同款）：
+
+- **IC 衰减**：逐日横截面 Spearman(factor[t], forward_return[t]) → 序列统计（mean IC / IC IR=mean÷std / t-stat / 正 IC 占比 / 天数），按前向周期列表展示衰减结构。
+- **分位收益**：按因子值横截面分 N 桶（Q1 最弱…QN 最强）算前向收益均值 + 多空价差(QN−Q1) + 单调性（桶号与均值的 Spearman）。
+- **换手**：各分位组合日均成员变动率（对称差/并集），衡量持有该因子的换手成本。
+- **样本规模**：标的池 / 信号日 / 因子观测数（透明可见，避免无意义小样本结论）。
+
+### 关键设计
+
+- **因子暴露 = 算子 `score`**（G10 后连续不 clamp），与 rebalancer 截面排名用同一个量；有效观测门槛 `value is not None`（各算子数据不足时 value=None）。
+- **复用回测算子缓存**：因子面板走 `operator_result` read-through，指纹经 `single_operator_fingerprint`（version+params+source hash，与 `CompiledStrategy._ensure_op_meta` **逐字一致**）→ **回测算过的(code,as_of)因子诊断直接读、反之亦然**，跨场景互通。每日单日批量读缓存 + 并发算 miss + 单日批量落库（`save_operator_results_day`，一次 session），治大样本首跑逐行 session 慢。
+- **防未来函数**：因子值在 `as_of=t` 算出（算子取数 `<=as_of`）；前向收益 `price[t+h]/price[t]-1` 用 t 之后价格——这是被预测对象、非泄露；IC 严格按日横截面算后再对日序列聚合（不跨日混池）。排名用平均秩 + code 兜底，确定性可复现。
+- **确定性 + 跨工具缓存互通**均已回归验证（2026-07-15）：同参双跑 IC/分位/换手/衰减逐值一致；重跑 `miss=0`（全缓存命中）；factor-diag 写入的缓存行指纹与回测一致。
+
+### 口径注
+
+- 单日参与 IC 的最少标的数 `MIN_CROSS_SECTION=5`（不足该日不计）；前向收益按扩展交易日历位次推 h 日（跨停牌不漂移，仅当 t 与 t+h 两天都有收盘价才计）。
+- A 股 momentum 实测（801 票，2025-05~06）：1/5 日 IC 为负（−0.038/−0.041，短线反转），分位单调性 −0.60——典型 A 股短周期动量反转特征，工具输出经济意义合理。
+- **默认标的池 = 自选 52 票**（与回测一致，快速试）；**全市场因子研究用 `--codes all`**（801 票，首跑填缓存分钟级、一次性）。

@@ -62,48 +62,43 @@ def _position_score(latest_close: float, upper: float, lower: float,
                     buy_max: float = 0.3, sell_min: float = 0.7):
     """根据价格在布林带中的位置生成信号(中下轨买 / 中上轨卖)。
 
-    buy_max/sell_min 参数化位置阈值(默认 0.3/0.7 = 旧行为,逐字节一致):
+    buy_max/sell_min 参数化位置阈值(默认 0.3/0.7):
       position < buy_max  → 买(下轨附近);position > sell_min → 卖(上轨附近);
       buy_max..sell_min   → 中轨观望。
-    返回 (signal, score, raw, confidence, detail);score=clamp(raw,±20),raw 供截面排名。
+    返回 (signal, score, confidence, detail);score=连续强度(不 clamp)。
     """
     band_range = upper - lower if upper > lower else 1.0
     position = (latest_close - lower) / band_range
 
     if latest_close >= upper:
         exceed = (latest_close - upper) / band_range
-        raw = -8.0 - exceed * 15.0
-        score = max(-20.0, raw)
+        score = -8.0 - exceed * 15.0
         signal = "sell" if exceed < 0.5 else "strong_sell"
         confidence = min(0.8, 0.5 + abs(score) / 40.0)
         detail = f"周线突破上轨(超出{exceed:.1%}),周线级别超买"
     elif latest_close <= lower:
         exceed = (lower - latest_close) / band_range
-        raw = 8.0 + exceed * 15.0
-        score = min(20.0, raw)
+        score = 8.0 + exceed * 15.0
         signal = "buy" if exceed < 0.5 else "strong_buy"
         confidence = min(0.8, 0.5 + abs(score) / 40.0)
         detail = f"周线跌破下轨(超出{exceed:.1%}),周线级别超卖"
     elif position < buy_max:
-        raw = 6.0 * (1.0 - position / buy_max)
-        score = raw
+        score = 6.0 * (1.0 - position / buy_max)
         signal = "buy"
         confidence = 0.55
         detail = f"周线下轨附近(位置{position:.0%}<{buy_max:.0%}),支撑区"
     elif position > sell_min:
-        raw = -6.0 * ((position - sell_min) / (1.0 - sell_min))
-        score = raw
+        score = -6.0 * ((position - sell_min) / (1.0 - sell_min))
         signal = "sell"
         confidence = 0.55
         detail = f"周线上轨附近(位置{position:.0%}>{sell_min:.0%}),压力区"
     else:
-        raw = 0.0
         score = 0.0
         signal = "hold"
         confidence = 0.4
         detail = f"周线中轨附近(位置{position:.0%}),方向不明"
 
-    return signal, round(score, 1), round(raw, 2), round(confidence, 2), detail
+    return signal, round(score, 1), round(confidence, 2), detail
 
 
 @register
@@ -179,7 +174,7 @@ class WeeklyBollingerOperator(BaseOperator):
             )
 
         latest_close = daily_closes[-1]
-        signal, score, raw, confidence, pos_detail = _position_score(
+        signal, score, confidence, pos_detail = _position_score(
             latest_close, upper, lower, buy_max, sell_min,
         )
 
@@ -199,20 +194,7 @@ class WeeklyBollingerOperator(BaseOperator):
 
         return OpResult(
             operator=self.operator_id, type="math",
-            signal=signal, score=score, raw_score=raw, confidence=confidence,
+            signal=signal, score=score, confidence=confidence,
             value=round((latest_close - lower) / ((upper - lower) or 1.0), 3),
             reasoning=reasoning,
-            evidence={
-                "sma": round(sma, 2),
-                "upper": round(upper, 2),
-                "lower": round(lower, 2),
-                "bandwidth": round(bandwidth, 1),
-                "position_pct": round(
-                    (latest_close - lower) / ((upper - lower) or 1.0) * 100, 1
-                ),
-                "weekly_count": len(weekly_closes),
-                "daily_count": len(daily_closes),
-                "window": window,
-                "std_dev": k,
-            },
         )

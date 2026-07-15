@@ -36,20 +36,17 @@ class MeanReversionOperator(BaseOperator):
                             signal="hold", score=0.0, confidence=0.3,
                             reasoning=f"RSI({period})样本不足")
         if rsi < oversold:                                # 超卖→买
-            raw = 20 * (1 - rsi / oversold)
-            score = max(5.0, raw)
+            score = 20 * (1 - rsi / oversold)
             signal = "buy"
             reasoning = f"RSI({period})={rsi:.1f} 超卖,反转买入"
         elif rsi > overbought:                            # ��买→卖
-            raw = -20 * (1 - (100 - rsi) / (100 - overbought))
-            score = min(-5.0, raw)
+            score = -20 * (1 - (100 - rsi) / (100 - overbought))
             signal = "sell"
             reasoning = f"RSI({period})={rsi:.1f} 超买,反转卖出"
         else:
-            raw = 0.0
             score = 0.0
             signal = "hold"
             reasoning = f"RSI({period})={rsi:.1f} 中性"
         return OpResult(operator=self.operator_id, type="math", value=round(rsi, 2),
-                        signal=signal, score=round(score, 1), raw_score=round(raw, 2), confidence=0.6,
+                        signal=signal, score=round(score, 1), confidence=0.6,
                         reasoning=reasoning)

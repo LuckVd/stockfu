@@ -44,7 +44,8 @@ def _migrate() -> None:
     """开发期迁移：
     1) 旧 index_snapshot 缺 scope/level 列则重建（仅丢指数数据，可 --fetch 重算）；
     2) quote_snapshot 补 turnover 列（SQLModel create_all 不改已有表）；
-    3) operator_result 补 raw_score 列（从 detail JSON 提为独立列；一次性回填见 docs）；
+    3) operator_result 删已废弃的 raw_score 列（G10 后 raw_score 并入 score，全库无代码
+       读写；SQLite≥3.35 DROP COLUMN，幂等）；
     4) operator_result 删 4 个冗余单列索引（复合唯一键 uq_op_result_code_date_op_fp
        已覆盖全部热路径查询：全键等值 + asset_code 前导的 IN/Between）。孤儿清理
        （seed.py）改全表扫，罕见可接受。
@@ -62,9 +63,10 @@ def _migrate() -> None:
                 conn.execute(text("ALTER TABLE quote_snapshot ADD COLUMN turnover FLOAT"))
     if insp.has_table("operator_result"):
         cols = [c["name"] for c in insp.get_columns("operator_result")]
-        if "raw_score" not in cols:
+        # raw_score 列已废弃(G10 后并入 score,全库无代码读写)→ DROP 回收(SQLite≥3.35)。幂等。
+        if "raw_score" in cols:
             with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE operator_result ADD COLUMN raw_score FLOAT"))
+                conn.execute(text("ALTER TABLE operator_result DROP COLUMN raw_score"))
         # 删 4 个冗余单列索引（复合唯一键最左前缀/前导列已覆盖）。DROP IF EXISTS 幂等。
         existing = {ix["name"] for ix in insp.get_indexes("operator_result")}
         redundant = ["ix_operator_result_asset_code", "ix_operator_result_as_of",
@@ -74,6 +76,14 @@ def _migrate() -> None:
             with engine.begin() as conn:
                 for name in to_drop:
                     conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
+
+
+    # source hash 上线(P2-5):指纹纳入算子源码后,旧指纹全失效成孤儿占空间。
+    # 一次性清空 operator_result(math 重算廉价,首次回测慢一次);幂等:标记设后不再清。
+    if insp.has_table("operator_result") and not has_app_config("opcache_source_hash_migrated"):
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM operator_result"))
+        set_app_config("opcache_source_hash_migrated", "1")
 
 
 def init_db() -> None:

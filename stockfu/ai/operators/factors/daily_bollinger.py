@@ -24,46 +24,40 @@ def _position_score(latest_close: float, upper: float, lower: float,
     """根据价格在布林带中的位置生成信号(中下轨买 / 中上轨卖)。
 
     position: 0=下轨, 0.5≈中轨, 1=上轨。
-    返回 (signal, score, raw, confidence, detail)。score=clamp(raw,±20);
-    raw 为 clamp 前连续强度(供 rebalancer 截面排名)。
+    返回 (signal, score, confidence, detail)。score=连续强度(不 clamp);越接近/超出轨道越强。
     """
     band_range = upper - lower if upper > lower else 1.0
     position = (latest_close - lower) / band_range
 
     if latest_close <= lower:                                   # 跌破下轨 → 强买
         exceed = (lower - latest_close) / band_range
-        raw = 12.0 + exceed * 15.0
-        score = min(20.0, raw)
+        score = 12.0 + exceed * 15.0
         signal = "buy" if exceed < 0.3 else "strong_buy"
         confidence = min(0.85, 0.6 + abs(score) / 40.0)
         detail = f"日线跌破下轨(超出{exceed:.1%}),极度超卖"
     elif latest_close >= upper:                                 # 突破上轨 → 强卖
         exceed = (latest_close - upper) / band_range
-        raw = -12.0 - exceed * 15.0
-        score = max(-20.0, raw)
+        score = -12.0 - exceed * 15.0
         signal = "sell" if exceed < 0.3 else "strong_sell"
         confidence = min(0.85, 0.6 + abs(score) / 40.0)
         detail = f"日线突破上轨(超出{exceed:.1%}),极度超买"
     elif position < buy_max:                                    # 中下轨 → 买
-        raw = 10.0 * (1.0 - position / buy_max)                 # 下轨处=10, buy_max处=0
-        score = raw
+        score = 10.0 * (1.0 - position / buy_max)               # 下轨处=10, buy_max处=0
         signal = "buy"
         confidence = 0.6
         detail = f"日线下半区(位置{position:.0%}<{buy_max:.0%}),超卖回升区"
     elif position > sell_min:                                   # 中上轨 → 卖
-        raw = -10.0 * ((position - sell_min) / (1.0 - sell_min))
-        score = raw
+        score = -10.0 * ((position - sell_min) / (1.0 - sell_min))
         signal = "sell"
         confidence = 0.6
         detail = f"日线上半区(位置{position:.0%}>{sell_min:.0%}),超买回落区"
     else:                                                       # 中轨死区
-        raw = 0.0
         score = 0.0
         signal = "hold"
         confidence = 0.4
         detail = f"中轨附近(位置{position:.0%}),观望"
 
-    return signal, round(score, 1), round(raw, 2), round(confidence, 2), detail
+    return signal, round(score, 1), round(confidence, 2), detail
 
 
 @register
@@ -105,7 +99,7 @@ class DailyBollingerOperator(BaseOperator):
             )
 
         latest_close = closes[-1]
-        signal, score, raw, confidence, detail = _position_score(
+        signal, score, confidence, detail = _position_score(
             latest_close, upper, lower, buy_max, sell_min)
 
         band_note = ""
@@ -124,15 +118,7 @@ class DailyBollingerOperator(BaseOperator):
 
         return OpResult(
             operator=self.operator_id, type="math",
-            signal=signal, score=score, raw_score=raw, confidence=confidence,
+            signal=signal, score=score, confidence=confidence,
             value=round((latest_close - lower) / ((upper - lower) or 1.0), 3),
             reasoning=reasoning,
-            evidence={
-                "sma": round(sma, 2), "upper": round(upper, 2), "lower": round(lower, 2),
-                "bandwidth": round(bandwidth, 1),
-                "position_pct": round(
-                    (latest_close - lower) / ((upper - lower) or 1.0) * 100, 1),
-                "daily_count": len(closes), "window": window, "std_dev": k,
-                "buy_max": buy_max, "sell_min": sell_min,
-            },
         )

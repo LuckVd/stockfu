@@ -155,10 +155,4 @@ class MacdCrossOperator(BaseOperator):
             value=latest_dif,
             signal=signal_out, score=score, confidence=0.7,
             reasoning=f"日常规({daily_cross}) 周线({weekly_cross}) → {reason}",
-            evidence={
-                "daily_cross": daily_cross,
-                "weekly_cross": weekly_cross,
-                "dif": latest_dif,
-                "fast": fast, "slow": slow, "signal": signal,
-            },
         )

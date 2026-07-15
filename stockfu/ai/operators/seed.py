@@ -4,8 +4,8 @@
 表非空——升级用户 server 启动也能自动补齐,无需重新 --init-db。
 
 策略 YAML 内联于此(DB 为运行时真源);strategies/*.yaml 为可编辑模板(供用户参考/导入)。
-LLM 算子 prompt 首次 seed 从 advisors.system_prompt() 抽取;重 seed 不覆盖已改 prompt
-(保留用户热改)。数学/汇总算子 params_schema 从类 PARAMS_SCHEMA 抽取。
+数学/汇总算子 params_schema 从类 PARAMS_SCHEMA 抽取。
+(回测侧 LLM 算子已下线;实盘 AI 4 顾问走 ai/skills 独立链路,不经此 seed。)
 """
 from __future__ import annotations
 
@@ -31,9 +31,7 @@ _OP_NAMES = {
 # 策略清单: strategy_id。name + config 从 strategies/{id}.yaml 读(单一真源)。
 # 注意:active 由 app_config('active_strategy_id') 单 key 指针决定,此处不再设默认活跃。
 _STRATEGIES = [
-    "classic_4advisors",
     "pure_factor",
-    "hybrid",
     "macd_cross",
     "momentum_breakout",
     "dual_bollinger",
@@ -54,24 +52,15 @@ def seed_operators_and_strategies() -> int:
     """幂等 upsert 算子库 + 策略,返回处理行数。"""
     from stockfu.db import session_scope
     from stockfu.ai.operators import REGISTRY, discover_and_register
-    from stockfu.ai.operators.llm.advisors import ALL_ADVISORS
 
     discover_and_register()
+    # 清理已下线的回测 LLM 算子 + 依赖它的策略(operator 表删 type='llm' 后,
+    # 其 operator_result 孤儿由下方 cleanup_operator_results 自动清)。
+    _cleanup_legacy_llm()
     n = 0
     with session_scope() as s:
-        # LLM 算子: prompt 首次从 advisor.system_prompt() 抽取
-        for advisor_cls in ALL_ADVISORS:
-            a = advisor_cls()
-            _upsert_operator(
-                s, operator_id=a.advisor_id, name=a.display_name, type="llm",
-                module=f"llm.{a.advisor_id}", params_schema={},
-                prompt=a.system_prompt(), constitution_ref="constitution",
-            )
-            n += 1
         # 数学 + 汇总算子: params_schema 从类 PARAMS_SCHEMA
         for op_id, cls in REGISTRY.items():
-            if cls.type == "llm":
-                continue
             _upsert_operator(
                 s, operator_id=op_id, name=_OP_NAMES.get(op_id, op_id), type=cls.type,
                 module=cls.__module__, params_schema=getattr(cls, "PARAMS_SCHEMA", {}),
@@ -94,11 +83,11 @@ def seed_operators_and_strategies() -> int:
             log.warning("operator 表有 %d 个算子不在注册表(残留待清理): %s",
                         len(orphan_ops), sorted(orphan_ops))
 
-    # active 指针:首次 seed 写默认值(classic_4advisors)。
+    # active 指针:首次 seed 写默认值(pure_factor,首个纯 math 策略)。
     # 单 key 物理保证唯一 active(取代旧的 strategy.is_active 列;该列已移除)��
     from stockfu.db import has_app_config, set_app_config
     if not has_app_config("active_strategy_id"):
-        set_app_config("active_strategy_id", "classic_4advisors")
+        set_app_config("active_strategy_id", "pure_factor")
     # 仓位调整层(独立于策略,复刻 active_strategy_id 模式)
     if not has_app_config("active_rebalancer_id"):
         set_app_config("active_rebalancer_id", "pass_through")
@@ -112,6 +101,29 @@ def seed_operators_and_strategies() -> int:
     if cleaned:
         log.info("清理 operator_result 孤儿缓存 %d 行", cleaned)
     return n
+
+
+def _cleanup_legacy_llm() -> None:
+    """清理已下线的回测 LLM 算子 + 依赖它的策略(幂等)。
+
+    回测侧 LLM 算子(operators/llm/)下线后,operator 表的 4 行 LLM(trend/contrarian/risk/
+    valuation)与 strategy 表的 classic_4advisors/hybrid 成为残留。本函数显式删除,
+    并把指向它们的 active_strategy_id 指针拨回 pure_factor。operator_result 里这些
+    算子的历史缓存随后由 cleanup_operator_results() 按 operator_id 孤儿规则清掉。
+    """
+    from sqlalchemy import text
+
+    from stockfu.db import engine
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM operator WHERE type = 'llm'"))
+        conn.execute(text(
+            "DELETE FROM strategy WHERE strategy_id IN ('classic_4advisors', 'hybrid')"
+        ))
+        conn.execute(text(
+            "UPDATE app_config SET value = 'pure_factor' "
+            "WHERE key = 'active_strategy_id' "
+            "AND value IN ('classic_4advisors', 'hybrid')"
+        ))
 
 
 def cleanup_operator_results() -> int:
