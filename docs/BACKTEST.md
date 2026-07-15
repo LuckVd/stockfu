@@ -221,12 +221,26 @@ python3 main.py --backtest macd_cross --codes 600519,000858 --no-strict   # 旧�
 
 | 规则 | 默认 | 说明 |
 |------|------|------|
-| 涨跌停近似 | ON | `pct_chg` 近满幅度 + OHLC 粘合 → 涨停拒买 / 跌停拒卖(适配前复权) |
+| 涨跌停近似 | ON | **优先 open vs pre_close** 顶格 → 涨停拒买/跌停拒卖;无前收回退 pct_chg+粘合 |
 | 滑点 | 10 bps | 买贵卖便宜,略保守 |
-| 停牌 | defer | 挂单顺延(与旧逻辑一致) |
+| 停牌 | defer | `trade_status=0` 挂单顺延 |
 | `--no-strict` | | 关涨跌停+滑点+宇宙收紧,便于 A/B |
 
 指标:`limit_reject_buys` / `limit_reject_sells` / `fill_rejects` / `deferred_orders`。
+
+### 状态列数据管线(必读)
+
+`is_st` / `trade_status` 必须由入库写入,否则过滤静默 no-op:
+
+```bash
+python3 main.py --backfill-quote-status   # 历史行补状态(baostock isST/tradestatus)
+# 日常 --fetch / --backfill 已写 baostock 日K 状态;其它源无字段则保留 NULL
+```
+
+回测产物 `metrics.config.universe.status_coverage` 含 `is_st_rate` / `trade_status_rate`;
+率显著低于 1 时应用 `--backfill-quote-status`。
+
+单测:`python3 -m unittest discover -s tests -v`(`cash_scaler` / `tradeability` / `universe`)。
 
 ### value 窗口
 

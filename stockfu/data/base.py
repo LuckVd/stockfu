@@ -264,6 +264,9 @@ class KlineBar:
     close: float
     volume: float | None = None
     amount: float | None = None
+    # 日状态(baostock 可提供;其它源多为 None——入库保留 NULL,不假装 0/1)
+    trade_status: int | None = None   # 1=交易 0=停牌
+    is_st: int | None = None          # 1=ST 0=正常
 
 
 # --------------------------- 数据源基类 ---------------------------

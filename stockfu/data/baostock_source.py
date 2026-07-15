@@ -33,6 +33,16 @@ def _f(v) -> Optional[float]:
         return None
 
 
+def _i(v) -> Optional[int]:
+    """baostock tradestatus/isST → int;空串/异常 → None(不假装 0)。"""
+    if v in (None, ""):
+        return None
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 class BaostockSource(DataSource):
     name = "baostock"
     supports = {Market.CN}
@@ -69,9 +79,10 @@ class BaostockSource(DataSource):
 
         start = (_d.today() - _td(days=days + 15)).strftime("%Y-%m-%d")
         try:
+            # tradestatus/isST:宇宙与可成交必需;不复权字段也随日K给出
             rs = bs.query_history_k_data_plus(
                 _bs_code(code),
-                "date,open,high,low,close,volume,amount",
+                "date,open,high,low,close,volume,amount,tradestatus,isST",
                 start_date=start, frequency="d", adjustflag="2")  # 2=前复权
         except Exception:  # noqa: BLE001
             return []
@@ -82,11 +93,14 @@ class BaostockSource(DataSource):
                 d = datetime.strptime(row[0], "%Y-%m-%d").date()
             except Exception:  # noqa: BLE001
                 continue
+            ts = _i(row[7]) if len(row) > 7 else None
+            st = _i(row[8]) if len(row) > 8 else None
             bars.append(KlineBar(
                 date=d,
                 open=_f(row[1]) or 0.0, high=_f(row[2]) or 0.0,
                 low=_f(row[3]) or 0.0, close=_f(row[4]) or 0.0,
                 volume=_f(row[5]), amount=_f(row[6]),
+                trade_status=ts, is_st=st,
             ))
         return bars
 

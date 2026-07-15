@@ -18,6 +18,7 @@
     python main.py --backtest STRATEGY [--start --end --cash --codes --save]  # 回测（见 docs/BACKTEST.md）
     python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md §11）
     python main.py --backfill-universe  # 回补 security_master(list_date/board, baostock)
+    python main.py --backfill-quote-status  # 补 quote_snapshot.is_st/trade_status(baostock)
     python main.py --serve         # FastAPI 服务
 """
 import argparse
@@ -206,6 +207,25 @@ def run_backfill_universe() -> None:
           f"first_quote兜底={r.get('from_first_quote')}  skipped={r.get('skipped')}")
     if r.get("error"):
         print(f"  警告: {r['error']}")
+
+
+def run_backfill_quote_status() -> None:
+    """补 quote_snapshot.is_st / trade_status(baostock),修宇宙静默 no-op。"""
+    from stockfu.db import init_db
+    from stockfu.scheduler.jobs import backfill_quote_status
+    from stockfu.services.universe import quote_status_coverage
+
+    init_db()
+    print("回补 quote_snapshot 状态列(baostock isST/tradestatus) …")
+    before = quote_status_coverage()
+    print(f"  前: is_st_rate={before.get('is_st_rate')}  "
+          f"trade_status_rate={before.get('trade_status_rate')}  rows={before.get('n_rows')}")
+    r = backfill_quote_status()
+    after = quote_status_coverage()
+    print(f"✓ codes={r.get('codes')}  rows_patched={r.get('rows_patched')}  "
+          f"errors={r.get('errors')}")
+    print(f"  后: is_st_rate={after.get('is_st_rate')}  "
+          f"trade_status_rate={after.get('trade_status_rate')}")
 
 
 def run_backtest(strategy: str, start: str | None, end: str | None,
@@ -417,6 +437,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补回测基准 sh000001 历史日线（首次部署用）")
     p.add_argument("--backfill-universe", action="store_true",
                    help="回补 security_master(list_date/board, baostock;时点宇宙前置)")
+    p.add_argument("--backfill-quote-status", action="store_true",
+                   help="补 quote_snapshot.is_st/trade_status(baostock;修宇宙静默失效)")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
     p.add_argument("--vacuum", action="store_true",
@@ -482,6 +504,8 @@ def main() -> None:
         run_backfill_benchmark()
     elif args.backfill_universe:
         run_backfill_universe()
+    elif args.backfill_quote_status:
+        run_backfill_quote_status()
     elif args.schedule:
         run_schedule()
     elif args.clean_quotes:

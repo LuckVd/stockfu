@@ -11,8 +11,10 @@
     **不丢任何标的的目标,与执行序无关。**
 
 费用纳入:`need = gross_cost + est_fee`,从源头避免"满仓必超现金 → 触发夹断"。
-这是 StockFu 评估对标 rqalpha/zipline/backtrader 后落地的执行层资金分配方案
-(详见 docs/ARCHITECTURE_REVIEW.md)。
+最小手:空仓开仓按 100 股计入预算,与 apply_action 建仓特例对齐,避免「scaler 以为
+买得起 → 实际抢现金序相关」。
+
+返回长度始终 == len(buys)、按 code 可索引(engine 勿 zip 错位)。
 """
 from __future__ import annotations
 
@@ -33,13 +35,13 @@ def scale_buys_to_cash(
 ) -> tuple[list[tuple[str, float, float]], float, bool]:
     """等比缩放买单到可用现金。
 
-    acct:   VirtualAccount(用 .cash / .equity(prices) / .weight(code, prices))
+    acct:   VirtualAccount(用 .cash / .equity(prices) / .weight(code, prices) / .positions)
     buys:   [(code, target_weight, price)] —— 均为 target > current 的买单(调用方已分向)
     prices: {code: price}
     返回 (scaled, safety, constrained):
-      scaled       = [(code, scaled_target_weight, price)] 保持原顺序
+      scaled       = [(code, scaled_target_weight, price)] **与 buys 等长同序**
       safety ∈[0,1]= 缩放系数(1.0 = 现金充足无需缩放);缩放的是"增量"(target-cur)
-      constrained  = safety < 1.0,当日是否触发现金预算约束(供 metrics 计数)
+      constrained  = safety < 1.0
     """
     if not buys:
         return [], 1.0, False
@@ -50,20 +52,35 @@ def scale_buys_to_cash(
         return ([(code, acct.weight(code, prices), price) for code, _, price in buys],
                 0.0, True)
 
-    # 每个买单的增量价值 (target - current) × 总资产
-    deltas: list[tuple[str, float, float, float, float]] = []
+    # 每个买单:预算名义(含空仓最小 1 手) + 原始目标
+    # entries: (code, tw, cur_w, budget_notional, price)
+    entries: list[tuple[str, float, float, float, float]] = []
     for code, tw, price in buys:
         cur_w = acct.weight(code, prices)
         d = (tw - cur_w) * total
-        if d > 0 and price > 0:
-            deltas.append((code, tw, cur_w, d, price))
-    if not deltas:
+        if price <= 0 or d <= 0:
+            # 无实际增量:保持原 tw(或 cur),不参与缩放池
+            entries.append((code, tw, cur_w, 0.0, price))
+            continue
+        pos = acct.positions.get(code)
+        cur_shares = pos.shares if pos else 0
+        shares = int(d / price / 100) * 100
+        if shares <= 0 and cur_shares == 0:
+            # 与 apply_action 建仓特例对齐:预算按 1 手计
+            shares = 100
+        if shares <= 0:
+            entries.append((code, tw, cur_w, 0.0, price))
+            continue
+        notional = shares * price
+        entries.append((code, tw, cur_w, notional, price))
+
+    active = [e for e in entries if e[3] > 0]
+    if not active:
         return [(c, tw, p) for c, tw, p in buys], 1.0, False
 
-    gross_cost = sum(d for _, _, _, d, _ in deltas)
-    # 买入端费用估算:佣金(每笔最低 min_commission)+ 过户费。按总额估,保守留余量,
-    # 防止"满仓超现金"在 apply_action 内触发夹断。
-    est_fee = gross_cost * (commission_rate + transfer_fee_rate) + min_commission * len(deltas)
+    gross_cost = sum(e[3] for e in active)
+    est_fee = (gross_cost * (commission_rate + transfer_fee_rate)
+               + min_commission * len(active))
     need = gross_cost + est_fee
 
     if need <= acct.cash:
@@ -72,6 +89,12 @@ def scale_buys_to_cash(
         safety = max(0.0, acct.cash / need) if need > 0 else 0.0
 
     constrained = safety < 1.0
-    scaled = [(code, cur_w + (tw - cur_w) * safety, price)
-              for code, tw, cur_w, _d, price in deltas]
+    # 等长同序:有预算的缩放增量;无预算的(d<=0)退回 cur_w 以免误加仓
+    scaled: list[tuple[str, float, float]] = []
+    for code, tw, cur_w, notional, price in entries:
+        if notional > 0:
+            new_tw = cur_w + (tw - cur_w) * safety
+            scaled.append((code, new_tw, price))
+        else:
+            scaled.append((code, cur_w, price))
     return scaled, safety, constrained
