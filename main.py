@@ -16,6 +16,7 @@
     python main.py --export-csv [DIR]  # 导出市场数据为 CSV（默认 data/，可入 git）
     python main.py --import-csv [DIR]  # 从 CSV 合并导入回库（换机同步；upsert 不丢数据）
     python main.py --backtest STRATEGY [--start --end --cash --codes --save]  # 回测（见 docs/BACKTEST.md）
+    python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md §11）
     python main.py --serve         # FastAPI 服务
 """
 import argparse
@@ -234,6 +235,123 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
         print(f"  结果已保存: {r['saved_to']}")
 
 
+def _parse_periods(spec: str | None) -> tuple[int, ...] | None:
+    if not spec:
+        return None
+    return tuple(int(p.strip()) for p in spec.split(",") if p.strip())
+
+
+def run_factor_diag(operator: str, start: str | None, end: str | None,
+                    codes: str | None, params: str | None,
+                    periods: tuple[int, ...] | None, quantiles: int,
+                    primary_period: int | None, save: bool) -> None:
+    """因子诊断：单算子连续 score 的 IC / 分位收益 / 换手 / 衰减（alphalens 思路）。
+
+    不搭策略管道，直接量化单个因子在全市场横截面上对前向收益的预测力。
+    score 走回测算子缓存(operator_result)，与回测互通复用。详见 docs/BACKTEST.md §11。
+    """
+    import json
+    import os
+    from datetime import date, datetime, timedelta
+
+    from sqlmodel import select
+
+    from stockfu.db import session_scope
+    from stockfu.models import Asset
+    from stockfu.ai.operators.registry import discover_and_register, get_operator_class
+    from stockfu.backtest.factor_diag import (run_factor_diag as _run,
+                                              DEFAULT_PERIODS, DEFAULT_QUANTILES,
+                                              DEFAULT_PRIMARY_PERIOD)
+
+    discover_and_register()
+    cls = get_operator_class(operator)
+    if cls is None:
+        from stockfu.ai.operators.registry import REGISTRY
+        avail = sorted(k for k, c in REGISTRY.items() if c.type == "math")
+        print(f"✗ 未知算子 '{operator}'；可用 math 算子: {', '.join(avail)}")
+        return
+
+    end_d = end or date.today().isoformat()
+    start_d = start or (date.today() - timedelta(days=365)).isoformat()
+    if codes and codes.strip().lower() in ("all", "stocks", "market"):
+        # 全市场个股池(quote_snapshot=个股表;ETF/指数在独立表):横截面 IC 的理想宽度。
+        # 首跑需填算子缓存(800票×1年≈分钟级,一次性,回测/重跑秒级复用)。
+        from stockfu.models import QuoteSnapshot
+        from sqlmodel import func as _f
+        with session_scope() as s:
+            code_list = [c for c in s.exec(select(QuoteSnapshot.asset_code).distinct()).all() if c]
+    elif codes:
+        code_list = [c.strip() for c in codes.split(",") if c.strip()]
+    else:
+        with session_scope() as s:
+            code_list = [a.code for a in s.exec(select(Asset).where(Asset.market == "cn")).all()]
+
+    # 默认参数 = 算子 PARAMS_SCHEMA（各算子的默认窗口/周期）
+    if params:
+        try:
+            op_params = json.loads(params)
+        except json.JSONDecodeError as e:
+            print(f"✗ --params JSON 解析失败: {e}")
+            return
+    else:
+        op_params = dict(getattr(cls, "PARAMS_SCHEMA", {})) or {}
+    periods_t = periods or DEFAULT_PERIODS
+    pperiod = primary_period if primary_period is not None else (
+        5 if 5 in periods_t else periods_t[len(periods_t) // 2])
+
+    pstr = ", ".join(f"{k}={v}" for k, v in op_params.items()) or "默认"
+    print(f"因子诊断  {operator}({pstr})  {start_d} → {end_d}  ({len(code_list)}只票) …")
+    rep = _run(operator, op_params, code_list, start_d, end_d,
+               periods=periods_t, n_quantiles=quantiles, primary_period=pperiod,
+               progress=True)
+
+    print(f"\n标的池 {rep['universe_size']} 只 | 信号日 {rep['n_signal_days']} | "
+          f"因子观测 {rep['factor_observations']:,}")
+
+    # IC 衰减表
+    print(f"\nIC 衰减（横截面 Spearman，前向收益 vs 因子 score）:")
+    print(f"  {'周期':<6}{'mean IC':>10}{'IR':>8}{'t-stat':>9}{'正IC%':>8}{'天数':>7}")
+    for h in rep["periods"]:
+        s = rep["ic"][str(h)]
+        if s["mean_ic"] is None:
+            print(f"  {h}日{'':<3}{'—':>10}")
+            continue
+        print(f"  {h}日{'':<3}{s['mean_ic']:+.4f}{'':<4}"
+              f"{(s['ic_ir'] or 0):+.2f}{'':<4}"
+              f"{(s['t_stat'] or 0):+.1f}{'':<3}"
+              f"{s['pct_positive']:.0f}%{'':<4}{s['n_days']}")
+
+    # 分位收益
+    pp = rep["primary_period"]
+    qr = rep["quantile_returns"]
+    qstr = "  ".join(f"Q{i+1} {(v*1):+.2f}%" for i, v in enumerate(qr))
+    print(f"\n分位收益（前向{pp}日，{rep['n_quantiles']}分位，Q1 最弱→Q{rep['n_quantiles']} 最强）:")
+    print(f"  {qstr}")
+    sp = rep["quantile_spread"]
+    mo = rep["quantile_monotonicity"]
+    print(f"  多空价差(Q{rep['n_quantiles']}−Q1) {sp:+.2f}%   单调性(Spearman) {mo:+.2f}"
+          if sp is not None else "  （分位收益样本不足）")
+
+    # 换手
+    tov = rep["turnover"]
+    nq = rep["n_quantiles"]
+    lo = tov.get("0"); hi = tov.get(str(nq - 1)); ls = rep["long_short_turnover"]
+    print(f"\n换手（日均成员变动率，0=恒定 1=每日全换）:")
+    print(f"  Q1 {lo}   Q{nq} {hi}   多空≈ {ls}"
+          if lo is not None else "  （换手样本不足）")
+
+    if save:
+        out_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "data", "factor_diag"))
+        os.makedirs(out_dir, exist_ok=True)
+        rid = datetime.now().strftime("diag-%Y%m%d-%H%M%S")
+        out = os.path.join(out_dir, f"{rid}.json")
+        tmp = f"{out}.tmp{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(rep, f, ensure_ascii=False, indent=2, default=str)
+        os.replace(tmp, out)
+        print(f"\n  结果已保存: {out}")
+
+
 def _parse_tables(spec: str | None) -> list[str] | None:
     if not spec:
         return None
@@ -284,11 +402,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
     p.add_argument("--backtest", metavar="STRATEGY", default=None,
                    help="回测策略ID（如 macd_cross / bollinger_reversion）；详见 docs/BACKTEST.md")
-    p.add_argument("--start", default=None, help="回测起始日 YYYY-MM-DD（默认1年前）")
-    p.add_argument("--end", default=None, help="回测结束日 YYYY-MM-DD（默认今天）")
+    p.add_argument("--factor-diag", metavar="OPERATOR", default=None,
+                   help="因子诊断算子ID（如 momentum / macd_cross）；单算子 IC/分位收益/换手/衰减，见 docs/BACKTEST.md §11")
+    p.add_argument("--start", default=None, help="回测/诊断起始日 YYYY-MM-DD（默认1年前）")
+    p.add_argument("--end", default=None, help="回测/诊断结束日 YYYY-MM-DD（默认今天）")
     p.add_argument("--cash", type=float, default=1_000_000.0, help="回测初始资金（默认100万）")
     p.add_argument("--codes", default=None, help="逗号分隔股票代码（默认全部A股自选）")
-    p.add_argument("--save", action="store_true", help="回测结果落盘到 data/backtest/")
+    p.add_argument("--save", action="store_true", help="结果落盘（回测→data/backtest/ 诊断→data/factor_diag/）")
+    p.add_argument("--periods", default=None,
+                   help="因子诊断前向收益周期(交易日)，逗号分隔，默认 1,5,10,21")
+    p.add_argument("--quantiles", type=int, default=5, help="因子诊断分位桶数（默认5）")
+    p.add_argument("--params", default=None,
+                   help="算子参数 JSON（如 '{\"window\":10}'）；默认用算子 PARAMS_SCHEMA")
+    p.add_argument("--primary-period", type=int, default=None,
+                   help="因子诊断分位收益/换手主周期(交易日，默认5)")
     p.add_argument("--export-csv", nargs="?", const="data", default=None, metavar="DIR",
                    help="导出市场数据为 CSV 到 DIR（默认 data/）；配合 --tables / --all")
     p.add_argument("--import-csv", nargs="?", const="data", default=None, metavar="DIR",
@@ -337,6 +464,10 @@ def main() -> None:
         run_config()
     elif args.backtest:
         run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save)
+    elif args.factor_diag:
+        run_factor_diag(args.factor_diag, args.start, args.end, args.codes, args.params,
+                        _parse_periods(args.periods), args.quantiles,
+                        args.primary_period, args.save)
     elif args.export_csv is not None:
         run_export_csv(args.export_csv, _parse_tables(args.tables), args.all)
     elif args.import_csv is not None:

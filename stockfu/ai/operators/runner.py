@@ -13,6 +13,8 @@ debounce_kwargs 属性把 YAML 的 position+debounce 翻译成 engine.run_backte
 from __future__ import annotations
 
 import functools
+import hashlib
+import inspect
 from dataclasses import dataclass, field
 
 import yaml
@@ -37,6 +39,7 @@ class StrategyDebounce:
     target_mode: str = "discrete"
     max_weight: float = 0.15
     total_dead: float = 3.0
+    score_full: float = 20.0  # 满仓刻度(total_score≥score_full→满仓 max_weight;按算子集量纲配)
     targets: dict | None = None  # 信号→仓位映射表(YAML position.targets传入,None=用框架默认)
     # 资金分配/风控(可选,YAML risk 段配;None=未配,用 engine 默认)
     max_gross: float | None = None
@@ -54,6 +57,7 @@ class StrategyDebounce:
             "target_mode": self.target_mode,
             "max_weight": self.max_weight,
             "total_dead": self.total_dead,
+            "score_full": self.score_full,
             "targets": self.targets or {},
             "max_gross": self.max_gross,
             "stop_loss_pct": self.stop_loss_pct,
@@ -73,14 +77,12 @@ class CompiledStrategy:
     risk: dict = field(default_factory=dict)
 
     # ---- engine 注入接口 ----
-    def _ensure_op_meta(self, temperature: float):
-        """算子元信息预算(每策略+temperature 算一次,缓存于实例):
-        [(spec, cls, fp, prompt, version)]。
+    def _ensure_op_meta(self, temperature: float = 0.0):
+        """算子元信息预算(每策略算一次,缓存于实例):[(spec, cls, fp, version)]。
 
-        复刻 analyze 内的指纹计算(has_llm 时 params 注入 temperature),保证批量预读
-        prefetch_cache 的 (op_id, fp) 键与单点读 get_operator_result 完全一致。
-        干掉原本每 (code,as_of,算子) 一次的 _load_operator_meta + compute_fingerprint
-        DB 往返(Operator.version 实际恒 0,版本由 prompt 驱动;此处只读一次)。"""
+        指纹纳入算子源码 hash(sha1(inspect.getsource(cls))[:8]) → 改算子代码自动失效缓存
+        (治 P2-5:不再依赖人工 bump version)。回测侧 LLM 已下线,只剩 math 算子;
+        Operator.version 降级为人工强制失效开关,日常失效靠 source hash。"""
         cache = getattr(self, "_op_meta_cache", None)
         if cache is None:
             cache = {}
@@ -88,26 +90,16 @@ class CompiledStrategy:
         if temperature in cache:
             return cache[temperature]
         from stockfu.ai.operator_cache import compute_fingerprint
-        has_llm = any(op.get("type") == "llm" for op in self.operators)
         meta = []
         for spec in self.operators:
             cls = get_operator_class(spec["id"])
             if cls is None:
                 raise ValueError(f"未知算子 '{spec['id']}'(策略 {self.strategy_id})")
             params = dict(spec.get("params") or {})
-            if has_llm:
-                params["temperature"] = temperature
-            prompt = None
-            if cls.type == "llm":
-                prompt, version = _load_operator_meta(cls.operator_id)
-                fp = compute_fingerprint("llm", version=version, prompt=prompt,
-                                         temperature=params.get("temperature"))
-            elif cls.type == "math":
-                _, version = _load_operator_meta(cls.operator_id)
-                fp = compute_fingerprint("math", version=version, params=params)
-            else:  # aggregator(不应在 self.operators,保险)
-                fp = None
-            meta.append((spec, cls, fp, prompt, version))
+            version = _load_operator_meta(cls.operator_id)
+            source = hashlib.sha1(inspect.getsource(cls).encode("utf-8")).hexdigest()[:8]
+            fp = compute_fingerprint(version=version, params=params, source=source)
+            meta.append((spec, cls, fp, version))
         cache[temperature] = meta
         return meta
 
@@ -118,22 +110,14 @@ class CompiledStrategy:
         命中预填注入各 analyze,跳过逐 (code,as_of,算子) 的 get_operator_result 往返。"""
         from stockfu.ai.operator_cache import get_operator_results_batch
         meta = self._ensure_op_meta(temperature)
-        op_fps = [(spec["id"], fp) for spec, cls, fp, _, _ in meta if fp is not None]
+        op_fps = [(spec["id"], fp) for spec, cls, fp, version in meta if fp is not None]
         return get_operator_results_batch(codes, as_of, op_fps)
 
     def analyze(self, code: str, as_of=None, holding_override=None,
-                temperature: float = 0.2, cache_prefill: dict | None = None) -> dict:
-        from stockfu.ai.context import build_context
-        from stockfu.ai.synthesis import narrate
-
-        has_llm = any(op.get("type") == "llm" for op in self.operators)
-        advisor_ctx = None
-        ctx_name = ""
-        if has_llm:
-            advisor_ctx = build_context(code, as_of=as_of)
-            ctx_name = advisor_ctx.name
-        ctx = OpContext(code=code, name=ctx_name, as_of=as_of,
-                        advisor_ctx=advisor_ctx)
+                temperature: float = 0.0, cache_prefill: dict | None = None) -> dict:
+        # 回测侧 LLM 算子已下线:本方法纯 math,不再调 build_context/narrate。
+        # temperature 形参保留(scheduler 传 0.0)仅为签名兼容,已不影响算子输出。
+        ctx = OpContext(code=code, name="", as_of=as_of)
 
         # 1. 跑所有叶子算子(math 先跑,结果进 ctx.factors 供 llm 算子参考)。
         #    算子级缓存:math/llm read-through(operator_result),aggregator 不缓存。
@@ -143,10 +127,8 @@ class CompiledStrategy:
                                                save_operator_result)
         meta = self._ensure_op_meta(temperature)
         results = []
-        for spec, cls, fp, prompt, version in meta:
+        for spec, cls, fp, version in meta:
             params = dict(spec.get("params") or {})
-            if has_llm:
-                params["temperature"] = temperature
 
             # 命中复用:预填 → 单点读;miss → run+save(aggregator fp=None 跳过缓存)
             r = None
@@ -156,7 +138,7 @@ class CompiledStrategy:
                 r = get_operator_result(code, as_of, spec["id"], fp)
 
             if r is None:
-                inst = cls(prompt=prompt) if cls.type == "llm" else cls()
+                inst = cls()
                 r = inst.run(ctx, params)
                 if fp is not None:
                     save_operator_result(code, as_of, spec["id"], fp, r, cls.type)
@@ -179,30 +161,23 @@ class CompiledStrategy:
         opinions = [{
             "advisor": r.operator, "signal": r.signal, "score": r.score,
             "confidence": r.confidence, "reasoning": r.reasoning,
-            "tools_used": [], "target_weight": r.target_weight,
+            "target_weight": r.target_weight,
         } for r in results]
         aggregate = {
             "final_signal": summary.signal,
             "total_score": summary.score,
-            "total_raw": summary.raw_score if summary.raw_score is not None else summary.score,
             "risk_vetoed": summary.veto,
             "ai_target_weight": summary.target_weight,
             "confidence": summary.confidence,
         }
 
-        # 4. narrative: 有 LLM 时调 narrate(等价现状);纯数学规则拼接(不调 LLM,秒级)
-        if has_llm:
-            try:
-                narrative = narrate({**aggregate, "opinions": opinions})
-            except Exception as exc:  # noqa: BLE001
-                narrative = f"[综合解读失败] {exc}"
-        else:
-            parts = "; ".join(f"{r.operator}={r.signal}({r.score:+.1f})" for r in results)
-            narrative = f"[{self.name}] {summary.signal} | total={summary.score} | {parts}"
+        # 4. narrative: 纯数学规则拼接(不调 LLM,秒级)
+        parts = "; ".join(f"{r.operator}={r.signal}({r.score:+.1f})" for r in results)
+        narrative = f"[{self.name}] {summary.signal} | total={summary.score} | {parts}"
 
         return {
-            "code": code, "name": ctx_name,
-            "context": advisor_ctx.__dict__ if advisor_ctx else {},
+            "code": code, "name": "",
+            "context": {},
             "opinions": opinions,
             "aggregate": aggregate,
             "narrative": narrative,
@@ -224,6 +199,7 @@ class CompiledStrategy:
             target_mode=p.get("mode", "discrete"),
             max_weight=p.get("max_w", 0.15),
             total_dead=p.get("dead", 3.0),
+            score_full=p.get("score_full", 20.0),
             targets=p.get("targets"),
             max_gross=rk.get("max_gross"),
             stop_loss_pct=rk.get("stop_loss"),
@@ -236,23 +212,35 @@ class CompiledStrategy:
         return self.debounce_params.to_dict()
 
 
-@functools.lru_cache(maxsize=None)
-def _load_operator_meta(operator_id: str) -> tuple[str | None, int]:
-    """从 operator 表读 LLM 算子 prompt + version。prompt=None→算子用 advisor.system_prompt() 兜底。
+def single_operator_fingerprint(operator_id: str, params: dict | None = None) -> str:
+    """单算子输入指纹 = hash(version + params + source),复用 _ensure_op_meta 同款算法。
 
-    进程级缓存(G09):operator 表仅 14 行、seed 期低频变更,同进程内每个 operator_id
-    只查 1 次 DB。调用点仅 _ensure_op_meta(已实例级缓存),此 lru_cache 让同进程内
-    第二个 CompiledStrategy 实例(如 API 连跑多次回测)也 0 session 开闭。
-    失效:改 operator 表 prompt/version 后重启进程即清空(fingerprint 含 version,
-    跨次回测自动失效);低频运维动作,不加手动清缓存 hook。
+    供 factor_diag 等单算子场景读/写回测算子缓存(operator_result)——指纹与回测逐字一致 →
+    跨场景命中复用(回测算过的(code,as_of),因子诊断直接读缓存,反之亦然)。
+    source=算子类源码 hash(改算子代码自动失效,治 P2-5,与 _ensure_op_meta 同源)。
+    """
+    cls = get_operator_class(operator_id)
+    if cls is None:
+        raise ValueError(f"未知算子 '{operator_id}'(不在注册表)")
+    from stockfu.ai.operator_cache import compute_fingerprint
+    version = _load_operator_meta(operator_id)
+    source = hashlib.sha1(inspect.getsource(cls).encode("utf-8")).hexdigest()[:8]
+    return compute_fingerprint(version=version, params=params or {}, source=source)
+
+
+@functools.lru_cache(maxsize=None)
+def _load_operator_meta(operator_id: str) -> int:
+    """从 operator 表读算子 version(人工强制失效开关;日常失效靠 source hash)。
+
+    进程级缓存:operator 表低频变更,同进程内每个 operator_id 只查 1 次 DB。
+    调用点仅 _ensure_op_meta(已实例级缓存),此 lru_cache 让同进程内第二个
+    CompiledStrategy 实例(API 连跑多次回测)也 0 session 开闭。
     """
     from stockfu.db import session_scope
     from stockfu.models import Operator
     with session_scope() as s:
         row = s.get(Operator, operator_id)
-        if row:
-            return row.prompt, row.version
-        return None, 1
+        return row.version if row else 1
 
 
 def load_yaml(path: str) -> "CompiledStrategy":
@@ -283,7 +271,7 @@ def compile_strategy(yaml_text: str) -> CompiledStrategy:
 
 
 def get_active_strategy() -> CompiledStrategy:
-    """读 app_config('active_strategy_id') 指针指向的 strategy 编译;无则兜底 classic_4advisors。
+    """读 app_config('active_strategy_id') 指针指向的 strategy 编译;无则兜底 pure_factor。
 
     active 由单一 app_config key 决定(物理唯一,取代 is_active 多选风险)。
     切策略:set_app_config('active_strategy_id', sid)。
@@ -293,10 +281,10 @@ def get_active_strategy() -> CompiledStrategy:
     if not REGISTRY:
         discover_and_register()
     with session_scope() as s:
-        sid = get_app_config("active_strategy_id", "classic_4advisors")
+        sid = get_app_config("active_strategy_id", "pure_factor")
         row = s.get(Strategy, sid)
         if row is None:
-            row = s.get(Strategy, "classic_4advisors")
+            row = s.get(Strategy, "pure_factor")
         if row is None:
             raise RuntimeError("无可用策略(operator/strategy 表未 seed?)")
         cs = compile_strategy(row.config)

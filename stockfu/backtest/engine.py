@@ -498,9 +498,9 @@ def run_backtest(codes: list[str], start: date, end: date,
             # 信号→目标仓位(discrete=阶跃查表;continuous=total 连续映射+滞回死区)
             target_weight = compute_target_weight(
                 signal, risk_vetoed, current_w, ai_target,
-                total_score=total_score, mode=target_mode,
+                total_score=total_score,
                 max_w=max_weight, dead=total_dead,
-                targets=debounce.targets if debounce else None,
+                score_full=debounce.score_full if debounce else 20.0,
             )
 
             # confidence gate:弱 confidence 的清仓信号降级为维持(防 total 抖动误清仓);
@@ -525,7 +525,7 @@ def run_backtest(codes: list[str], start: date, end: date,
             _veto[code] = risk_vetoed
             meta[code] = {"score": total_score, "confidence": confidence,
                           "signal": signal, "risk_vetoed": risk_vetoed,
-                          "raw": agg.get("total_raw", total_score)}
+                          "raw": total_score}
 
         # 3b. 仓位调整层:desired全集 + current全集 → 最终目标仓位(独立基础架构,从 app_config 取)
         current_weights = {c: s["weight"] for c, s in snap.items()}   # 全集(含未覆盖持仓)

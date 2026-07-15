@@ -1,10 +1,8 @@
 """算子基类与数据契约。
 
-三类算子(math/llm/aggregator)共用 BaseOperator 骨架,靠 type 字段区分行为。
-OpResult 同时兼容现有 Opinion(score_adjustment/signal/confidence/target_weight)
-与 synthesis.aggregate 输出(final_signal/total_score/risk_vetoed),使回测引擎
-(engine.py Phase 3 读 aggregate)零改动即可消费算子 pipeline 的产出——这是
-"重构替换但不破回测"的关键契约。
+math/aggregator 算子共用 BaseOperator 骨架(回测侧 LLM 已下线)。OpResult 是回测
+管线的统一输出;engine.py Phase3 读 aggregate dict(final_signal/total_score/
+risk_vetoed/...)消费。实盘 AI 4 顾问用 Opinion,另走 ai/skills 链路,不经此契约。
 """
 from __future__ import annotations
 
@@ -31,28 +29,23 @@ class OpContext:
 
 @dataclass
 class OpResult:
-    """所有算子的统一输出。字段兼容 Opinion + aggregate,使 engine 零改动消费。
+    """算子的统一输出(回测算子管线;实盘 AI 4 顾问用 Opinion,另走 ai/skills)。
 
-    score: 该算子对总分的加权前贡献(LLM 算子=-20~+20 的 score_adjustment;
-           数学算子由强度×基准算出,Aggregator 汇总时再乘 YAML 配的 weight)。
-    raw_score: 未 clamp 的连续强度(排序用)。score 被 ±20 clamp 会压平头部区分度,
-           raw_score 保留 clamp 前的连续值供 rebalancer 横截面排名;None=该算子无
-           连续信息(离散算子/LLM/旧缓存)→ 聚合时退化为 score。
-    value: 数学算子的原始数值(RSI=32/momentum_pct=65),供前端展示/批量预计算/调试。
-    veto:  一票否决位(risk 类算子或 risk_veto aggregator 设置 → Aggregator 强制 sell)。
+    score: 连续强度(不 clamp;原 raw_score 已并入)。各算子保留各自满强度刻度
+           (如 momentum ±20=±10%涨幅),Aggregator 加权汇总时乘 YAML weight。
+    signal: 派生标签(从 score 阈值生成,仅供展示/审计),不参与仓位决策(连续映射用 score)。
+    value: 数学算子的原始数值(RSI=32/momentum_pct=65),供 ctx.factors 共享 + 调试。
+    veto:  一票否决位(risk 类算子 / risk_veto aggregator 设置)。
     """
     operator: str
-    type: str = "math"                     # math | llm | aggregator
-    signal: str = "hold"                   # strong_buy/buy/hold/sell/strong_sell
-    score: float = 0.0
-    raw_score: float | None = None         # 未 clamp 连续强度(排序用);None→退化 score
-    weight: float = 1.0                    # 策略 YAML 配的权重(汇总时用)
+    type: str = "math"                     # math | aggregator(llm 已下线)
+    signal: str = "hold"                   # 派生标签(展示用,不参与决策)
+    score: float = 0.0                     # 连续强度(不 clamp)
+    weight: float = 1.0                    # 策略 YAML 权重(汇总用,不入库)
     confidence: float = 0.5                # 0-1
     reasoning: str = ""
-    evidence: dict = field(default_factory=dict)
-    tools_used: list = field(default_factory=list)   # LLM 算子工具调用记录(math 空)
     target_weight: float | None = None
-    value: float | None = None             # 数学算子原始值
+    value: float | None = None             # 数学算子原始值(喂 ctx.factors)
     veto: bool = False
 
 

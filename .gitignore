@@ -1,5 +1,6 @@
 data/*.db*
 data/backtest/
+data/factor_diag/
 __pycache__/
 *.pyc
 .venv/

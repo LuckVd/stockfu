@@ -12,16 +12,6 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional
 
-# 信号 → 默认目标仓位占比(0-1)。hold=None 表示"维持当前仓位"。
-# PositionManager 不直接使用此表——由调用方计算目标仓位后传入。
-_SIGNAL_TARGET: dict[str, Optional[float]] = {
-    "strong_buy": 0.10,
-    "buy": 0.06,
-    "hold": None,        # 维持
-    "sell": 0.0,
-    "strong_sell": 0.0,
-}
-
 _WEIGHT_EPS = 0.005
 
 
@@ -156,7 +146,7 @@ def resolve_action(current_weight: float, target_weight: float) -> str:
 
 
 def _total_to_weight(total: float | None, max_w: float = 0.15,
-                     dead: float = 3.0) -> float | None:
+                     dead: float = 3.0, score_full: float = 20.0) -> float | None:
     """total_score → 目标仓位 连续映射(替代 _SIGNAL_TARGET 阶跃查表)。
 
     消除阈值穿越抖动 + 内建双向滞回死区(业界机制7连续映射 + 机制2滞回):
@@ -171,70 +161,28 @@ def _total_to_weight(total: float | None, max_w: float = 0.15,
         return 0.0
     if total < dead:
         return None  # 死区,维持(调用方收到 None 不动)
-    return round(max_w * min(total / 20.0, 1.0), 4)
+    return round(max_w * min(total / score_full, 1.0), 4)
 
 
 def compute_target_weight(signal: str, risk_vetoed: bool,
                           current_weight: float,
                           ai_target_weight: float | None = None,
                           total_score: float | None = None,
-                          mode: str = "discrete", max_w: float = 0.15,
-                          dead: float = 3.0,
-                          targets: dict | None = None) -> float | None:
-    """计算���标仓位(信号层→仓位层的桥梁)。
+                          max_w: float = 0.15, dead: float = 3.0,
+                          score_full: float = 20.0) -> float | None:
+    """计算目标仓位(信号层→仓位层的桥梁)。
 
-    mode="discrete": risk_veto > ai_target > targets(策略YAML) > _SIGNAL_TARGET(框架默认)。
-    mode="continuous": 用 total_score 连续映射(忽略 ai_target,规则化可复现、无阶跃抖动、
-      内建滞回死区)。治根因②③(阈值无滞回 + 信号→仓位阶跃映射)。
+    G10 后统一连续映射(铲除 ±20/signal 阶跃体系):
+      risk_vetoed                → 0(一票否决清仓)
+      total_score is not None    → _total_to_weight 连续映射(满仓刻度 score_full→max_w)
+      否则                       → 透传 ai_target_weight(或 None=维持)
 
-    targets: 策略 YAML position.targets 传入的仓位映射表，优先于硬编码 _SIGNAL_TARGET。
+    score_full: 满仓刻度(total_score≥此值→满仓 max_w);按算子集量纲配,默认 20。
     """
     if risk_vetoed:
         return 0.0
-    if mode == "continuous" and total_score is not None:
-        return _total_to_weight(total_score, max_w, dead)
-    if ai_target_weight is not None:
-        return ai_target_weight
-    table = targets if targets else _SIGNAL_TARGET
-    tw = table.get(signal)
-    return tw if tw is not None else current_weight
+    if total_score is not None:
+        return _total_to_weight(total_score, max_w, dead, score_full)
+    return ai_target_weight if ai_target_weight is not None else None
 
 
-# =====================================================================
-# 旧接口(保留兼容,不再被回测使用)
-# =====================================================================
-
-
-def decide_action(final_signal: str, total_score: float, risk_vetoed: bool,
-                  current_weight: float, cash_ratio: float | None = None) -> dict:
-    """规则化仓位决策(旧接口,回测已改用 PositionManager)。"""
-    sig = final_signal or "hold"
-    sc = f"(评分 {total_score:+.0f})" if total_score is not None else ""
-
-    if risk_vetoed:
-        if current_weight > 0:
-            return {"action": "sell", "target_weight": 0.0,
-                    "reason": f"风险顾问一票否决{sc},清仓(当前 {current_weight:.0%})"}
-        return {"action": "hold", "target_weight": 0.0,
-                "reason": f"风险顾问一票否决{sc},无仓位,观望"}
-
-    target = _SIGNAL_TARGET.get(sig)
-
-    if target is None:
-        if current_weight > 0:
-            return {"action": "hold", "target_weight": current_weight,
-                    "reason": f"信号 {sig}{sc},维持 {current_weight:.0%}"}
-        return {"action": "hold", "target_weight": 0.0,
-                "reason": f"信号 {sig}{sc},无仓位,观望"}
-
-    if target <= 0:
-        if current_weight > 0:
-            return {"action": "sell", "target_weight": 0.0,
-                    "reason": f"信号 {sig}{sc},清仓"}
-        return {"action": "hold", "target_weight": 0.0,
-                "reason": f"信号 {sig}{sc},无仓位,观望"}
-
-    act = resolve_action(current_weight, target)
-    cash_note = f", 可用资金 {cash_ratio:.0%}" if cash_ratio is not None and act == "buy" else ""
-    return {"action": act, "target_weight": target,
-            "reason": f"信号 {sig}{sc},{act} {current_weight:.0%}→{target:.0%}{cash_note}"}

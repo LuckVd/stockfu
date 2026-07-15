@@ -37,12 +37,13 @@ def score_to_signal(total: float, thresholds: dict | None) -> str:
 
 
 def collect_meta(results: list[OpResult]) -> tuple[float | None, float | None]:
-    """汇总综合 confidence(均值) + ai_target_weight(取 confidence 最高非 hold 的)。
+    """汇总综合 confidence(均值) + ai_target_weight(取 score>0 中 confidence 最高的)。
 
-    复现 synthesis.aggregate 的 confidence 与 ai_target_weight 取法。
+    signal 已降级为派生标签(不参与决策),看多筛选改用 score 符号。
+    continuous 模式下 ai_tw 不参与仓位决策(走 total_score 连续映射),此处仅保留兼容。
     """
     confs = [r.confidence for r in results if r.confidence is not None]
     confidence = sum(confs) / len(confs) if confs else None
-    non_hold = [r for r in results if r.signal != "hold" and r.target_weight is not None]
-    ai_tw = max(non_hold, key=lambda r: r.confidence).target_weight if non_hold else None
+    bullish = [r for r in results if r.score > 0 and r.target_weight is not None]
+    ai_tw = max(bullish, key=lambda r: r.confidence).target_weight if bullish else None
     return confidence, ai_tw
