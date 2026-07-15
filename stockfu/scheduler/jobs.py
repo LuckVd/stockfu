@@ -93,14 +93,20 @@ def _upsert_quote(code: str, timeout: float = 35) -> bool:
                 s.commit()
             return True
         snap = existing or QuoteSnapshot(asset_code=code, quote_date=tday)
-        snap.open, snap.high, snap.low, snap.close = o, h, l, c
-        snap.pct_chg, snap.volume, snap.amount = pct, vol, amt
-        if bar_ts is not None:
-            snap.trade_status = int(bar_ts)
-        if bar_st is not None:
-            snap.is_st = int(bar_st)
+        # 有完整 bar 时走全量写入(含状态/估值);否则用实时 quote 兜底
+        if bars:
+            prev = bars[-2].close if len(bars) >= 2 else None
+            _apply_bar_full(snap, bars[-1], prev)
+        else:
+            snap.open, snap.high, snap.low, snap.close = o, h, l, c
+            snap.pct_chg, snap.volume, snap.amount = pct, vol, amt
         if q:
-            snap.pe, snap.pb, snap.market_cap = q.pe, q.pb, q.market_cap
+            if q.pe is not None:
+                snap.pe = q.pe
+            if q.pb is not None:
+                snap.pb = q.pb
+            if q.market_cap is not None:
+                snap.market_cap = q.market_cap
         if snap.id is None:
             s.add(snap)
         if q and q.name:                          # 回填 Asset.name
@@ -183,10 +189,61 @@ def _upsert_index_quotes() -> int:
     return n
 
 
-def backfill_kline(code: str, days: int = 90) -> int:
-    """拉历史日K灌入 quote_snapshot（首次/补数据）。返回新增条数。
+def _bar_pct(b, prev_close: float | None) -> float | None:
+    """涨跌幅%:优先 bar.pct_chg,否则用 prev_close 推。"""
+    if getattr(b, "pct_chg", None) is not None:
+        return float(b.pct_chg)
+    if prev_close and prev_close > 0 and b.close:
+        return round((b.close / prev_close - 1) * 100, 2)
+    return None
 
-    写入 is_st/trade_status(源提供时);已有行缺状态时就地补写(不重写 OHLCV)。
+
+def _apply_bar_full(snap: QuoteSnapshot, b, prev_close: float | None = None) -> None:
+    """把一根 K 线完整写入 snapshot(OHLCV + 状态 + 估值 + 换手)。
+
+    用于「最新交易日全量补全」:有值就覆盖,None 不抹掉已有非空字段。
+    """
+    snap.open = b.open
+    snap.high = b.high
+    snap.low = b.low
+    snap.close = b.close
+    if b.volume is not None:
+        snap.volume = b.volume
+    if b.amount is not None:
+        snap.amount = b.amount
+    pct = _bar_pct(b, prev_close)
+    if pct is not None:
+        snap.pct_chg = pct
+    if getattr(b, "trade_status", None) is not None:
+        snap.trade_status = int(b.trade_status)
+    if getattr(b, "is_st", None) is not None:
+        snap.is_st = int(b.is_st)
+    if getattr(b, "pe", None) is not None:
+        snap.pe = float(b.pe)
+    if getattr(b, "pb", None) is not None:
+        snap.pb = float(b.pb)
+    if getattr(b, "turnover", None) is not None:
+        snap.turnover = float(b.turnover)
+
+
+def _patch_status_only(snap: QuoteSnapshot, b) -> bool:
+    """仅补空的 is_st/trade_status。返回是否有改动。"""
+    ch = False
+    if snap.trade_status is None and getattr(b, "trade_status", None) is not None:
+        snap.trade_status = int(b.trade_status)
+        ch = True
+    if snap.is_st is None and getattr(b, "is_st", None) is not None:
+        snap.is_st = int(b.is_st)
+        ch = True
+    return ch
+
+
+def backfill_kline(code: str, days: int = 90) -> int:
+    """拉历史日K灌入 quote_snapshot（首次/补数据）。返回新增+补丁条数。
+
+    - 缺失日:全字段插入
+    - 已有历史日:仅补空状态列
+    - **最新一根 bar**:始终全量覆盖(OHLCV+状态+估值),保证最新交易日数据完整
     """
     from stockfu.data.manager import get_manager
     bars = sorted(get_manager().get_kline(code, days), key=lambda b: b.date)
@@ -194,6 +251,7 @@ def backfill_kline(code: str, days: int = 90) -> int:
         return 0
     n = 0
     patched = 0
+    latest_d = bars[-1].date
     with session_scope() as s:
         existing = {
             q.quote_date: q for q in s.exec(
@@ -201,38 +259,32 @@ def backfill_kline(code: str, days: int = 90) -> int:
         }
         prev_close = None
         for b in bars:
-            ts = getattr(b, "trade_status", None)
-            st = getattr(b, "is_st", None)
+            is_latest = (b.date == latest_d)
             if b.date not in existing:
-                pct = round((b.close / prev_close - 1) * 100, 2) if prev_close else None
-                s.add(QuoteSnapshot(
-                    asset_code=code, quote_date=b.date, open=b.open, high=b.high,
-                    low=b.low, close=b.close, pct_chg=pct, volume=b.volume, amount=b.amount,
-                    trade_status=int(ts) if ts is not None else None,
-                    is_st=int(st) if st is not None else None,
-                ))
+                snap = QuoteSnapshot(asset_code=code, quote_date=b.date)
+                _apply_bar_full(snap, b, prev_close)
+                s.add(snap)
+                n += 1
+            elif is_latest:
+                # 最新交易日:全量刷新
+                _apply_bar_full(existing[b.date], b, prev_close)
                 n += 1
             else:
-                # 已有行:仅补空的状态列(baostock 新拉到时修复历史 NULL)
-                row = existing[b.date]
-                changed = False
-                if row.trade_status is None and ts is not None:
-                    row.trade_status = int(ts)
-                    changed = True
-                if row.is_st is None and st is not None:
-                    row.is_st = int(st)
-                    changed = True
-                if changed:
+                if _patch_status_only(existing[b.date], b):
                     patched += 1
-            prev_close = b.close
+            prev_close = b.close if b.close else prev_close
         s.commit()
     return n + patched
 
 
 def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> dict:
-    """专补 quote_snapshot.is_st/trade_status(走 baostock,不改 OHLCV)。
+    """补全 quote_snapshot:历史状态列 + **每只票最新交易日全量数据**。
 
-    修复「历史行状态为 NULL → 宇宙 ST/停牌静默失效」。返回 {codes, rows_patched, errors}。
+    1) 历史已有行:仅补 is_st/trade_status 空值(修宇宙静默 no-op)
+    2) 每只 code 的 baostock 最新一根 K:全量 upsert(OHLCV/pct/状态/PE/PB/换手)
+       —— 缺行则新建,有行则覆盖,保证池内最新交易日数据齐全
+
+    返回 {codes, rows_patched, latest_upserted, latest_date_max, errors}。
     """
     from stockfu.data.baostock_source import BaostockSource
     from stockfu.services.universe import resolve_base_codes
@@ -241,7 +293,10 @@ def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> d
         codes = resolve_base_codes("all")
     src = BaostockSource()
     patched = 0
+    latest_upserted = 0
     errors = 0
+    latest_dates: list[date] = []
+
     for i, code in enumerate(codes):
         try:
             bars = src.get_kline(code, days)
@@ -249,29 +304,53 @@ def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> d
             errors += 1
             continue
         if not bars:
+            errors += 1
             continue
+        bars = sorted(bars, key=lambda b: b.date)
         by_d = {b.date: b for b in bars}
+        last = bars[-1]
+        latest_dates.append(last.date)
+        # 最新 bar 的前收 = 倒数第二根 close
+        prev_close = bars[-2].close if len(bars) >= 2 else None
+
         with session_scope() as s:
             rows = s.exec(
                 select(QuoteSnapshot).where(QuoteSnapshot.asset_code == code)
             ).all()
+            have = {r.quote_date: r for r in rows}
+
+            # ① 历史行:只补状态空列(跳过最新日,下面全量写)
             for row in rows:
-                b = by_d.get(row.quote_date)
-                if not b:
+                if row.quote_date == last.date:
                     continue
-                ch = False
-                if row.trade_status is None and b.trade_status is not None:
-                    row.trade_status = int(b.trade_status)
-                    ch = True
-                if row.is_st is None and b.is_st is not None:
-                    row.is_st = int(b.is_st)
-                    ch = True
-                if ch:
+                b = by_d.get(row.quote_date)
+                if b and _patch_status_only(row, b):
                     patched += 1
+
+            # ② 最新交易日:全量 upsert
+            snap = have.get(last.date)
+            if snap is None:
+                snap = QuoteSnapshot(asset_code=code, quote_date=last.date)
+                s.add(snap)
+            _apply_bar_full(snap, last, prev_close)
+            latest_upserted += 1
             s.commit()
+
         if (i + 1) % 50 == 0:
-            print(f"  quote_status {i + 1}/{len(codes)}  patched_rows={patched}", flush=True)
-    return {"codes": len(codes), "rows_patched": patched, "errors": errors}
+            print(
+                f"  quote_status {i + 1}/{len(codes)}  "
+                f"status_patched={patched}  latest_upserted={latest_upserted}",
+                flush=True,
+            )
+
+    return {
+        "codes": len(codes),
+        "rows_patched": patched,
+        "latest_upserted": latest_upserted,
+        "latest_date_max": max(latest_dates).isoformat() if latest_dates else None,
+        "latest_date_min": min(latest_dates).isoformat() if latest_dates else None,
+        "errors": errors,
+    }
 
 
 def update_index_benchmark(code: str = "sh000001") -> int:
