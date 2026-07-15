@@ -233,8 +233,10 @@ python3 main.py --backtest macd_cross --codes 600519,000858 --no-strict   # 旧�
 `is_st` / `trade_status` 必须由入库写入,否则过滤静默 no-op:
 
 ```bash
-python3 main.py --backfill-quote-status   # 历史行补状态(baostock isST/tradestatus)
-# 日常 --fetch / --backfill 已写 baostock 日K 状态;其它源无字段则保留 NULL
+python3 main.py --backfill-quote-status
+# ① 历史行补 is_st/trade_status
+# ② 池内每只票「最新交易日」全量 upsert(OHLCV/pct/状态/PE/PB/换手)
+# 日常 --fetch / --backfill 也会写 baostock 状态;最新日在 backfill_kline 路径同样全量刷新
 ```
 
 回测产物 `metrics.config.universe.status_coverage` 含 `is_st_rate` / `trade_status_rate`;

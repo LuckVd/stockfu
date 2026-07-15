@@ -18,7 +18,7 @@
     python main.py --backtest STRATEGY [--start --end --cash --codes --save]  # 回测（见 docs/BACKTEST.md）
     python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md §11）
     python main.py --backfill-universe  # 回补 security_master(list_date/board, baostock)
-    python main.py --backfill-quote-status  # 补 quote_snapshot.is_st/trade_status(baostock)
+    python main.py --backfill-quote-status  # 补历史状态 + 最新交易日全量(baostock)
     python main.py --serve         # FastAPI 服务
 """
 import argparse
@@ -210,20 +210,21 @@ def run_backfill_universe() -> None:
 
 
 def run_backfill_quote_status() -> None:
-    """补 quote_snapshot.is_st / trade_status(baostock),修宇宙静默 no-op。"""
+    """补全:历史 is_st/trade_status + 每只票最新交易日全量数据(OHLCV/估值/状态)。"""
     from stockfu.db import init_db
     from stockfu.scheduler.jobs import backfill_quote_status
     from stockfu.services.universe import quote_status_coverage
 
     init_db()
-    print("回补 quote_snapshot 状态列(baostock isST/tradestatus) …")
+    print("补全 quote_snapshot(历史状态 + 最新交易日全量, baostock) …")
     before = quote_status_coverage()
     print(f"  前: is_st_rate={before.get('is_st_rate')}  "
           f"trade_status_rate={before.get('trade_status_rate')}  rows={before.get('n_rows')}")
     r = backfill_quote_status()
     after = quote_status_coverage()
-    print(f"✓ codes={r.get('codes')}  rows_patched={r.get('rows_patched')}  "
-          f"errors={r.get('errors')}")
+    print(f"✓ codes={r.get('codes')}  历史状态补丁={r.get('rows_patched')}  "
+          f"最新日全量upsert={r.get('latest_upserted')}  errors={r.get('errors')}")
+    print(f"  最新交易日区间: {r.get('latest_date_min')} ~ {r.get('latest_date_max')}")
     print(f"  后: is_st_rate={after.get('is_st_rate')}  "
           f"trade_status_rate={after.get('trade_status_rate')}")
 
@@ -438,7 +439,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backfill-universe", action="store_true",
                    help="回补 security_master(list_date/board, baostock;时点宇宙前置)")
     p.add_argument("--backfill-quote-status", action="store_true",
-                   help="补 quote_snapshot.is_st/trade_status(baostock;修宇宙静默失效)")
+                   help="补历史 is_st/trade_status + 每只票最新交易日全量数据(baostock)")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
     p.add_argument("--vacuum", action="store_true",

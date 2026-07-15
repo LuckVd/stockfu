@@ -267,6 +267,10 @@ class KlineBar:
     # 日状态(baostock 可提供;其它源多为 None——入库保留 NULL,不假装 0/1)
     trade_status: int | None = None   # 1=交易 0=停牌
     is_st: int | None = None          # 1=ST 0=正常
+    pct_chg: float | None = None      # 源直接给的涨跌幅%
+    pe: float | None = None
+    pb: float | None = None
+    turnover: float | None = None     # 换手率 %
 
 
 # --------------------------- 数据源基类 ---------------------------

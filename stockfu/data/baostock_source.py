@@ -79,10 +79,11 @@ class BaostockSource(DataSource):
 
         start = (_d.today() - _td(days=days + 15)).strftime("%Y-%m-%d")
         try:
-            # tradestatus/isST:宇宙与可成交必需;不复权字段也随日K给出
+            # 全字段:状态 + 估值 + 换手,供补全「最新交易日所有数据」
             rs = bs.query_history_k_data_plus(
                 _bs_code(code),
-                "date,open,high,low,close,volume,amount,tradestatus,isST",
+                "date,open,high,low,close,volume,amount,tradestatus,isST,"
+                "pctChg,peTTM,pbMRQ,turn",
                 start_date=start, frequency="d", adjustflag="2")  # 2=前复权
         except Exception:  # noqa: BLE001
             return []
@@ -93,14 +94,18 @@ class BaostockSource(DataSource):
                 d = datetime.strptime(row[0], "%Y-%m-%d").date()
             except Exception:  # noqa: BLE001
                 continue
-            ts = _i(row[7]) if len(row) > 7 else None
-            st = _i(row[8]) if len(row) > 8 else None
+            # 0date 1o 2h 3l 4c 5vol 6amt 7ts 8st 9pct 10pe 11pb 12turn
             bars.append(KlineBar(
                 date=d,
                 open=_f(row[1]) or 0.0, high=_f(row[2]) or 0.0,
                 low=_f(row[3]) or 0.0, close=_f(row[4]) or 0.0,
                 volume=_f(row[5]), amount=_f(row[6]),
-                trade_status=ts, is_st=st,
+                trade_status=_i(row[7]) if len(row) > 7 else None,
+                is_st=_i(row[8]) if len(row) > 8 else None,
+                pct_chg=_f(row[9]) if len(row) > 9 else None,
+                pe=_f(row[10]) if len(row) > 10 else None,
+                pb=_f(row[11]) if len(row) > 11 else None,
+                turnover=_f(row[12]) if len(row) > 12 else None,
             ))
         return bars
 
