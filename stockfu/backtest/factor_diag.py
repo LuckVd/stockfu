@@ -101,13 +101,13 @@ def _series_stats(series: list[float]) -> dict:
 
 def _build_factor_panel(operator_id: str, params: dict, codes: list[str],
                         signal_days: list[date], max_workers: int = 4,
-                        progress: bool = False) -> dict[tuple[str, date], float]:
-    """单算子 score 面板 {(code, as_of): score}。
+                        progress: bool = False
+                        ) -> tuple[dict[tuple[str, date], float], dict]:
+    """单算子 score 面板 {(code, as_of): score} + 宇宙 meta。
 
     复用回测算子缓存(operator_result):逐日批量读命中 → 并发算 miss → 单日批量落库。
-    指纹走 single_operator_fingerprint(与回测同款),故跨场景互通:回测算过的直接读,
-    因子诊断算过的回测也能复用。有效观测门槛 r.value is not None(各算子数据不足时
-    value=None);因子暴露用 r.score(G10 后连续不 clamp)。
+    每日先滤 U(t)(list_date/ST/停牌),再算因子——截面 IC 无次新名单污染。
+    指纹走 single_operator_fingerprint(与回测同款),跨场景互通。
     """
     from stockfu.ai.operator_cache import (get_operator_results_batch,
                                            save_operator_results_day)
@@ -124,9 +124,21 @@ def _build_factor_panel(operator_id: str, params: dict, codes: list[str],
     inst = cls()
     panel: dict[tuple[str, date], float] = {}
 
+    # 时点宇宙:每日只对 U(t) 算因子,避免次新/ST/停牌污染截面 IC
+    from stockfu.services.universe import UniverseContext, UniverseRules
+    uni = UniverseContext.load(codes, UniverseRules())
+    day_sizes: list[int] = []
+
     for i, as_of in enumerate(signal_days):
-        cached = get_operator_results_batch(codes, as_of, [(operator_id, fp)])
-        misses = [c for c in codes if (c, operator_id) not in cached]
+        from stockfu.services.universe import load_day_flags
+        flags = load_day_flags(codes, as_of)
+        day_codes = sorted(uni.eligible_on(as_of, flags))
+        day_sizes.append(len(day_codes))
+        if not day_codes:
+            continue
+
+        cached = get_operator_results_batch(day_codes, as_of, [(operator_id, fp)])
+        misses = [c for c in day_codes if (c, operator_id) not in cached]
 
         computed: dict[str, object] = {}
         if misses:
@@ -143,15 +155,16 @@ def _build_factor_panel(operator_id: str, params: dict, codes: list[str],
             if computed:
                 save_operator_results_day(computed, as_of, operator_id, fp, cls.type)
 
-        for c in codes:
+        for c in day_codes:
             r = cached.get((c, operator_id)) or computed.get(c)
             if r is not None and r.value is not None and r.score is not None:
                 panel[(c, as_of)] = r.score
 
         if progress and (i % 20 == 0 or i == len(signal_days) - 1):
             print(f"  因子面板 {i + 1}/{len(signal_days)} 日 "
-                  f"({as_of})  miss {len(misses)}  累计观测 {len(panel)}", flush=True)
-    return panel
+                  f"({as_of})  U={len(day_codes)} miss {len(misses)}  累计观测 {len(panel)}",
+                  flush=True)
+    return panel, uni.summary(day_sizes)
 
 
 def _build_price_panel(codes: list[str], d_min: date, d_max: date
@@ -318,8 +331,9 @@ def run_factor_diag(operator_id: str, params: dict | None, codes: list[str],
     if not signal_days:
         raise ValueError(f"区间 {start}→{end} 无交易日(交易日历为空)")
 
-    panel = _build_factor_panel(operator_id, params or {}, codes, signal_days,
-                                max_workers=max_workers, progress=progress)
+    panel, uni_meta = _build_factor_panel(
+        operator_id, params or {}, codes, signal_days,
+        max_workers=max_workers, progress=progress)
     price_panel = _build_price_panel(codes, min(cal_ext), max(cal_ext))
     fwd = _forward_returns(price_panel, signal_days, cal_ext, periods)
 
@@ -339,6 +353,7 @@ def run_factor_diag(operator_id: str, params: dict | None, codes: list[str],
         "start": start.isoformat(),
         "end": end.isoformat(),
         "universe_size": len(codes),
+        "universe": uni_meta,
         "n_signal_days": len(signal_days),
         "factor_observations": len(panel),
         "periods": list(periods),

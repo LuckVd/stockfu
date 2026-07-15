@@ -171,6 +171,36 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
     return 0.0, "unavailable"
 
 
+def _get_day_bars(codes: list[str], as_of: date) -> dict[str, dict]:
+    """单日完整 bar → {code: {open,high,low,close,pct_chg,is_st,trade_status,amount}}。
+
+    供涨跌停近似 / 停牌 / 宇宙日 flags;仅 as_of 当日行,无未来。
+    """
+    from stockfu.models import QuoteSnapshot
+    if not codes:
+        return {}
+    out: dict[str, dict] = {}
+    with session_scope() as s:
+        rows = s.exec(
+            select(QuoteSnapshot).where(
+                and_(QuoteSnapshot.quote_date == as_of,
+                     QuoteSnapshot.asset_code.in_(codes))
+            )
+        ).all()
+        for r in rows:
+            out[r.asset_code] = {
+                "open": float(r.open) if r.open is not None else None,
+                "high": float(r.high) if r.high is not None else None,
+                "low": float(r.low) if r.low is not None else None,
+                "close": float(r.close) if r.close is not None else None,
+                "pct_chg": float(r.pct_chg) if r.pct_chg is not None else None,
+                "is_st": bool(r.is_st) if r.is_st is not None else False,
+                "trade_status": int(r.trade_status) if r.trade_status is not None else 1,
+                "amount": float(r.amount) if r.amount is not None else None,
+            }
+    return out
+
+
 def _apply_gross_cap(final: dict[str, float | None], max_gross: float) -> dict[str, float | None]:
     """总仓位安全阀:若 Σ正值权重 > max_gross,等比缩放所有正值权重到 Σ=max_gross。
 
@@ -316,7 +346,10 @@ def run_backtest(codes: list[str], start: date, end: date,
                  debounce=None,
                  max_gross: float = DEFAULT_MAX_GROSS,
                  stop_loss_pct: float = DEFAULT_STOP_LOSS,
-                 portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE) -> dict:
+                 portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE,
+                 universe_rules=None,
+                 execution_rules=None,
+                 strict: bool = True) -> dict:
     """回测主循环:T+1开盘执行 + 三层架构(信号→仓位→执行)。
 
     每个交易日 as_of 内:
@@ -380,6 +413,23 @@ def run_backtest(codes: list[str], start: date, end: date,
                          sell_cooldown_days=sell_cooldown_days)
     _risk_streak: dict[str, int] = {}  # code → risk 连续否决天数(确认棒状态)
 
+    # 宇宙 + 可成交(strict 默认 ON:涨跌停/ST/list_date;strict=False 对齐旧「有价即交易」)
+    from stockfu.services.universe import DayFlags, UniverseContext, UniverseRules
+    from stockfu.services.tradeability import ExecutionRules, check_fill
+    if universe_rules is None:
+        universe_rules = UniverseRules() if strict else UniverseRules(
+            exclude_st=False, require_trading=False, min_list_days=0, use_list_date=False,
+        )
+    if execution_rules is None:
+        execution_rules = (ExecutionRules() if strict
+                           else ExecutionRules(limit_rule=False, slip_bps=0.0))
+    uni_ctx = UniverseContext.load(list(codes), universe_rules)
+    universe_sizes: list[int] = []
+    limit_reject_buys = 0
+    limit_reject_sells = 0
+    fill_rejects = 0
+    deferred_orders = 0
+
     equity_curve: list[dict] = []
     holdings_curve: list[dict] = []          # 每日逐票持仓快照(完整持仓记录,供直观回看)
     trades: list[dict] = []
@@ -393,8 +443,9 @@ def run_backtest(codes: list[str], start: date, end: date,
         if not close_prices:
             continue
         last_close.update(close_prices)   # 停牌日 close 缺失时,沿用上一交易日价估值(不记 0)
+        day_bars = _get_day_bars(list(codes), as_of)
 
-        # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌顺延次日不丢弃)----
+        # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌/涨跌停顺延或拒绝)----
         # 先卖后买 + 买单等比缩放到可用现金(对标 rqalpha order_target_portfolio_smart):
         #   卖单先成交释放现金 → 买单再用释放后的现金;买单总额 > 现金时用 safety 标量等比
         #   缩放,不逐笔 min(delta,cash) 夹断丢目标。各方向内部按 code 排序保跨进程可复现。
@@ -409,20 +460,50 @@ def run_backtest(codes: list[str], start: date, end: date,
                 px, source = _get_trade_price(code, open_prices, close_prices)
                 if px <= 0:
                     still_pending[code] = target_weight       # 停牌顺延,不丢信号
+                    deferred_orders += 1
                     continue
                 act = resolve_action(acct.weight(code, open_prices), target_weight)
+                if act == "hold":
+                    continue
+                side = "sell" if act in ("sell", "reduce") else "buy"
+                bar = day_bars.get(code, {})
+                fill = check_fill(
+                    side, px,
+                    pct_chg=bar.get("pct_chg"),
+                    open_=bar.get("open"), high=bar.get("high"),
+                    low=bar.get("low"), close=bar.get("close"),
+                    board=uni_ctx.board(code),
+                    is_st=bool(bar.get("is_st")),
+                    trade_status=int(bar.get("trade_status", 1)),
+                    rules=execution_rules,
+                )
+                if not fill.ok:
+                    fill_rejects += 1
+                    if fill.reason == "limit_up_no_buy":
+                        limit_reject_buys += 1
+                    elif fill.reason == "limit_down_no_sell":
+                        limit_reject_sells += 1
+                    trades.append({
+                        "date": as_of.isoformat(), "code": code, "kind": act,
+                        "status": fill.status, "reason": fill.reason,
+                        "target_weight": target_weight, "price": px,
+                        "price_source": source,
+                    })
+                    if fill.status == "deferred":
+                        still_pending[code] = target_weight
+                        deferred_orders += 1
+                    continue
                 if act in ("sell", "reduce"):
-                    sells.append((code, target_weight, px, source))
+                    sells.append((code, target_weight, fill.price, source))
                 elif act in ("buy", "add"):
-                    buys.append((code, target_weight, px, source))
-                # act == "hold":差额过小,跳过(apply_action 内也会过滤碎单)
+                    buys.append((code, target_weight, fill.price, source))
 
             def _exec(code, tw, px, source, **extra):
                 tr = acct.apply_action(code, resolve_action(acct.weight(code, open_prices), tw),
                                         tw, px, open_prices)
                 if tr:
                     tr.update(date=as_of.isoformat(), signal=None, reason="open_exec",
-                              price_source=source, **extra)
+                              price_source=source, status="filled", **extra)
                     trades.append(tr)
 
             # 1a. 先执行所有卖单(按 code 序)——释放现金给买单
@@ -440,28 +521,59 @@ def run_backtest(codes: list[str], start: date, end: date,
                       **({"cash_scaled": round(safety, 4)} if constrained else {}))
             pending_target = still_pending
 
-        # ---- Phase 2: 收盘快照 + AI 分析 ----
+        # ---- Phase 2: 宇宙过滤 + 收盘快照 + 分析 ----
+        # 日 flags:有 close 的票 has_row;is_st/trade_status 来自 bar
+        day_flags: dict[str, DayFlags] = {}
+        for c in codes:
+            bar = day_bars.get(c)
+            if bar:
+                day_flags[c] = DayFlags(
+                    is_st=bool(bar.get("is_st")),
+                    trade_status=int(bar.get("trade_status", 1)),
+                    has_row=True,
+                    amount=bar.get("amount"),
+                )
+            else:
+                day_flags[c] = DayFlags(has_row=False)
+        # strict 宇宙;非 strict 时 rules 已放宽,eligible ≈ 当日有 close 的票
+        u = uni_ctx.eligible_on(as_of, day_flags)
+        if not strict:
+            u = set(close_prices.keys())
+        else:
+            # 必须当日有收盘价才能进截面
+            u = {c for c in u if c in close_prices}
+        universe_sizes.append(len(u))
+
         total0 = acct.equity(close_prices)
         cash_r = acct.cash / total0 if total0 > 0 else 0.0  # noqa: F841
         snap: dict[str, dict] = {}
-        for code in close_prices:
+        # 分析集合 = 宇宙;持仓不在宇宙也进 snap(权重/只减不加),但不跑算子
+        analyze_codes = set(u)
+        for code in set(close_prices) | {
+            c for c, p in acct.positions.items() if p.shares > 0
+        }:
             pos = acct.positions.get(code)
+            px_map = close_prices if code in close_prices else last_close
             snap[code] = {
                 "holding": {"shares": pos.shares, "avg_cost": pos.avg_cost}
                            if pos and pos.shares > 0 else None,
-                "weight": acct.weight(code, close_prices),
+                "weight": acct.weight(code, close_prices if code in close_prices
+                                      else {**last_close, **close_prices}),
+                "in_universe": code in u,
             }
+            if code in u:
+                analyze_codes.add(code)
 
         results: dict[str, dict] = {}
-        # 单日批量预读缓存:一次 SELECT 取回当日全部 (code,算子) 命中,注入各 analyze。
-        # 跳过逐 (code,as_of,算子) 的 get_operator_result 往返 —— 大样本主力提速。
-        # prefill=None(无 prefetch_fn)时退回原 3 参调用,向后兼容默认 ai.analyze 路径。
-        prefill = prefetch_fn(list(snap.keys()), as_of) if prefetch_fn else None
+        # 单日批量预读缓存:只预读宇宙内 codes
+        prefill = prefetch_fn(list(analyze_codes), as_of) if prefetch_fn else None
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             if prefill is not None:
-                fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"], prefill): c for c in snap}
+                fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"], prefill): c
+                       for c in analyze_codes if c in snap}
             else:
-                fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"]): c for c in snap}
+                fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"]): c
+                       for c in analyze_codes if c in snap}
             for f in as_completed(fut):
                 c = fut[f]
                 try:
@@ -470,12 +582,30 @@ def run_backtest(codes: list[str], start: date, end: date,
                     pass
 
         # ---- Phase 3: 仓位层(信号→desired→组合层→目标仓位→边沿触发→冷却) ----
-        # 3a. 逐标的算 desired(单标的层)+ 收集 meta(组合层排序用)
+        # 3a. 逐标的算 desired(仅宇宙内跑信号);持仓不在宇宙 → 只减不加(desired=None 维持,
+        #     后置 clamp 禁止增仓;ST 且 exclude_st 时 desired=0 清仓)
         desired: dict[str, float | None] = {}
         meta: dict[str, dict] = {}
         _sig: dict[str, str] = {}      # 记 signal/risk_vetoed 供 3c trade 记录用
         _veto: dict[str, bool] = {}
         for code in snap:
+            current_w = snap[code]["weight"]
+            in_u = code in u
+
+            # 不在宇宙:不参与截面信号;ST 持仓(exclude_st)强制目标 0;其它持仓 desired=None 维持
+            if not in_u:
+                fl = day_flags.get(code)
+                if (universe_rules.exclude_st and fl and fl.is_st and current_w > 0):
+                    desired[code] = 0.0
+                    _sig[code] = "universe_st_exit"
+                    _veto[code] = False
+                    meta[code] = {"score": None, "confidence": None,
+                                  "signal": "universe_st_exit", "risk_vetoed": False,
+                                  "raw": None}
+                elif current_w > 0:
+                    desired[code] = None  # 维持,后置 clamp 禁止加仓
+                continue
+
             r = results.get(code)
             if not r or "error" in r or not r.get("aggregate"):
                 continue
@@ -485,7 +615,6 @@ def run_backtest(codes: list[str], start: date, end: date,
             ai_target = agg.get("ai_target_weight")
             total_score = agg.get("total_score")
             confidence = agg.get("confidence")
-            current_w = snap[code]["weight"]
 
             # risk 否决确认棒:连续 N 天才生效(N=1=原行为),过滤单日抖动(头号翻转源)
             if risk_confirm_days > 1:
@@ -534,6 +663,14 @@ def run_backtest(codes: list[str], start: date, end: date,
             equity=acct.equity(last_close),
             params=rebalancer_params,
         )
+
+        # 宇宙外持仓:禁止加仓(target 上限 = current);允许减仓/清仓
+        for code, tw in list(final.items()):
+            if code in u or tw is None:
+                continue
+            cur = current_weights.get(code, 0.0)
+            if tw > cur + 1e-9:
+                final[code] = cur
 
         # 组合回撤刹车(规则化风控):equity 较回测峰值回撤达阈值 → 全局临时降仓一半(风险优先)。
         if portfolio_brake_dd > 0:
@@ -597,7 +734,8 @@ def run_backtest(codes: list[str], start: date, end: date,
 
     # ---- 绩效 ----
     benchmark, bench_window = _benchmark_curve(BENCHMARK, days)
-    filled = [t for t in trades if t.get("status") != "pending"]
+    # 成交笔=有 shares 的执行记录(排除 pending 意图 / rejected / deferred)
+    filled = [t for t in trades if isinstance(t.get("shares"), (int, float))]
     win = [t for t in filled if t.get("pnl") is not None and t["pnl"] > 0]
     loss = [t for t in filled if t.get("pnl") is not None and t["pnl"] <= 0]
 
@@ -613,6 +751,10 @@ def run_backtest(codes: list[str], start: date, end: date,
     metrics["max_single_weight"] = round(
         max((p["weight"] for d in holdings_curve for p in d.get("positions", [])), default=0.0) * 100, 1)
     metrics["cash_constraint_hits"] = cash_constraint_hits   # 买单被现金缩放的天数(可观测)
+    metrics["limit_reject_buys"] = limit_reject_buys
+    metrics["limit_reject_sells"] = limit_reject_sells
+    metrics["fill_rejects"] = fill_rejects
+    metrics["deferred_orders"] = deferred_orders
     metrics["final_equity"] = round(
         acct.equity(last_close) if last_close else initial_cash, 2
     )
@@ -631,6 +773,9 @@ def run_backtest(codes: list[str], start: date, end: date,
         "portfolio_brake_dd": portfolio_brake_dd,
         "execution": "T+1_open_sell_first",
         "rebalancer": rebalancer.rebalancer_id,
+        "strict": strict,
+        "universe": uni_ctx.summary(universe_sizes),
+        "execution_rules": execution_rules.to_dict(),
     }
 
     return {
@@ -644,4 +789,5 @@ def run_backtest(codes: list[str], start: date, end: date,
         "end": end.isoformat(),
         "initial_cash": initial_cash,
         "days": len(days),
+        "universe": uni_ctx.summary(universe_sizes),
     }

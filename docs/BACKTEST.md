@@ -193,14 +193,54 @@ print(r["equity_curve"][-1])
 - **回测 LLM 算子下线**(`operators/llm/` 整目录删);`hybrid`/`classic_4advisors` 策略废弃;active 默认改 `pure_factor`。**实盘 AI 4 顾问**(`ai/skills` 的 Opinion)独立链路保留,不受影响。
 - **行为影响**:属行为改变类——同策略 metrics 不与旧基准逐值一致(连续映射替代 discrete 阶跃),但**确定性**(同参双跑全等)+ **防未来函数**(前缀一致性)红线均通过。
 
-## 9. 防未来函数(已验证)
+## 9. 时点宇宙 + 可成交(cn_large_pool_v1)
+
+面向 **A 股大盘候选池(~800 只,`quote_snapshot`)** 的天级严谨回测;不做全 A / 消息面。
+
+### 宇宙 `services/universe.py`
+
+| 规则 | 默认 | 说明 |
+|------|------|------|
+| `universe_id` | `cn_large_pool_v1` | 基础池=库内个股;用户声明即选股宇宙 |
+| `list_date` | 必用 | `security_master`(baostock 回补);`as_of < list_date` 不进截面 |
+| `min_list_days` | 60 | 上市/首根 K 后冷静期(日历日) |
+| `exclude_st` | True | 读 `quote_snapshot.is_st` |
+| `require_trading` | True | `trade_status=0` 或无当日行情 → 不进新开仓截面 |
+| 持仓例外 | — | 不在 U(t) 只减不加;ST 持仓目标 0 |
+
+```bash
+python3 main.py --backfill-universe          # 首次:拉 list_date/board
+python3 main.py --backtest macd_cross --codes all --start 2025-06-01 --end 2025-08-01
+python3 main.py --backtest macd_cross --codes 600519,000858 --no-strict   # 旧行为对照
+```
+
+`--codes`:省略=自选; `all`/`pool`=大盘候选;或逗号列表。每日再套 U(t)。  
+产物 `metrics.config.universe` 含日均/最小/最大宇宙规模 + master 覆盖率。
+
+### 可成交 `services/tradeability.py`
+
+| 规则 | 默认 | 说明 |
+|------|------|------|
+| 涨跌停近似 | ON | `pct_chg` 近满幅度 + OHLC 粘合 → 涨停拒买 / 跌停拒卖(适配前复权) |
+| 滑点 | 10 bps | 买贵卖便宜,略保守 |
+| 停牌 | defer | 挂单顺延(与旧逻辑一致) |
+| `--no-strict` | | 关涨跌停+滑点+宇宙收紧,便于 A/B |
+
+指标:`limit_reject_buys` / `limit_reject_sells` / `fill_rejects` / `deferred_orders`。
+
+### value 窗口
+
+`value` 算子默认 **PE 5 年分位**(与 baostock 落库深度对齐);含 value 的策略建议 `start ≥ 2021-07`。
+
+## 10. 防未来函数(已验证)
 
 - `services.factors.quote_series(code, field, days, as_of)` —— 查询带 `quote_date <= as_of` 上界
 - `services.factors.ma_alignment(code, lookback, as_of)` —— 同上
 - `services.valuation.valuation_percentile(code, as_of, years)` —— 读 `<=as_of` 序列算 PE/PB 分位
 - `ai.context.build_context(code, as_of=None)` —— 三层情绪指数 + quote + 股息率全部 `<=as_of`;实盘调 `build_context(code)`(as_of=None=取最新),回测传 as_of
 - engine 算子用 T-1 数据出信号,T+1 开盘执行
-- rebalancer 横截面百分位:只用 t 日全市场 raw(均 `<=as_of`),纯截面操作不触碰 t+1
+- rebalancer 横截面百分位:只用 t 日 U(t) 内 score(均 `<=as_of`),纯截面操作不触碰 t+1
+- 宇宙 `list_date` / 日 `is_st` / `trade_status` 只用 ≤as_of;涨跌停判决只用成交日 bar
 
 ### 端到端验证:前缀一致性测试(2026-07-14 实测,`macd_cross`)
 
@@ -213,15 +253,11 @@ look-ahead 最强检验——同一起点跑两次、终点不同,看"较早终�
 把终点往后延一个月,7/01 及之前每一天的信号/仓位/目标权重/权益值分毫未变 —— 即引擎做 ≤7/01 决策时没"看到"8 月数据。**判定:无 look-ahead。**
 实测口径(2 个月,`macd_cross`):总收益 -0.11% / 夏普 -0.01 / 最大回撤 3.2% / 胜率 60% / 12 笔交易(非虚高,对照修复前泄漏版的 +39%)。
 
-## 10. 待办
+## 11. 待办
 
-- G02 已激活：基准从 510300 ETF 改为上证综指 `sh000001`（1990 起 8673 条，覆盖所有回测区间）。
-  `_benchmark_curve` 直读 `IndexQuoteDaily` 表，不再经由 `quote_model_for`。
-  `--backfill-benchmark` 一次性回补全历史；`run_scheduled_fetch` 每日自动追加（akshare 优先、baostock 兜底，多源 fallback）。
-  基准窗口在 `metrics.benchmark_window` 可见；超额收益恒定产出。
-- **G09 回测性能优化已完成（2026-07-15）**：operator meta 进程级 `lru_cache` + 删 4 冗余单列索引（复合唯一键覆盖热路径）+ WAL/`synchronous=NORMAL`/`busy_timeout` + `--vacuum` 维护工具。回归验证：优化前后 metrics + `equity_curve` + `trades` 逐字节一致（防未来函数红线通过）。详见 §6「性能」段。
+- G02 / G09 / 时点宇宙+可成交(§9) 已落地。后续可选:流动性参与率、印花税历史档、未复权涨停价。
 
-## 11. 因子诊断层（alphalens 思路，阶段2 / 2026-07-15）
+## 12. 因子诊断层（alphalens 思路，阶段2 / 2026-07-15）
 
 单算子连续 `score` 独立量化为 IC / 分位收益 / 换手 / 衰减——**验证单个因子不必搭整条策略管道**（治"每只票每天必须跑全管道"冗长 + 补因子研究工作流缺口）。G10 铲除 ±20 后 score 连续可分，本层直接消费它。
 
