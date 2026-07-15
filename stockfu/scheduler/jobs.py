@@ -70,17 +70,35 @@ def _upsert_quote(code: str, timeout: float = 35) -> bool:
         pct = q.pct_chg
     else:
         return False
+    # 日状态从 K 线 bar 取(baostock 有;其它源多为 None)
+    bar_ts = bar_st = None
+    if bars:
+        _b = bars[-1]
+        bar_ts = getattr(_b, "trade_status", None)
+        bar_st = getattr(_b, "is_st", None)
+
     with session_scope() as s:
         existing = s.exec(select(QuoteSnapshot).where(
             QuoteSnapshot.asset_code == code, QuoteSnapshot.quote_date == tday)).first()
-        if existing and existing.close:          # 最近交易日已落盘 → 跳过
+        if existing and existing.close:
+            # OHLCV 已有:仍补空状态列(防「旧行 NULL 永久静默」)
+            ch = False
+            if existing.trade_status is None and bar_ts is not None:
+                existing.trade_status = int(bar_ts)
+                ch = True
+            if existing.is_st is None and bar_st is not None:
+                existing.is_st = int(bar_st)
+                ch = True
+            if ch:
+                s.commit()
             return True
-    with session_scope() as s:
-        snap = s.exec(select(QuoteSnapshot).where(
-            QuoteSnapshot.asset_code == code, QuoteSnapshot.quote_date == tday)).first()
-        snap = snap or QuoteSnapshot(asset_code=code, quote_date=tday)
+        snap = existing or QuoteSnapshot(asset_code=code, quote_date=tday)
         snap.open, snap.high, snap.low, snap.close = o, h, l, c
         snap.pct_chg, snap.volume, snap.amount = pct, vol, amt
+        if bar_ts is not None:
+            snap.trade_status = int(bar_ts)
+        if bar_st is not None:
+            snap.is_st = int(bar_st)
         if q:
             snap.pe, snap.pb, snap.market_cap = q.pe, q.pb, q.market_cap
         if snap.id is None:
@@ -166,27 +184,94 @@ def _upsert_index_quotes() -> int:
 
 
 def backfill_kline(code: str, days: int = 90) -> int:
-    """拉历史日K灌入 quote_snapshot（首次/补数据）。返回新增条数。"""
+    """拉历史日K灌入 quote_snapshot（首次/补数据）。返回新增条数。
+
+    写入 is_st/trade_status(源提供时);已有行缺状态时就地补写(不重写 OHLCV)。
+    """
     from stockfu.data.manager import get_manager
     bars = sorted(get_manager().get_kline(code, days), key=lambda b: b.date)
     if not bars:
         return 0
     n = 0
+    patched = 0
     with session_scope() as s:
-        have = {q.quote_date for q in s.exec(
-            select(QuoteSnapshot).where(QuoteSnapshot.asset_code == code)).all()}
+        existing = {
+            q.quote_date: q for q in s.exec(
+                select(QuoteSnapshot).where(QuoteSnapshot.asset_code == code)).all()
+        }
         prev_close = None
         for b in bars:
-            if b.date not in have:
+            ts = getattr(b, "trade_status", None)
+            st = getattr(b, "is_st", None)
+            if b.date not in existing:
                 pct = round((b.close / prev_close - 1) * 100, 2) if prev_close else None
                 s.add(QuoteSnapshot(
                     asset_code=code, quote_date=b.date, open=b.open, high=b.high,
                     low=b.low, close=b.close, pct_chg=pct, volume=b.volume, amount=b.amount,
+                    trade_status=int(ts) if ts is not None else None,
+                    is_st=int(st) if st is not None else None,
                 ))
                 n += 1
+            else:
+                # 已有行:仅补空的状态列(baostock 新拉到时修复历史 NULL)
+                row = existing[b.date]
+                changed = False
+                if row.trade_status is None and ts is not None:
+                    row.trade_status = int(ts)
+                    changed = True
+                if row.is_st is None and st is not None:
+                    row.is_st = int(st)
+                    changed = True
+                if changed:
+                    patched += 1
             prev_close = b.close
         s.commit()
-    return n
+    return n + patched
+
+
+def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> dict:
+    """专补 quote_snapshot.is_st/trade_status(走 baostock,不改 OHLCV)。
+
+    修复「历史行状态为 NULL → 宇宙 ST/停牌静默失效」。返回 {codes, rows_patched, errors}。
+    """
+    from stockfu.data.baostock_source import BaostockSource
+    from stockfu.services.universe import resolve_base_codes
+
+    if codes is None:
+        codes = resolve_base_codes("all")
+    src = BaostockSource()
+    patched = 0
+    errors = 0
+    for i, code in enumerate(codes):
+        try:
+            bars = src.get_kline(code, days)
+        except Exception:  # noqa: BLE001
+            errors += 1
+            continue
+        if not bars:
+            continue
+        by_d = {b.date: b for b in bars}
+        with session_scope() as s:
+            rows = s.exec(
+                select(QuoteSnapshot).where(QuoteSnapshot.asset_code == code)
+            ).all()
+            for row in rows:
+                b = by_d.get(row.quote_date)
+                if not b:
+                    continue
+                ch = False
+                if row.trade_status is None and b.trade_status is not None:
+                    row.trade_status = int(b.trade_status)
+                    ch = True
+                if row.is_st is None and b.is_st is not None:
+                    row.is_st = int(b.is_st)
+                    ch = True
+                if ch:
+                    patched += 1
+            s.commit()
+        if (i + 1) % 50 == 0:
+            print(f"  quote_status {i + 1}/{len(codes)}  patched_rows={patched}", flush=True)
+    return {"codes": len(codes), "rows_patched": patched, "errors": errors}
 
 
 def update_index_benchmark(code: str = "sh000001") -> int:

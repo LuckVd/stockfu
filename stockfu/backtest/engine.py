@@ -415,7 +415,7 @@ def run_backtest(codes: list[str], start: date, end: date,
 
     # 宇宙 + 可成交(strict 默认 ON:涨跌停/ST/list_date;strict=False 对齐旧「有价即交易」)
     from stockfu.services.universe import DayFlags, UniverseContext, UniverseRules
-    from stockfu.services.tradeability import ExecutionRules, check_fill
+    from stockfu.services.tradeability import ExecutionRules, check_fill, infer_pre_close
     if universe_rules is None:
         universe_rules = UniverseRules() if strict else UniverseRules(
             exclude_st=False, require_trading=False, min_list_days=0, use_list_date=False,
@@ -475,6 +475,7 @@ def run_backtest(codes: list[str], start: date, end: date,
                     board=uni_ctx.board(code),
                     is_st=bool(bar.get("is_st")),
                     trade_status=int(bar.get("trade_status", 1)),
+                    pre_close=infer_pre_close(bar.get("close"), bar.get("pct_chg")),
                     rules=execution_rules,
                 )
                 if not fill.ok:
@@ -509,15 +510,17 @@ def run_backtest(codes: list[str], start: date, end: date,
             # 1a. 先执行所有卖单(按 code 序)——释放现金给买单
             for code, tw, px, source in sells:
                 _exec(code, tw, px, source)
-            # 1b. 买单等比缩放到可用现金(卖单释放后),再执行(按 code 序)
+            # 1b. 买单等比缩放到可用现金(卖单释放后),再执行(按 code 索引,禁止 zip 错位)
             scaled, safety, constrained = scale_buys_to_cash(
                 acct, [(c, tw, px) for c, tw, px, _ in buys], open_prices,
                 commission_rate=COMMISSION_RATE, transfer_fee_rate=TRANSFER_FEE_RATE,
                 min_commission=MIN_COMMISSION)
             if constrained:
                 cash_constraint_hits += 1
-            for (code, _tw, px, source), (_c, scaled_tw, _p) in zip(buys, scaled):
-                _exec(code, scaled_tw, px, source,
+            scaled_by_code = {c: (stw, spx) for c, stw, spx in scaled}
+            for code, _tw, px, source in buys:
+                stw, spx = scaled_by_code.get(code, (_tw, px))
+                _exec(code, stw, spx, source,
                       **({"cash_scaled": round(safety, 4)} if constrained else {}))
             pending_target = still_pending
 

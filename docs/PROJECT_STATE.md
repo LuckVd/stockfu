@@ -4,7 +4,7 @@
 > 定位：**StockFu·资产管理终端**，借鉴 `../daily_stock_analysis` 的多数据源 fallback 思想，TUI 为主 + FastAPI。
 
 ## 1. 一句话现状
-一个本地优先的综合资产管理 + 市场情绪终端：持仓管理、股息/网格、**三层(市场/板块/个股) fear/greed/heat 情绪指数**、历史回补、**AI 4 顾问**、**天级回测引擎（算子→策略→逐日执行，未来函数已防护；2026-07-15 做减法：砍回测 LLM 算子 + 铲 ±20/signal → 纯连续因子）**、**因子诊断层（阶段2：单算子 IC/分位收益/换手/衰减，alphalens 思路）**、**时点宇宙+可成交（cn_large_pool_v1：list_date/ST/停牌 + 涨跌停近似/滑点，面向 ~800 大盘候选）**、**个股 PE/PB/PS 历史分位（baostock 全字段）**。SQLite 存储，textual TUI + FastAPI。
+一个本地优先的综合资产管理 + 市场情绪终端：持仓管理、股息/网格、**三层(市场/板块/个股) fear/greed/heat 情绪指数**、历史回补、**AI 4 顾问**、**天级回测引擎（算子→策略→逐日执行，未来函数已防护；2026-07-15 做减法：砍回测 LLM 算子 + 铲 ±20/signal → 纯连续因子）**、**因子诊断层（阶段2：单算子 IC/分位收益/换手/衰减，alphalens 思路）**、**时点宇宙+可成交（cn_large_pool_v1：list_date/ST/停牌 + 涨跌停/滑点；is_st/trade_status 入库闭环 + status_coverage；面向 ~800 大盘候选）**、**个股 PE/PB/PS 历史分位（baostock 全字段）**。SQLite 存储，textual TUI + FastAPI。
 
 ## 2. 架构（5 层）
 ```

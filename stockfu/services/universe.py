@@ -116,10 +116,17 @@ class UniverseContext:
         return board_of_code(code)
 
     def eligible_on(self, as_of: date, day_flags: dict[str, DayFlags] | None = None) -> set[str]:
-        """as_of 日可新开仓/可参与截面排名的集合。只用 ≤as_of 主数据 + 当日 flags。"""
+        """as_of 日可新开仓/可参与截面排名的集合。只用 ≤as_of 主数据 + 当日 flags。
+
+        day_flags 必传(可为空 dict=当日全无行情)。传 None 直接 raise,防新 caller 静默零交易。
+        """
+        if day_flags is None:
+            raise ValueError(
+                "UniverseContext.eligible_on 需要 day_flags dict"
+                "(可为空);勿省略——省略会导致宇宙静默为空"
+            )
         rules = self.rules
         out: set[str] = set()
-        flags = day_flags or {}
         for code in self.codes:
             m = self.master.get(code)
             if m and m.delist_date and as_of >= m.delist_date:
@@ -131,7 +138,7 @@ class UniverseContext:
                 continue
             if rules.min_list_days > 0 and (as_of - anchor).days < rules.min_list_days:
                 continue
-            fl = flags.get(code)
+            fl = day_flags.get(code)
             if fl is not None:
                 if rules.exclude_st and fl.is_st:
                     continue
@@ -141,11 +148,12 @@ class UniverseContext:
                     # 当日无行情行:不进截面(停牌/缺失);持仓侧另处理
                     continue
             else:
-                # 无 flags 时保守:不进(调用方应传当日 close 集合)
-                continue
-            if rules.min_amount_ma20 is not None and fl.amount is not None:
-                if fl.amount < rules.min_amount_ma20:
+                # flags 字典无此 code:视为无行
+                if rules.require_trading:
                     continue
+            if (rules.min_amount_ma20 is not None and fl is not None
+                    and fl.amount is not None and fl.amount < rules.min_amount_ma20):
+                continue
             out.add(code)
         return out
 
@@ -156,12 +164,64 @@ class UniverseContext:
             "base_size": len(self.codes),
             "master_coverage": len(self.master),
             "first_quote_coverage": len(self.first_quote),
+            "status_coverage": quote_status_coverage(self.codes),
         }
         if sizes:
             d["avg_size"] = round(sum(sizes) / len(sizes), 1)
             d["min_size"] = min(sizes)
             d["max_size"] = max(sizes)
         return d
+
+
+def quote_status_coverage(codes: list[str] | None = None) -> dict:
+    """quote_snapshot 上 is_st / trade_status 非空覆盖率(可观测过滤是否真实生效)。
+
+    纯 SQL 聚合,不拉全表行。rate 低时 ST/停牌过滤接近 no-op → 应跑 --backfill-quote-status。
+    """
+    from sqlalchemy import text
+    with session_scope() as s:
+        if codes:
+            # 参数化 IN:分批防 SQL 过长
+            n = st_nn = ts_nn = st_pos = 0
+            chunk = 400
+            for i in range(0, len(codes), chunk):
+                part = codes[i:i + chunk]
+                ph = ",".join(f":c{j}" for j in range(len(part)))
+                params = {f"c{j}": part[j] for j in range(len(part))}
+                sql = text(
+                    f"SELECT COUNT(*), "
+                    f"SUM(CASE WHEN is_st IS NOT NULL THEN 1 ELSE 0 END), "
+                    f"SUM(CASE WHEN trade_status IS NOT NULL THEN 1 ELSE 0 END), "
+                    f"SUM(CASE WHEN is_st = 1 THEN 1 ELSE 0 END) "
+                    f"FROM quote_snapshot WHERE asset_code IN ({ph})"
+                )
+                row = s.execute(sql, params).one()
+                n += int(row[0] or 0)
+                st_nn += int(row[1] or 0)
+                ts_nn += int(row[2] or 0)
+                st_pos += int(row[3] or 0)
+        else:
+            row = s.execute(text(
+                "SELECT COUNT(*), "
+                "SUM(CASE WHEN is_st IS NOT NULL THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN trade_status IS NOT NULL THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN is_st = 1 THEN 1 ELSE 0 END) "
+                "FROM quote_snapshot"
+            )).one()
+            n = int(row[0] or 0)
+            st_nn = int(row[1] or 0)
+            ts_nn = int(row[2] or 0)
+            st_pos = int(row[3] or 0)
+        if n == 0:
+            return {"n_rows": 0, "is_st_rate": None, "trade_status_rate": None}
+        return {
+            "n_rows": n,
+            "is_st_nonnull": st_nn,
+            "trade_status_nonnull": ts_nn,
+            "is_st_rate": round(st_nn / n, 4),
+            "trade_status_rate": round(ts_nn / n, 4),
+            "is_st_positive": st_pos,
+        }
 
 
 def resolve_base_codes(spec: str | list[str] | None) -> list[str]:
