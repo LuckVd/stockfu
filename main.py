@@ -17,6 +17,7 @@
     python main.py --import-csv [DIR]  # 从 CSV 合并导入回库（换机同步；upsert 不丢数据）
     python main.py --backtest STRATEGY [--start --end --cash --codes --save]  # 回测（见 docs/BACKTEST.md）
     python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md §11）
+    python main.py --backfill-universe  # 回补 security_master(list_date/board, baostock)
     python main.py --serve         # FastAPI 服务
 """
 import argparse
@@ -193,28 +194,47 @@ def run_config() -> None:
     run_wizard()
 
 
+def run_backfill_universe() -> None:
+    """回补 security_master(list_date / delist / board),宇宙层前置。"""
+    from stockfu.db import init_db
+    from stockfu.services.universe import backfill_security_master
+
+    init_db()
+    print("回补 security_master(baostock query_stock_basic) …")
+    r = backfill_security_master()
+    print(f"✓ upserted={r.get('upserted')}  baostock={r.get('from_baostock')}  "
+          f"first_quote兜底={r.get('from_first_quote')}  skipped={r.get('skipped')}")
+    if r.get("error"):
+        print(f"  警告: {r['error']}")
+
+
 def run_backtest(strategy: str, start: str | None, end: str | None,
-                 cash: float, codes: str | None, save: bool) -> None:
+                 cash: float, codes: str | None, save: bool,
+                 strict: bool = True) -> None:
     """回测：算子→策略→逐日 T+1 执行，输出绩效指标。
 
     策略由 app_config('active_strategy_id') 决定;此处 --backtest STRATEGY 设置它。
+    --codes: 省略=自选; all/pool=大盘候选池(~800); 或逗号列表。
+    strict(默认 True): 时点宇宙 + 涨跌停/滑点; --no-strict 对齐旧「有价即成交」。
     详见 docs/BACKTEST.md。
     """
     from datetime import date, timedelta
 
-    from stockfu.db import set_app_config
+    from stockfu.db import init_db, set_app_config
+    init_db()
     set_app_config("active_strategy_id", strategy)
     from stockfu.ai.operators.registry import discover_and_register
     discover_and_register()
     from stockfu.backtest.scheduler import run as _run
+    from stockfu.services.universe import resolve_base_codes
 
     end_d = end or date.today().isoformat()
     start_d = start or (date.today() - timedelta(days=365)).isoformat()
-    code_list = [c.strip() for c in codes.split(",") if c.strip()] if codes else None
+    code_list = resolve_base_codes(codes)
 
-    scope = f"{len(code_list)}只票" if code_list else "全部A股自选"
+    scope = f"{len(code_list)}只票" + (" strict" if strict else " no-strict")
     print(f"回测 {strategy}  {start_d} → {end_d}  初始资金 {cash:,.0f}  ({scope}) …")
-    r = _run(code_list, start_d, end_d, initial_cash=cash)
+    r = _run(code_list, start_d, end_d, initial_cash=cash, strict=strict)
     m = r["metrics"]
     bench_ret = m.get("benchmark_return")
     window = m.get("benchmark_window")
@@ -228,9 +248,17 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     wr_str = f" | 胜率 {wr}%" if wr is not None else ""
     excess = m.get("excess")
     excess_str = f" | 超额 {excess}%" if excess is not None else ""
+    uni = m.get("config", {}).get("universe") or r.get("universe") or {}
+    uni_str = ""
+    if uni.get("avg_size") is not None:
+        uni_str = (f"\n  宇宙 {uni.get('universe_id')} 日均 {uni['avg_size']} "
+                   f"[{uni.get('min_size')}~{uni.get('max_size')}] "
+                   f"master {uni.get('master_coverage')}/{uni.get('base_size')}")
     print(f"✓ 总收益 {m.get('total_return')}% | 年化 {m.get('annualized')}% | "
           f"最大回撤 {m.get('max_drawdown')}% | 夏普 {m.get('sharpe')}{wr_str}{bench_str}{excess_str}\n"
-          f"  交易 {m.get('trade_count')}笔 | 期末权益 {m.get('final_equity')}")
+          f"  交易 {m.get('trade_count')}笔 | 期末权益 {m.get('final_equity')}"
+          f" | 涨停拒买 {m.get('limit_reject_buys', 0)} | 跌停拒卖 {m.get('limit_reject_sells', 0)}"
+          f"{uni_str}")
     if r.get("saved_to"):
         print(f"  结果已保存: {r['saved_to']}")
 
@@ -254,10 +282,6 @@ def run_factor_diag(operator: str, start: str | None, end: str | None,
     import os
     from datetime import date, datetime, timedelta
 
-    from sqlmodel import select
-
-    from stockfu.db import session_scope
-    from stockfu.models import Asset
     from stockfu.ai.operators.registry import discover_and_register, get_operator_class
     from stockfu.backtest.factor_diag import (run_factor_diag as _run,
                                               DEFAULT_PERIODS, DEFAULT_QUANTILES,
@@ -273,18 +297,11 @@ def run_factor_diag(operator: str, start: str | None, end: str | None,
 
     end_d = end or date.today().isoformat()
     start_d = start or (date.today() - timedelta(days=365)).isoformat()
-    if codes and codes.strip().lower() in ("all", "stocks", "market"):
-        # 全市场个股池(quote_snapshot=个股表;ETF/指数在独立表):横截面 IC 的理想宽度。
-        # 首跑需填算子缓存(800票×1年≈分钟级,一次性,回测/重跑秒级复用)。
-        from stockfu.models import QuoteSnapshot
-        from sqlmodel import func as _f
-        with session_scope() as s:
-            code_list = [c for c in s.exec(select(QuoteSnapshot.asset_code).distinct()).all() if c]
-    elif codes:
-        code_list = [c.strip() for c in codes.split(",") if c.strip()]
-    else:
-        with session_scope() as s:
-            code_list = [a.code for a in s.exec(select(Asset).where(Asset.market == "cn")).all()]
+    from stockfu.db import init_db
+    from stockfu.services.universe import resolve_base_codes
+    init_db()
+    # all/pool → 大盘候选 ~800;省略 → 自选;每日再按 U(t) 滤次新/ST/停牌
+    code_list = resolve_base_codes(codes)
 
     # 默认参数 = 算子 PARAMS_SCHEMA（各算子的默认窗口/周期）
     if params:
@@ -305,8 +322,12 @@ def run_factor_diag(operator: str, start: str | None, end: str | None,
                periods=periods_t, n_quantiles=quantiles, primary_period=pperiod,
                progress=True)
 
-    print(f"\n标的池 {rep['universe_size']} 只 | 信号日 {rep['n_signal_days']} | "
+    um = rep.get("universe") or {}
+    print(f"\n标的池 base {rep['universe_size']} 只 | 信号日 {rep['n_signal_days']} | "
           f"因子观测 {rep['factor_observations']:,}")
+    if um.get("avg_size") is not None:
+        print(f"  时点宇宙日均 {um['avg_size']} [{um.get('min_size')}~{um.get('max_size')}] "
+              f"master {um.get('master_coverage')}/{um.get('base_size')}")
 
     # IC 衰减表
     print(f"\nIC 衰减（横截面 Spearman，前向收益 vs 因子 score）:")
@@ -394,6 +415,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补 连板/涨停历史（默认365天，限速，慢，建议后台）")
     p.add_argument("--backfill-benchmark", action="store_true",
                    help="回补回测基准 sh000001 历史日线（首次部署用）")
+    p.add_argument("--backfill-universe", action="store_true",
+                   help="回补 security_master(list_date/board, baostock;时点宇宙前置)")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
     p.add_argument("--vacuum", action="store_true",
@@ -407,7 +430,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--start", default=None, help="回测/诊断起始日 YYYY-MM-DD（默认1年前）")
     p.add_argument("--end", default=None, help="回测/诊断结束日 YYYY-MM-DD（默认今天）")
     p.add_argument("--cash", type=float, default=1_000_000.0, help="回测初始资金（默认100万）")
-    p.add_argument("--codes", default=None, help="逗号分隔股票代码（默认全部A股自选）")
+    p.add_argument("--codes", default=None,
+                   help="标的池:省略=自选; all/pool=大盘候选(~800); 或逗号代码列表")
+    p.add_argument("--strict", dest="strict", action="store_true", default=True,
+                   help="严谨模式(默认):时点宇宙+涨跌停/滑点")
+    p.add_argument("--no-strict", dest="strict", action="store_false",
+                   help="关闭宇宙/涨跌停/滑点(旧行为对照)")
     p.add_argument("--save", action="store_true", help="结果落盘（回测→data/backtest/ 诊断→data/factor_diag/）")
     p.add_argument("--periods", default=None,
                    help="因子诊断前向收益周期(交易日)，逗号分隔，默认 1,5,10,21")
@@ -452,6 +480,8 @@ def main() -> None:
         run_backfill_limit(args.backfill_limit)
     elif args.backfill_benchmark:
         run_backfill_benchmark()
+    elif args.backfill_universe:
+        run_backfill_universe()
     elif args.schedule:
         run_schedule()
     elif args.clean_quotes:
@@ -463,7 +493,8 @@ def main() -> None:
     elif args.config:
         run_config()
     elif args.backtest:
-        run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save)
+        run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save,
+                     strict=args.strict)
     elif args.factor_diag:
         run_factor_diag(args.factor_diag, args.start, args.end, args.codes, args.params,
                         _parse_periods(args.periods), args.quantiles,

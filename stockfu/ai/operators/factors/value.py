@@ -1,7 +1,7 @@
-"""价值算子: PE 近10年历史分位 → score(±10) + signal。低估买/高估卖。
+"""价值算子: PE 历史分位 → 连续 score + 派生 signal。低估买/高估卖。
 
 PE 分位复用 services.valuation.valuation_percentile(纯 DB、无网络、无未来函数,
-严格 <=as_of),算子自身不裸 SQL——取数收口在服务层(契约:算子不直接取库)。
+严格 <=as_of)。窗口默认 5 年——与 baostock 落库深度对齐(约 2021 起),勿假装 10 年。
 """
 from datetime import date
 
@@ -14,10 +14,11 @@ from stockfu.services.valuation import valuation_percentile
 class ValueOperator(BaseOperator):
     operator_id = "value"
     type = "math"
+    PARAMS_SCHEMA = {"years": 5}   # 与数据深度对齐;可调但勿超过库内覆盖
 
     def run(self, ctx, params):
-        # PE 近10年历史分位(复用 services.valuation,纯 DB、无未来函数)
-        pct, _pb = valuation_percentile(ctx.code, ctx.as_of or date.today(), years=10)
+        years = int(params.get("years", 5))
+        pct, _pb = valuation_percentile(ctx.code, ctx.as_of or date.today(), years=years)
         if pct is None:
             return OpResult(operator=self.operator_id, type="math", value=None,
                             signal="hold", score=0.0, confidence=0.3,

@@ -86,7 +86,25 @@ class QuoteSnapshot(SQLModel, table=True):
     pe: float | None = None
     pb: float | None = None
     market_cap: float | None = None
+    # 日状态(baostock 全字段回补已落库;ORM 对齐物理列,供宇宙/可成交)
+    trade_status: int | None = None               # 1=交易 0=停牌
+    is_st: int | None = None                      # 1=ST/*ST 0=正常
     __table_args__ = (UniqueConstraint("asset_code", "quote_date", name="uq_quote_code_date"),)
+
+
+class SecurityMaster(SQLModel, table=True):
+    """A 股证券主数据(时点宇宙用):上市/退市日 + 板块(涨跌幅档)。
+
+    与 asset 表解耦——回测池 ~800 只不必全部进自选。list_date 防次新股名单污染。
+    """
+    __tablename__ = "security_master"
+    code: str = Field(primary_key=True)            # 标准化 600519
+    name: str = ""
+    list_date: date | None = None                  # 上市日
+    delist_date: date | None = None                # 退市日(空=在市)
+    board: str = "main"                            # main/chinext/star/bse → 10/20/20/30%
+    status: str = "1"                              # baostock status 1=上市 0=退市
+    updated_at: datetime = Field(default_factory=_now)
 
 
 class IndexSnapshot(SQLModel, table=True):
