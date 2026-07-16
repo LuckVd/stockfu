@@ -231,7 +231,7 @@ def run_backfill_quote_status() -> None:
 
 def run_backtest(strategy: str, start: str | None, end: str | None,
                  cash: float, codes: str | None, save: bool,
-                 strict: bool = True) -> None:
+                 strict: bool = True, min_amount: float | None = None) -> None:
     """回测：算子→策略→逐日 T+1 执行，输出绩效指标。
 
     策略由 app_config('active_strategy_id') 决定;此处 --backtest STRATEGY 设置它。
@@ -255,7 +255,12 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
 
     scope = f"{len(code_list)}只票" + (" strict" if strict else " no-strict")
     print(f"回测 {strategy}  {start_d} → {end_d}  初始资金 {cash:,.0f}  ({scope}) …")
-    r = _run(code_list, start_d, end_d, initial_cash=cash, strict=strict)
+    universe_rules = None
+    if min_amount is not None:
+        from stockfu.services.universe import UniverseRules
+        universe_rules = UniverseRules(min_amount_ma20=min_amount)
+    r = _run(code_list, start_d, end_d, initial_cash=cash, strict=strict,
+             universe_rules=universe_rules)
     m = r["metrics"]
     bench_ret = m.get("benchmark_return")
     window = m.get("benchmark_window")
@@ -269,6 +274,9 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     wr_str = f" | 胜率 {wr}%" if wr is not None else ""
     excess = m.get("excess")
     excess_str = f" | 超额 {excess}%" if excess is not None else ""
+    _tov = m.get("avg_daily_turnover")
+    tov_str = (f" | 日均换手 {_tov}只/日(年化{m.get('annual_turnover')}遍)"
+               if _tov is not None else "")
     uni = m.get("config", {}).get("universe") or r.get("universe") or {}
     uni_str = ""
     if uni.get("avg_size") is not None:
@@ -277,7 +285,7 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
                    f"master {uni.get('master_coverage')}/{uni.get('base_size')}")
     print(f"✓ 总收益 {m.get('total_return')}% | 年化 {m.get('annualized')}% | "
           f"最大回撤 {m.get('max_drawdown')}% | 夏普 {m.get('sharpe')}{wr_str}{bench_str}{excess_str}\n"
-          f"  交易 {m.get('trade_count')}笔 | 期末权益 {m.get('final_equity')}"
+          f"  交易 {m.get('trade_count')}笔{tov_str} | 期末权益 {m.get('final_equity')}"
           f" | 涨停拒买 {m.get('limit_reject_buys', 0)} | 跌停拒卖 {m.get('limit_reject_sells', 0)}"
           f"{uni_str}")
     if r.get("saved_to"):
@@ -455,6 +463,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cash", type=float, default=1_000_000.0, help="回测初始资金（默认100万）")
     p.add_argument("--codes", default=None,
                    help="标的池:省略=自选; all/pool=大盘候选(~800); 或逗号代码列表")
+    p.add_argument("--min-amount", type=float, default=None,
+                   help="宇宙动态池:单日成交额门槛(元,如 50000000=5000万);默认关闭")
     p.add_argument("--strict", dest="strict", action="store_true", default=True,
                    help="严谨模式(默认):时点宇宙+涨跌停/滑点")
     p.add_argument("--no-strict", dest="strict", action="store_false",
@@ -519,7 +529,7 @@ def main() -> None:
         run_config()
     elif args.backtest:
         run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save,
-                     strict=args.strict)
+                     strict=args.strict, min_amount=args.min_amount)
     elif args.factor_diag:
         run_factor_diag(args.factor_diag, args.start, args.end, args.codes, args.params,
                         _parse_periods(args.periods), args.quantiles,

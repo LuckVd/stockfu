@@ -96,3 +96,26 @@ def factor_percentile(code: str, factor: str, field: str,
     series = quote_series(code, field, days)
     pct, n = percentile(series, today_value)
     return pct, n, days
+
+
+def linreg_r2(series: list[float]) -> tuple[float, float]:
+    """价格序列对时间索引(0,1,...,n-1)的线性回归,返回 (r², slope)。
+
+    r²→1 = 价格沿直线平稳演进(趋势线性度高/平稳);r²→0 = 散乱震荡。
+    slope 正负区分方向。供 trend_linearity 等算子复用(衡量"涨得稳不稳")。
+    纯 Python(项目无 numpy/pandas 依赖)。样本<3 或方差为 0(价格恒定)→ (0.0, 0.0)。
+    """
+    n = len(series)
+    if n < 3:
+        return 0.0, 0.0
+    x_mean = (n - 1) / 2.0
+    y_mean = sum(series) / n
+    sxx = sum((i - x_mean) ** 2 for i in range(n))
+    syy = sum((y - y_mean) ** 2 for y in series)
+    sxy = sum((i - x_mean) * (y - y_mean) for i, y in enumerate(series))
+    if sxx == 0 or syy == 0:
+        return 0.0, 0.0
+    slope = sxy / sxx
+    r = sxy / (sxx * syy) ** 0.5
+    r2 = min(1.0, r * r)   # 浮点误差可能使 |r| 微超 1,夹一下
+    return round(r2, 6), round(slope, 6)

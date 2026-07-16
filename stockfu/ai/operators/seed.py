@@ -26,6 +26,7 @@ _OP_NAMES = {
     "macd_cross": "MACD金叉死叉",
     "monthly_bollinger": "月线布林带",
     "weekly_bollinger": "周线布林带",
+    "trend_linearity": "趋势线性度",
 }
 
 # 策略清单: strategy_id。name + config 从 strategies/{id}.yaml 读(单一真源)。
@@ -36,6 +37,7 @@ _STRATEGIES = [
     "momentum_breakout",
     "dual_bollinger",
     "bollinger_reversion",
+    "cn_momentum_rotation",
 ]
 
 _STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
