@@ -753,6 +753,24 @@ def run_backtest(codes: list[str], start: date, end: date,
     metrics["max_gross_leverage"] = round(max(_gross) * 100, 1) if _gross else None
     metrics["max_single_weight"] = round(
         max((p["weight"] for d in holdings_curve for p in d.get("positions", [])), default=0.0) * 100, 1)
+    # 换手:相邻交易日持仓 code 集合的对称差(单边换手 = 对称差/2:换1只=卖1买1=对称差2)。
+    # 降换手策略核心观测量。turnover_count=回测期总换手只数(单边);
+    # avg_daily_turnover=日均换手只数;annual_turnover=年化换手倍数(单边年换手/平均持仓数,
+    # 1.0=组合一年换一遍)。原"五福"高频轮动年换手~20+遍,本策略目标降到个位数遍。
+    _tov_total = 0.0
+    _n_held: list[int] = []
+    for _i in range(1, len(holdings_curve)):
+        _prev = {p["code"] for p in holdings_curve[_i - 1].get("positions", [])}
+        _cur = {p["code"] for p in holdings_curve[_i].get("positions", [])}
+        _tov_total += len(_prev ^ _cur) / 2.0
+        _n_held.append(len(_cur))
+    _hold_days = max(len(holdings_curve) - 1, 1)
+    metrics["turnover_count"] = round(_tov_total, 1)
+    metrics["avg_daily_turnover"] = round(_tov_total / _hold_days, 2)
+    _avg_n = sum(_n_held) / len(_n_held) if _n_held else 0.0
+    _years = len(days) / 252.0
+    metrics["annual_turnover"] = (round((_tov_total / _years) / _avg_n, 2)
+                                  if _years > 0 and _avg_n > 0 else None)
     metrics["cash_constraint_hits"] = cash_constraint_hits   # 买单被现金缩放的天数(可观测)
     metrics["limit_reject_buys"] = limit_reject_buys
     metrics["limit_reject_sells"] = limit_reject_sells

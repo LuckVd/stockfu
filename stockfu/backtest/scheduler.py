@@ -103,7 +103,7 @@ def run(codes: list[str], start, end, initial_cash: float = engine.INITIAL_CASH,
         target_mode: str | None = None, max_weight: float | None = None,
         total_dead: float | None = None, min_trade_weight: float | None = None,
         sell_cooldown_days: int | None = None, conf_gate: float | None = None,
-        strict: bool = True) -> dict:
+        strict: bool = True, universe_rules=None) -> dict:
     """跑回测(active 策略驱动 analyze + debounce)。run_id 自动生成;分析缓存按 (code,as_of)
     进 ai_report 表,同区间重跑复用已入库行 = 断点续跑。返回结果并存盘。
 
@@ -131,7 +131,7 @@ def run(codes: list[str], start, end, initial_cash: float = engine.INITIAL_CASH,
     result = engine.run_backtest(codes, start, end, initial_cash,
                                  analyze_fn=analyze_fn, prefetch_fn=prefetch_fn,
                                  max_workers=max_workers, debounce=db,
-                                 strict=strict)
+                                 strict=strict, universe_rules=universe_rules)
     result["run_id"] = run_id
     # 落盘策略身份:engine 只拿到 analyze_fn 闭包、看不到策略,故在此补齐(cs 现成)。
     # 同时记算子 id 列表,产物可追溯(策略名 + 算子指纹)。
