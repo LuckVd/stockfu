@@ -110,6 +110,102 @@ def _get_index_daily_akshare(symbol: str, start: str, end: str) -> list[dict]:
     return results
 
 
+def get_sw_index_daily(symbol: str) -> list[dict]:
+    """申万行业指数日 K 线(akshare index_hist_sw);未装/失败/空 → 返回 []。
+
+    镜像 _get_index_daily_akshare 的稳健范式(惰性 import + try/except→[] + 逐行容错),
+    但调 申万专用接口:ak.index_hist_sw(symbol, period="day"),全量返回(1999 起,无 start/end)。
+    symbol: 申万行业指数裸 6 位代码(如 "801010");落库 asset_code = f"sw{symbol}"(与 sh000001 区分)。
+    返回 list[dict],键对齐 IndexQuoteDaily(index_hist_sw 无"涨跌幅"列 → pct_chg 由前后收盘算)。
+    """
+    with direct_connection():
+        try:
+            import akshare as ak
+        except Exception:
+            return []
+        try:
+            df = ak.index_hist_sw(symbol=symbol, period="day")
+        except Exception:
+            return []
+    if df is None or df.empty:
+        return []
+    df = df.sort_values("日期")              # 防御性按日期升序(供 pct_chg 前后项)
+    asset_code = f"sw{symbol}"
+    results: list[dict] = []
+    prev_close = None
+    for _, r in df.iterrows():
+        try:
+            d = pd.to_datetime(r["日期"]).date()
+            close_val = float(r["收盘"])
+            pct = round((close_val / prev_close - 1) * 100, 4) if prev_close and prev_close > 0 else None
+            prev_close = close_val
+            results.append({
+                "asset_code": asset_code,
+                "quote_date": d,
+                "open": float(r["开盘"]) if pd.notna(r.get("开盘")) else None,
+                "high": float(r["最高"]) if pd.notna(r.get("最高")) else None,
+                "low": float(r["最低"]) if pd.notna(r.get("最低")) else None,
+                "close": close_val,
+                "pct_chg": pct,
+                "volume": float(r["成交量"]) if pd.notna(r.get("成交量")) else None,
+                "amount": float(r["成交额"]) if pd.notna(r.get("成交额")) else None,
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    return results
+
+
+def get_etf_daily(symbol: str, start: str, end: str) -> list[dict]:
+    """ETF 日线(akshare fund_etf_hist_sina,不复权,覆盖上市以来全历史);未装/失败/空 → []。
+
+    东财 fund_etf_hist_em(前复权)走 push2his,易被限流;改用新浪(不同主机,稳定)。
+    symbol: ETF 6 位代码(如 "512800");新浪需交易所前缀(5/6/9→sh,其余→sz),内部转换。
+    返回 list[dict],键对齐 IndexQuoteDaily/EtfQuoteDaily(asset_code 用裸 6 位);新浪无涨跌幅列→前后收盘算。
+    start/end 客户端裁剪(新浪接口不接受日期参数)。ETF 分红小,不复权 vs 前复权差异有限(探测可接受)。
+    """
+    with direct_connection():
+        try:
+            import akshare as ak
+        except Exception:
+            return []
+        try:
+            sina_sym = ("sh" if symbol[0] in ("5", "6", "9") else "sz") + symbol
+            df = ak.fund_etf_hist_sina(symbol=sina_sym)
+        except Exception:
+            return []
+    if df is None or df.empty:
+        return []
+    df = df.sort_values("date")
+    d0, d1 = start.replace("-", ""), end.replace("-", "")
+    results: list[dict] = []
+    prev_close = None
+    for _, r in df.iterrows():
+        try:
+            d = pd.to_datetime(r["date"]).date()
+            ds = d.strftime("%Y%m%d")
+            if ds < d0 or ds > d1:
+                prev_close = float(r["close"])
+                continue
+            close_val = float(r["close"])
+            pct = (round((close_val / prev_close - 1) * 100, 4)
+                   if prev_close and prev_close > 0 else None)
+            prev_close = close_val
+            results.append({
+                "asset_code": symbol,
+                "quote_date": d,
+                "open": float(r["open"]) if pd.notna(r.get("open")) else None,
+                "high": float(r["high"]) if pd.notna(r.get("high")) else None,
+                "low": float(r["low"]) if pd.notna(r.get("low")) else None,
+                "close": close_val,
+                "pct_chg": pct,
+                "volume": float(r["volume"]) if pd.notna(r.get("volume")) else None,
+                "amount": float(r["amount"]) if pd.notna(r.get("amount")) else None,
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    return results
+
+
 class AkshareSource(DataSource):
     name = "akshare"
     supports = {Market.CN, Market.HK, Market.US}

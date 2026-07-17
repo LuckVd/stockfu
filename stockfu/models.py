@@ -161,6 +161,23 @@ class IndexQuoteDaily(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("asset_code", "quote_date", name="uq_index_quote_code_date"),)
 
 
+class EtfQuoteDaily(SQLModel, table=True):
+    """ETF 日线行情(行业 ETF etc.);表已存在,仅作 ORM 映射,不重建。
+    schema 同 IndexQuoteDaily,供回测/探测按代码路由读取(指数走 index 表,ETF 走本表)。"""
+    __tablename__ = "etf_quote_daily"
+    id: int | None = Field(default=None, primary_key=True)
+    asset_code: str = Field(index=True)
+    quote_date: date = Field(index=True)
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float | None = None
+    pct_chg: float | None = None
+    volume: float | None = None
+    amount: float | None = None
+    __table_args__ = (UniqueConstraint("asset_code", "quote_date", name="uq_etf_quote_code_date"),)
+
+
 class FundFlowSnapshot(SQLModel, table=True):
     """ETF 份额资金流向天级快照（份额变化 ≈ 大资金净申赎）。"""
     __tablename__ = "fundflow_snapshot"

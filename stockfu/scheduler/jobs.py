@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from sqlmodel import select
 
 from stockfu.db import init_db, session_scope
-from stockfu.models import (Asset, FundFlowSnapshot, IndexQuoteDaily, QuoteSnapshot)
+from stockfu.models import (Asset, EtfQuoteDaily, FundFlowSnapshot, IndexQuoteDaily, QuoteSnapshot)
 
 # 指数基准 + 资金流追踪标的：宽基 & 热门行业 ETF
 INDEX_ETFS = [
@@ -413,7 +413,82 @@ def run_backfill_benchmark(code: str = "sh000001") -> dict:
     return {"code": code, "total": len(rows), "new": n, "have_before": len(have_dates)}
 
 
-def run_backfill(days: int = 90) -> dict:
+# 申万一级行业指数(31 个,akshare sw_index_first_info;2021 现行分类口径)。
+# 键=裸 6 位指数代码(喂 akshare index_hist_sw),值=行业名(展示/映射用)。单一真源,probes 复用。
+SW_INDUSTRIES = {
+    "801010": "农林牧渔", "801030": "基础化工", "801040": "钢铁", "801050": "有色金属",
+    "801080": "电子", "801880": "汽车", "801110": "家用电器", "801120": "食品饮料",
+    "801130": "纺织服饰", "801140": "轻工制造", "801150": "医药生物", "801160": "公用事业",
+    "801170": "交通运输", "801180": "房地产", "801200": "商贸零售", "801210": "社会服务",
+    "801780": "银行", "801790": "非银金融", "801230": "综合", "801710": "建筑材料",
+    "801720": "建筑装饰", "801730": "电力设备", "801890": "机械设备", "801740": "国防军工",
+    "801750": "计算机", "801760": "传媒", "801770": "通信", "801950": "煤炭",
+    "801960": "石油石化", "801970": "环保", "801980": "美容护理",
+}
+
+
+def backfill_sw_index() -> dict:
+    """一次性回补 31 个申万一级行业指数历史日线(akshare index_hist_sw)→ index_quote_daily。
+
+    范式同 run_backfill_benchmark:per-symbol 两段式 session(读已有日期集合→关→拉网络→开新→add→commit)。
+    asset_code = f"sw{symbol}";⚠️ 不做 code[2:] 剥前缀(那是 benchmark 为剥 "sh";SW 符号本就裸 6 位)。
+    返回 {asset_code: {total, new, have_before}}。
+    """
+    from stockfu.data.akshare_source import get_sw_index_daily
+    summary: dict[str, dict] = {}
+    for sym in SW_INDUSTRIES:
+        asset_code = f"sw{sym}"
+        with session_scope() as s:
+            existing = s.exec(select(IndexQuoteDaily).where(
+                IndexQuoteDaily.asset_code == asset_code)).all()
+            have_dates = {r.quote_date for r in existing}
+        rows = get_sw_index_daily(sym)
+        new_rows = [r for r in rows if r["quote_date"] not in have_dates]
+        if new_rows:
+            with session_scope() as s:
+                for r in new_rows:
+                    s.add(IndexQuoteDaily(**r))
+                s.commit()
+        summary[asset_code] = {"total": len(rows), "new": len(new_rows),
+                               "have_before": len(have_dates)}
+    return summary
+
+
+# 行业 ETF(可交易标的):一行业一只代表 ETF,覆盖主要申万一级行业。键=ETF 代码,值=申万行业名。
+# 选流动性较好、上市较早的(2016-2021);探测/轮动复用。代码错或退市的 get_etf_daily 返 [] 自动跳过。
+INDUSTRY_ETFS = {
+    "512800": "银行", "512690": "食品饮料", "512480": "电子", "512010": "医药生物",
+    "512660": "国防军工", "515030": "汽车", "512720": "计算机", "512980": "传媒",
+    "515880": "通信", "512400": "有色金属", "515210": "钢铁", "515220": "煤炭",
+    "159865": "农林牧渔", "516160": "电力设备", "562500": "机械设备",
+    "159996": "家用电器", "512070": "非银金融", "512580": "环保",
+}
+
+
+def backfill_industry_etf() -> dict:
+    """一次性回补行业 ETF 历史日线(akshare fund_etf_hist_em,前复权)→ etf_quote_daily。
+
+    范式同 backfill_sw_index;ETF 取数带 start/end(从 2010 至今,覆盖上市以来)。返回 {code: {total,new,have_before}}。
+    """
+    from stockfu.data.akshare_source import get_etf_daily
+    today = date.today()
+    summary: dict[str, dict] = {}
+    for code in INDUSTRY_ETFS:
+        with session_scope() as s:
+            existing = s.exec(select(EtfQuoteDaily).where(
+                EtfQuoteDaily.asset_code == code)).all()
+            have_dates = {r.quote_date for r in existing}
+        rows = get_etf_daily(code, "2010-01-01", today.isoformat())
+        new_rows = [r for r in rows if r["quote_date"] not in have_dates]
+        if new_rows:
+            with session_scope() as s:
+                for r in new_rows:
+                    s.add(EtfQuoteDaily(**r))
+                s.commit()
+        summary[code] = {"industry": INDUSTRY_ETFS[code],
+                         "total": len(rows), "new": len(new_rows),
+                         "have_before": len(have_dates)}
+    return summary
     """回填宽基/行业 ETF + 自选 + 板块自身K线 + 大盘资金流 的历史，供指数/情绪计算。"""
     init_db()
     with session_scope() as s:
