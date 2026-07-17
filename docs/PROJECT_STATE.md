@@ -6,6 +6,8 @@
 ## 1. 一句话现状
 一个本地优先的综合资产管理 + 市场情绪终端：持仓管理、股息/网格、**三层(市场/板块/个股) fear/greed/heat 情绪指数**、历史回补、**AI 4 顾问**、**天级回测引擎（算子→策略→逐日执行，未来函数已防护；2026-07-15 做减法：砍回测 LLM 算子 + 铲 ±20/signal → 纯连续因子）**、**因子诊断层（阶段2：单算子 IC/分位收益/换手/衰减，alphalens 思路）**、**时点宇宙+可成交（cn_large_pool_v1：list_date/ST/停牌 + 涨跌停/滑点；is_st/trade_status 入库闭环 + status_coverage；面向 ~800 大盘候选）**、**个股 PE/PB/PS 历史分位（baostock 全字段）**。SQLite 存储，textual TUI + FastAPI。
 
+> **【2026-07-18 进行中】行业轮动回测探测**（`stockfu/backtest/probes/sector_rotation.py`，独立模拟器，不进四层架构）：三宇宙（申万指数31 / 行业ETF18 / 个股 top-K）× 两方向（contrarian/calm）。已跑出，但 **edge 不稳健、跨宇宙方向翻转**（指数 contrarian +17% / ETF −4% / 个股 +7%；ETF 反而是 calm +12%）。**结论待 B 分段验证定夺**。详见 memory `sector-rotation-probe`。
+
 ## 2. 架构（5 层）
 ```
 stockfu/
@@ -62,6 +64,7 @@ stockfu/
 - **行情拆表**：QuoteSnapshot(个股,含pe/pb/ps_ttm/pcf/turnover) / EtfQuoteDaily(15只ETF,2021起) / IndexQuoteDaily(3指数,1990起) 三表分离,`quote_model_for` 按类型路由
 - **个股估值分位**：baostock 全字段(peTTM/pbMRQ)backfill 落 QuoteSnapshot;`valuation_percentile(code,as_of,years=5)` 本地算 PE/PB 历史分位(无网络/无未来函数)。PE 覆盖792只/PB 800只(2021起约5年)
 - **代理自动化**：setup_network(港美股走7890代理,国内源no_proxy直连)
+- **行业轮动探测(2026-07-18)**：`stockfu/backtest/probes/sector_rotation.py` 独立模拟器(复用 engine/action/composite/weekly_bollinger 纯函数,绕开"引擎只认 QuoteSnapshot"的限制)。行业情绪从行业指数/ETF 的 K 线派生(对齐 composite.compute_for);规则=排除恐/贪/热 top3 行业 → 选高恐低贪+周布林下轨 → 离下轨定仓 → 上轨阶梯卖 → 20% 止损 + lock_days 降换手。CLI `--universe {sw,etf,stock}` × `--panic-direction {high,low,both}`。10 个单测。结论待分段验证。
 
 ## 4. 数据现状（关键）
 | 因子 | 历史 | 说明 |
@@ -69,6 +72,8 @@ stockfu/
 | 个股日K | 2020起(94.5万行/801只) | QuoteSnapshot;efinance主力,baostock/tencent/sina/pytdx backup;含pe/pb/ps_ttm/pcf |
 | ETF日K | 2021起(1.6万行/15只) | EtfQuoteDaily(含510300);已拆表 |
 | 指数日K | 1990起(1.4万行/3个) | IndexQuoteDaily;已拆表 |
+| 申万行业指数 | 1999起(14万行/31个) | IndexQuoteDaily asset_code=sw801010等;`--backfill-sw`(akshare index_hist_sw);行业情绪/轮动探测用 |
+| 行业ETF(扩展) | 2015起(4.2万行/18个) | EtfQuoteDaily;`--backfill-etf-industry`(新浪 fund_etf_hist_sina 不复权,东财限流改用);一行业一只代表ETF(INDUSTRY_ETFS) |
 | PE/PB/PS历史 | ✅有,2021起5年(PE792只/PB800只) | baostock全字段peTTM/pbMRQ落QuoteSnapshot;valuation.py算分位(原记❌无,已解决,无需tushare) |
 | 两融总量 | 11年(2000条) | stock_margin_sse 一次拉全 |
 | 股息率序列 | 5年(6083条) | 本地算=TTM分红/价格,受分红事件历史限制 |
@@ -92,6 +97,9 @@ python main.py --backfill-factors     # 两融总量+个股两融10天+股息率
 python main.py --backfill-limit 365   # 连板(限流分批,断点续传,多次跑)
 python main.py --fetch                # 每日抓取+算三层指数落库
 python main.py --backtest bollinger_monthly --start 2025-06-01 --end 2026-01-01 --codes 600519,000858 --save   # 回测(见 docs/BACKTEST.md)
+python main.py --backfill-sw               # 回补 31 个申万一级行业指数(akshare index_hist_sw)
+python main.py --backfill-etf-industry      # 回补 18 只行业 ETF(新浪 fund_etf_hist_sina;东财 push2his 限流改用)
+python3 -m stockfu.backtest.probes.sector_rotation --universe etf --panic-direction both   # 行业轮动探测(详见 memory sector-rotation-probe)
 python main.py --schedule             # APScheduler每日定时(工作日15:30抓行情/16:00发邮件)
 python main.py                        # TUI看板
 python main.py --serve                # API(127.0.0.1:8787)
@@ -118,6 +126,7 @@ nohup python main.py --schedule >> data/schedule.log 2>&1 &
 - A股分红：`stock_history_dividend_detail`"派息"列是**每10股**,每股=/10
 - 招行股息率偏高(13%):数据源税前口径,需校准
 - 板块历史源：东财push2his(sector/concept_fund_flow_hist/board_industry_hist_em)限流全空→改同花顺stock_board_industry_index_ths(板块K线4年,绕限流)+stock_fund_flow_industry(即时)
+- **ETF 历史源(2026-07-18 踩坑)**：东财 `fund_etf_hist_em`(走 push2his)连发易被限流(ConnectionError/RemoteDisconnected)→ 改 **新浪 `fund_etf_hist_sina(symbol="sh512660")`**(需交易所前缀 sh/sz,**不复权**,覆盖上市以来全历史);baostock 的 ETF 历史只有近 6 个月(不可用)。申万行业指数走 akshare `index_hist_sw`(不同主机,未限流)。`get_etf_daily`/`get_sw_index_daily` 均带 `direct_connection()`(摘代理)
 - 板块名映射：SECTOR_MAP键(医药/新能源车)对不上同花顺行业名(医疗服务/汽车整车)→composite.SECTOR_THS_NAME显式映射;宽基(沪深300等)无对应→compute_sector降级纯ETF
 - 同花顺列名：OHLC带"价"后缀(开盘价vs东财开盘);资金流"净额"列排除"净占比","大单"排除"超大单"(akshare_source._find_col)
 - pip：系统python PEP668,用`--break-system-packages`
@@ -125,6 +134,7 @@ nohup python main.py --schedule >> data/schedule.log 2>&1 &
 ## 8. 待办（P2 / 未来）
 
 ### 【下一步 · 优先】(阶段2 后规划,2026-07-15)
+- **【当前活跃 · 待决策】行业轮动探测 → B 分段验证（2026-07-18）**：三宇宙（申万指数/行业ETF/个股）× 两方向（contrarian/calm）已跑出。结果**跨宇宙方向翻转、edge 不稳健**（指数 contrarian +17% · ETF contrarian −4% · 个股 contrarian +7%；ETF 反而是 calm +12%）。**下一步 = B**：把 2021-01→2026-07 拆 3 段（21-22 熊 / 23-24 深跌震荡 / 25-26 反弹），验个股 contrarian +7% 与 ETF calm +12% 是三段都正还是全靠某一段（参考 memory cn-momentum-rotation 翻车教训）。B 决定 Phase 2（个股化正规管线：asset.sector 申万映射 + 自定义 industry_contrarian rebalancer + 4 算子 + 引擎 meta 富化）建不建。代码 `stockfu/backtest/probes/sector_rotation.py`；结论见 memory `sector-rotation-probe`。
 - **阶段2 · 因子诊断层 ✅ 已完成(2026-07-15)**：alphalens 思路——单算子连续 score 算 IC / 分位收益 / 换手 / 衰减。`backtest/factor_diag.py` + CLI `--factor-diag <operator>`,复用回测算子缓存。详见 BACKTEST.md §11。
 - **阶段3 · 执行层抽象**(`docs/ARCHITECTURE_REVIEW.md` §4 P2 清单):Broker 抽象(回测/实盘共用执行层 P2-2)+ Sizer/CommInfo(费率/整手可替换 P2-3)+ Analyzer 可组合(_metrics 拆分 P2-4)+ Position 开平分解(交易回合统计 P2-8)+ math 算子向量化 run_batch(治冷启动慢 P2-1/P2-7)。建议顺序:P2-5(✅done in G10)→P2-1/7(性能)→P2-8/4(统计)→P2-3/2(执行层)。
 - **G10 遗留 ✅ 已清理(2026-07-15)**:① `--vacuum` 已跑(1133MB→191MB,回收 ~942MB 空闲页;备份 `data/stockfu.db.bak.G09`);② `action.py compute_target_weight` docstring 重写(去乱码+已删的 mode/targets 提法);③ `raw_score` 死字段清理——`models.py` 删字段+`db.py _migrate` ADD→DROP COLUMN(SQLite 3.45,幂等,物理列已删),同步清理 OperatorResult 类 docstring 的 LLM/raw_score 残留描述。

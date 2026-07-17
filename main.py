@@ -120,6 +120,18 @@ def run_backfill_benchmark() -> None:
     print(f"回补回测基准 sh000001 历史日线…")
     print(f"✓ {_run()}")
 
+def run_backfill_sw() -> None:
+    from stockfu.scheduler.jobs import backfill_sw_index as _run
+
+    print(f"回补 31 个申万一级行业指数历史日线（akshare index_hist_sw）…")
+    print(f"✓ {_run()}")
+
+def run_backfill_etf_industry() -> None:
+    from stockfu.scheduler.jobs import backfill_industry_etf as _run
+
+    print(f"回补行业 ETF 历史日线（akshare fund_etf_hist_em,前复权）…")
+    print(f"✓ {_run()}")
+
 def run_backfill_limit(days: int) -> None:
     from stockfu.services import backfill as bf
 
@@ -444,6 +456,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补 连板/涨停历史（默认365天，限速，慢，建议后台）")
     p.add_argument("--backfill-benchmark", action="store_true",
                    help="回补回测基准 sh000001 历史日线（首次部署用）")
+    p.add_argument("--backfill-sw", action="store_true",
+                   help="回补 31 个申万一级行业指数历史日线(akshare index_hist_sw;行业情绪/轮动前置)")
+    p.add_argument("--backfill-etf-industry", action="store_true",
+                   help="回补行业 ETF 历史日线(akshare fund_etf_hist_em,前复权;可交易轮动前置)")
     p.add_argument("--backfill-universe", action="store_true",
                    help="回补 security_master(list_date/board, baostock;时点宇宙前置)")
     p.add_argument("--backfill-quote-status", action="store_true",
@@ -513,6 +529,10 @@ def main() -> None:
         run_backfill_limit(args.backfill_limit)
     elif args.backfill_benchmark:
         run_backfill_benchmark()
+    elif args.backfill_sw:
+        run_backfill_sw()
+    elif args.backfill_etf_industry:
+        run_backfill_etf_industry()
     elif args.backfill_universe:
         run_backfill_universe()
     elif args.backfill_quote_status:
