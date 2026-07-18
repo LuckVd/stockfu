@@ -1,10 +1,7 @@
 """因子分位计算工具（CNN 式：每个因子取自身历史分位 → 0-100）。
 
-历史窗口按因子类别（业界口径）：
-- 估值类(PE/PB/股息率)：近 10 年或成立来取短（覆盖牛熊周期，对齐 CAPE 标准）
-- 情绪/资金/波动/热度类：近 5 年（A 股 10 年间市场扩容 + 量化崛起，
-  量价类指标 10 年前后不可比，会失真；5 年覆盖一个 A 股牛熊周期）
-样本不足 10 时返回 None 并带 sample_size 供标注。
+percentile() 为通用分位函数(平均秩法,样本<10 返回 None);历史窗口由各调用方
+按因子类别自选(composite 用 WINDOW_MID_DAYS 5 年窗口;valuation 读 PE/PB 序列算分位)。
 """
 from __future__ import annotations
 
@@ -14,16 +11,10 @@ from typing import Iterable
 from sqlmodel import select
 
 from stockfu.db import session_scope
-from stockfu.models import QuoteSnapshot
+from stockfu.models import EtfQuoteDaily, IndexQuoteDaily, QuoteSnapshot
 
-# 估值类因子 → 长窗口；其余 → 中窗口
-VALUATION_FACTORS = {"pe", "pb", "dividend_yield", "erp"}
-WINDOW_LONG_DAYS = 365 * 10   # 估值类 ~10 年
-WINDOW_MID_DAYS = 365 * 5     # 情绪/资金/波动/热度 ~5 年
-
-
-def window_days_for(factor: str) -> int:
-    return WINDOW_LONG_DAYS if factor in VALUATION_FACTORS else WINDOW_MID_DAYS
+# 情绪/量价类因子历史窗口(composite 三层情绪 + sector_rotation 探针对齐复用)
+WINDOW_MID_DAYS = 365 * 5     # ~5 年(覆盖一个 A 股牛熊周期)
 
 
 def percentile(series: Iterable[float], value: float | None) -> tuple[float | None, int]:
@@ -41,11 +32,15 @@ def percentile(series: Iterable[float], value: float | None) -> tuple[float | No
 
 
 def quote_model_for(code: str):
-    """按 code 路由行情表。当前单表时代:所有 code → QuoteSnapshot。
+    """按 code 路由行情表(行情已拆表:个股/ETF/指数三表分离)。
 
-    feat 版拆表后此处分流(ETF→EtfQuoteDaily / 指数→IndexQuoteDaily),调用方零改动。
-    拆表重构恢复前,回测/算子统一走单表 QuoteSnapshot。
+    指数(sh/sz 前缀)→ IndexQuoteDaily;ETF(15/50/51/52/56/58 开头)→ EtfQuoteDaily;
+    其余(个股 00/30/60/68、北交所、港美股等)→ QuoteSnapshot。调用方零改动。
     """
+    if code.startswith(("sh", "sz")):
+        return IndexQuoteDaily
+    if code[:2] in {"15", "50", "51", "52", "56", "58"}:
+        return EtfQuoteDaily
     return QuoteSnapshot
 
 
@@ -63,12 +58,13 @@ def quote_series(code: str, field: str, days: int, as_of: date | None = None) ->
     """
     ref_date = as_of or date.today()
     start = ref_date - timedelta(days=days + 15)
+    model = quote_model_for(code)
     with session_scope() as s:
-        rows = s.exec(select(QuoteSnapshot).where(
-            QuoteSnapshot.asset_code == code,
-            QuoteSnapshot.quote_date >= start,
-            QuoteSnapshot.quote_date <= ref_date,  # 关键修复：限制在基准日期之前
-        ).order_by(QuoteSnapshot.quote_date)).all()
+        rows = s.exec(select(model).where(
+            model.asset_code == code,
+            model.quote_date >= start,
+            model.quote_date <= ref_date,  # 关键修复：限制在基准日期之前
+        ).order_by(model.quote_date)).all()
     return [getattr(r, field) for r in rows if getattr(r, field) is not None]
 
 
@@ -87,15 +83,6 @@ def ma_alignment(code: str, lookback: int = 250, as_of: date | None = None) -> s
     if ma5 < ma10 < ma20:
         return "bearish"
     return "neutral"
-
-
-def factor_percentile(code: str, factor: str, field: str,
-                      today_value: float | None) -> tuple[float | None, int, int]:
-    """算某因子当日值在历史的分位。返回 (分位, 样本数, 窗口天数)。"""
-    days = window_days_for(factor)
-    series = quote_series(code, field, days)
-    pct, n = percentile(series, today_value)
-    return pct, n, days
 
 
 def linreg_r2(series: list[float]) -> tuple[float, float]:

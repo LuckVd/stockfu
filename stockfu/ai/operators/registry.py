@@ -1,6 +1,6 @@
 """算子注册表: 装饰器注册 → 目录扫描发现 → 按 id 取类。
 
-复用 skills/tools/__init__.py 的 importlib 扫描骨架,扫 operators/{factors,llm,aggregators}/。
+复用 skills/tools/__init__.py 的 importlib 扫描骨架,扫 operators/{factors,aggregators}/。
 每个算子模块在顶层用 @register 装饰算子类即可被自动发现注册。
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ def discover_and_register() -> None:
     子目录不存在则跳过(便于分阶段交付:首阶段即使某类目录未建也不崩)。
     """
     pkg_dir = Path(__file__).parent
-    for sub in ("factors", "llm", "aggregators"):
+    for sub in ("factors", "aggregators"):
         sub_dir = pkg_dir / sub
         if not sub_dir.is_dir():
             continue
@@ -40,7 +40,3 @@ def discover_and_register() -> None:
 
 def get_operator_class(operator_id: str) -> Type[BaseOperator] | None:
     return REGISTRY.get(operator_id)
-
-
-def all_operators() -> dict[str, Type[BaseOperator]]:
-    return dict(REGISTRY)

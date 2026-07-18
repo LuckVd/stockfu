@@ -16,15 +16,12 @@ class OpContext:
     """喂给算子的统一数据包(只读)。算子不直接取库,数据由 StrategyRunner 填充。
 
     as_of: 防未来函数上界(None=实盘/今天);透传给 quote_series/build_context/工具。
-    factors: 数学算子预计算结果的共享视图(key=算子id),LLM 算子可读(混合作证增强用)。
-    advisor_ctx: 兼容老 AdvisorContext(LLM 算子复用 build_context 产出,零改动)。
+    factors: 数学算子预计算结果的共享视图(key=算子id)。
     """
     code: str
     name: str = ""
     as_of: date | None = None
     factors: dict[str, Any] = field(default_factory=dict)
-    series: dict[str, list[float]] = field(default_factory=dict)  # 预填序列(阶段2 run_batch 用,首阶段空)
-    advisor_ctx: Any = None                # AdvisorContext(LLM 算子用)
 
 
 @dataclass
@@ -38,7 +35,7 @@ class OpResult:
     veto:  一票否决位(risk 类算子 / risk_veto aggregator 设置)。
     """
     operator: str
-    type: str = "math"                     # math | aggregator(llm 已下线)
+    type: str = "math"                     # math | aggregator
     signal: str = "hold"                   # 派生标签(展示用,不参与决策)
     score: float = 0.0                     # 连续强度(不 clamp)
     weight: float = 1.0                    # 策略 YAML 权重(汇总用,不入库)
@@ -53,20 +50,11 @@ class BaseOperator:
     """算子基类。子类设置 operator_id/type 并实现 run()。
 
     PARAMS_SCHEMA: 参数 JSON Schema(同步入库 operator.params_schema,供 YAML 校验 +
-                   默认值填充)。数学算子在此声明 window/period 等;LLM 算子一般空。
-    run_batch: 批量预计算接口(后续"快速回测"阶段实现向量化;首阶段不实现,默认 raise)。
+                   默认值填充)。数学算子在此声明 window/period 等。
     """
     operator_id: str = ""
-    type: str = "math"                     # math | llm | aggregator
+    type: str = "math"                     # math | aggregator
     PARAMS_SCHEMA: dict = {}
 
     def run(self, ctx: OpContext, params: dict) -> OpResult:  # noqa: D401
         raise NotImplementedError(f"{type(self).__name__}.run 未实现")
-
-    def run_batch(self, codes: list[str], as_of_list: list[date],
-                  params: dict) -> dict:
-        """批量预计算(快速回测阶段用向量化实现)。
-
-        首阶段不实现——回测仍按 (code,as_of) 逐个调 run(经 ai_report/factor_snapshot 缓存)。
-        """
-        raise NotImplementedError(f"{type(self).__name__}.run_batch 未实现(后续阶段)")

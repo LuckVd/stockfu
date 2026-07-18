@@ -9,7 +9,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from stockfu.data.base import (DataSource, KlineBar, Market, Quote, currency_of,
-                            direct_connection, make_retry)
+                            direct_connection)
 
 
 def _f(v) -> Optional[float]:

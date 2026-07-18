@@ -6,7 +6,7 @@
 ## 1. 一句话现状
 一个本地优先的综合资产管理 + 市场情绪终端：持仓管理、股息/网格、**三层(市场/板块/个股) fear/greed/heat 情绪指数**、历史回补、**AI 4 顾问**、**天级回测引擎（算子→策略→逐日执行，未来函数已防护；2026-07-15 做减法：砍回测 LLM 算子 + 铲 ±20/signal → 纯连续因子）**、**因子诊断层（阶段2：单算子 IC/分位收益/换手/衰减，alphalens 思路）**、**时点宇宙+可成交（cn_large_pool_v1：list_date/ST/停牌 + 涨跌停/滑点；is_st/trade_status 入库闭环 + status_coverage；面向 ~800 大盘候选）**、**个股 PE/PB/PS 历史分位（baostock 全字段）**。SQLite 存储，textual TUI + FastAPI。
 
-> **【2026-07-18 进行中】行业轮动回测探测**（`stockfu/backtest/probes/sector_rotation.py`，独立模拟器，不进四层架构）：三宇宙（申万指数31 / 行业ETF18 / 个股 top-K）× 两方向（contrarian/calm）。已跑出，但 **edge 不稳健、跨宇宙方向翻转**（指数 contrarian +17% / ETF −4% / 个股 +7%；ETF 反而是 calm +12%）。**结论待 B 分段验证定夺**。详见 memory `sector-rotation-probe`。
+> **【2026-07-18 已定夺】行业轮动 B+C 证伪**：B 分段后个股 contrarian 全靠 S2；C 轮（保留情绪对照）个股 top-K：纯价量 P 最稳(S1/S2 正、S3 仍负)，全情绪 S/S′ 仍单段，MA regime 变空仓假超额。**不建 Phase 2**。产物 `sector_rotation_B/` + `sector_rotation_C/`；memory `sector-rotation-probe`。
 
 ## 2. 架构（5 层）
 ```
@@ -42,7 +42,7 @@ stockfu/
 │   │   ├── trading.py         # 交易录入(移动加权平均)
 │   │   └── backfill.py        # 历史回补(两融总量/连板/个股两融/股息率序列/板块K线/大盘资金流)
 │   ├── scheduler/jobs.py      # run_daily_job(行情+分红+ETF+三层指数) + backfill_kline + ensure_stock_data_and_index(加个股即算) + schedule
-│   ├── ai/                    # 实盘AI 4顾问(docs/AI_ADVISORS.md,skills/) + operators算子平台(10:8math+2聚合,回测LLM已下线) + rebalancers选股层(3)
+│   ├── ai/                    # 实盘AI 4顾问(docs/AI_ADVISORS.md,skills/) + operators算子平台(11:9math+2聚合,回测LLM已下线;2026-07-16 加 trend_linearity 配 cn_momentum_rotation) + rebalancers选股层(3)
 │   ├── backtest/              # 回测引擎(见 docs/BACKTEST.md): VirtualAccount+T+1+真实费用+完整metrics, 四层架构(算子→策略→rebalancer→执行)
 │   ├── api/{server,routes}.py # FastAPI
 │   └── tui/{app,trade_screen}.py  # textual 看板 + 交易录入模态屏
@@ -57,14 +57,15 @@ stockfu/
 - **TUI**：持仓看板(含个股恐慌/贪婪/热度三列) + 顶部市场fear/greed/heat(分档着色) + 按b/s交易录入；加个股自动后台补历史K线+算该股三层情绪指数
 - **API**：/portfolio /quote /dividend /grid /indices/{market,sector,stock,history} /fundflow /sentiment
 - **AI 顾问**：4 常驻顾问(趋势/逆向/风险/估值)+规则汇总+LLM润色，详见 `docs/AI_ADVISORS.md`
-- **回测引擎(四层架构)**：算子(8math,纯连续score不clamp)→策略(5)→rebalancer选股(top_n/cap_rank/pass_through)→T+1执行。算子结果全局缓存(operator_result,指纹含源码hash自动失效;跨回测复用)+真实费用(佣/印/过)+完整metrics(夏普/胜率/超额)。CLI `--backtest` 走 scheduler.run；详见 `docs/BACKTEST.md`
+- **回测引擎(四层架构)**：算子(9math,纯连续score不clamp)→策略(6)→rebalancer选股(top_n/cap_rank/pass_through)→T+1执行。算子结果全局缓存(operator_result,指纹含源码hash自动失效;跨回测复用)+真实费用(佣/印/过)+完整metrics(夏普/胜率/超额)。CLI `--backtest` 走 scheduler.run；详见 `docs/BACKTEST.md`
 - **回测性能优化(G09)**：operator meta 进程级 lru_cache + 删 4 冗余单列索引(复合唯一键覆盖热路径)+ WAL/synchronous=NORMAL/busy_timeout + `--vacuum` 维护工具。优化前后 metrics 逐值一致(防未来函数红线通过,详见 BACKTEST.md §6)
 - **回测做减法(G10,2026-07-15)**：砍回测 LLM 算子(operators/llm/ 删 + hybrid/classic_4advisors 废弃 + active 默认→pure_factor)+ 铲 ±20/signal 体系(算子直出连续 score 不 clamp、signal 降级派生标签、统一 continuous 满仓锚点 score_full 参数化、OpResult 13→10 字段)+ 缓存指纹纳入源码 hash(治 P2-5)。**实盘 AI 4 顾问(ai/skills)不动**。确定性+防未来函数(前缀一致性)红线通过;属行为改变类(metrics 不与旧基准逐值一致,口径见 BACKTEST.md §8)。
 - **因子诊断层(阶段2,2026-07-15)**：单算子连续 score 独立量化为 IC / 分位收益 / 换手 / 衰减(alphalens 思路),验证单个因子不必搭整条策略管道。新模块 `backtest/factor_diag.py`(纯 Python 统计,无 numpy/pandas)+ CLI `--factor-diag <operator>`(`--codes all`=全市场 801 票)。复用回测算子缓存(指纹逐字一致 → 跨场景互通);确定性 + 缓存复用 + 防未来函数已回归验证。详见 BACKTEST.md §11。
 - **行情拆表**：QuoteSnapshot(个股,含pe/pb/ps_ttm/pcf/turnover) / EtfQuoteDaily(15只ETF,2021起) / IndexQuoteDaily(3指数,1990起) 三表分离,`quote_model_for` 按类型路由
+- **执行费用日期化(P2-3 第一步,2026-07-18)**:印花税 `stamp_duty_rate(as_of)` 按日分段(2023-08-28 前千一 0.001 / 后万五 0.0005,仅卖出);`VirtualAccount.apply_action` 加 `as_of` 形参,probe 的 `NotionalAccount` 同步。治跨历史区间回测成本失真(§7 基准窗口全在 08-28 后 → 逐值不变,可证明零行为改变)。过户费日期化(2022 沪深统一)+ CommInfo/Sizer 抽象待做
 - **个股估值分位**：baostock 全字段(peTTM/pbMRQ)backfill 落 QuoteSnapshot;`valuation_percentile(code,as_of,years=5)` 本地算 PE/PB 历史分位(无网络/无未来函数)。PE 覆盖792只/PB 800只(2021起约5年)
 - **代理自动化**：setup_network(港美股走7890代理,国内源no_proxy直连)
-- **行业轮动探测(2026-07-18)**：`stockfu/backtest/probes/sector_rotation.py` 独立模拟器(复用 engine/action/composite/weekly_bollinger 纯函数,绕开"引擎只认 QuoteSnapshot"的限制)。行业情绪从行业指数/ETF 的 K 线派生(对齐 composite.compute_for);规则=排除恐/贪/热 top3 行业 → 选高恐低贪+周布林下轨 → 离下轨定仓 → 上轨阶梯卖 → 20% 止损 + lock_days 降换手。CLI `--universe {sw,etf,stock}` × `--panic-direction {high,low,both}`。10 个单测。结论待分段验证。
+- **行业轮动探测(2026-07-18)**：`stockfu/backtest/probes/sector_rotation.py` 独立模拟器(复用 engine/action/composite/weekly_bollinger 纯函数,绕开"引擎只认 QuoteSnapshot"的限制)。行业情绪从行业指数/ETF 的 K 线派生(对齐 composite.compute_for);规则=排除恐/贪/热 top3 行业 → 选高恐低贪+周布林下轨 → 离下轨定仓 → 上轨阶梯卖 → 20% 止损 + lock_days 降换手。CLI `--universe {sw,etf,stock}` × `--panic-direction {high,low,both}`。14 个单测。**B+C 分段验收已证伪**(情绪相对价量无稳健增量、MA regime 变空仓假超额、不建 Phase 2;详见 §8 + memory sector-rotation-probe)。
 
 ## 4. 数据现状（关键）
 | 因子 | 历史 | 说明 |
@@ -134,14 +135,16 @@ nohup python main.py --schedule >> data/schedule.log 2>&1 &
 ## 8. 待办（P2 / 未来）
 
 ### 【下一步 · 优先】(阶段2 后规划,2026-07-15)
-- **【当前活跃 · 待决策】行业轮动探测 → B 分段验证（2026-07-18）**：三宇宙（申万指数/行业ETF/个股）× 两方向（contrarian/calm）已跑出。结果**跨宇宙方向翻转、edge 不稳健**（指数 contrarian +17% · ETF contrarian −4% · 个股 contrarian +7%；ETF 反而是 calm +12%）。**下一步 = B**：把 2021-01→2026-07 拆 3 段（21-22 熊 / 23-24 深跌震荡 / 25-26 反弹），验个股 contrarian +7% 与 ETF calm +12% 是三段都正还是全靠某一段（参考 memory cn-momentum-rotation 翻车教训）。B 决定 Phase 2（个股化正规管线：asset.sector 申万映射 + 自定义 industry_contrarian rebalancer + 4 算子 + 引擎 meta 富化）建不建。代码 `stockfu/backtest/probes/sector_rotation.py`；结论见 memory `sector-rotation-probe`。
+- **【已定夺 · 不做 Phase 2】行业轮动 B+C（2026-07-18）**：
+  - **B**：个股 contrarian 全期 +7.1% 全靠 S2(+25%)；ETF calm +12% 全靠 S1 熊(+22%)。
+  - **C**（探针加 `sentiment_mode`/`regime`；个股 top-K × 宽松配置 × S1/S2/S3）：**P 纯%b** 超额 +13/+10/−9（2 段正，均仓~7）；**S 全情绪** −8/+25/−9（仍单段）；**S′ 不排除 fear top** 略好于 S 仍单段；**V2/V3 +MA60 regime** 均仓&lt;1、毁掉 S2、S3 更差。情绪相对价量**无稳健增量**；regime 开关本参数下失效。**Phase 2 不建**。产物 `data/backtest/sector_rotation_C/summary.json`；CLI `--sentiment-mode` / `--regime`。
 - **阶段2 · 因子诊断层 ✅ 已完成(2026-07-15)**：alphalens 思路——单算子连续 score 算 IC / 分位收益 / 换手 / 衰减。`backtest/factor_diag.py` + CLI `--factor-diag <operator>`,复用回测算子缓存。详见 BACKTEST.md §11。
 - **阶段3 · 执行层抽象**(`docs/ARCHITECTURE_REVIEW.md` §4 P2 清单):Broker 抽象(回测/实盘共用执行层 P2-2)+ Sizer/CommInfo(费率/整手可替换 P2-3)+ Analyzer 可组合(_metrics 拆分 P2-4)+ Position 开平分解(交易回合统计 P2-8)+ math 算子向量化 run_batch(治冷启动慢 P2-1/P2-7)。建议顺序:P2-5(✅done in G10)→P2-1/7(性能)→P2-8/4(统计)→P2-3/2(执行层)。
 - **G10 遗留 ✅ 已清理(2026-07-15)**:① `--vacuum` 已跑(1133MB→191MB,回收 ~942MB 空闲页;备份 `data/stockfu.db.bak.G09`);② `action.py compute_target_weight` docstring 重写(去乱码+已删的 mode/targets 提法);③ `raw_score` 死字段清理——`models.py` 删字段+`db.py _migrate` ADD→DROP COLUMN(SQLite 3.45,幂等,物理列已删),同步清理 OperatorResult 类 docstring 的 LLM/raw_score 残留描述。
 
 ### 【常规待办】
 - **回测基准 G02 已激活**：基准 = 上证综指 sh000001(IndexQuoteDaily);_benchmark_curve 直读不走 quote_model_for;run_scheduled_fetch 每日更新;benchmark_return/excess/benchmark_window 恒定产出
-- ~~classic_4advisors/hybrid~~ 已于 G10(2026-07-15)废弃(砍回测 LLM 算子);回测剩 5 个纯 math 策略(pure_factor/macd_cross/momentum_breakout/dual_bollinger/bollinger_reversion)
+- ~~classic_4advisors/hybrid~~ 已于 G10(2026-07-15)废弃(砍回测 LLM 算子);回测剩 6 个纯 math 策略(pure_factor/macd_cross/momentum_breakout/dual_bollinger/bollinger_reversion/cn_momentum_rotation,末者全周期证伪)
 - 估值窗口：PE/PB 仅5年(2021起),backfill 延至10年匹配估值类分位窗口(baostock,无需tushare)
 - 连板长期：多次--backfill-limit断点续传慢慢补
 - 板块轮动信号：连续N日净流入排名/板块间资金切换(历史地基已就位)

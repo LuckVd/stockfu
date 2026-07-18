@@ -21,8 +21,8 @@ from stockfu.models import Operator, Strategy
 log = logging.getLogger(__name__)
 
 _OP_NAMES = {
-    "momentum": "动量", "mean_reversion": "均值回归", "value": "���值",
-    "trend_strength": "趋势强度", "weighted_sum": "加权汇总", "risk_veto": "风险一票否决",
+    "momentum": "动量", "mean_reversion": "均值回归", "value": "估值",
+    "trend_strength": "趋势强度", "weighted_sum": "加权汇总",
     "macd_cross": "MACD金叉死叉",
     "monthly_bollinger": "月线布林带",
     "weekly_bollinger": "周线布林带",
@@ -69,7 +69,7 @@ def seed_operators_and_strategies() -> int:
                 prompt="", constitution_ref="",
             )
             n += 1
-        # 策略(从 strategies/*.yaml 读,name+config ���自文件单一真源)
+        # 策略(从 strategies/*.yaml 读,name+config 出自文件单一真源)
         for sid in _STRATEGIES:
             name, yaml_text = _load_strategy_yaml(sid)
             _upsert_strategy(s, sid, name, yaml_text)
@@ -86,7 +86,7 @@ def seed_operators_and_strategies() -> int:
                         len(orphan_ops), sorted(orphan_ops))
 
     # active 指针:首次 seed 写默认值(pure_factor,首个纯 math 策略)。
-    # 单 key 物理保证唯一 active(取代旧的 strategy.is_active 列;该列已移除)��
+    # 单 key 物理保证唯一 active(取代旧的 strategy.is_active 列;该列已移除)
     from stockfu.db import has_app_config, set_app_config
     if not has_app_config("active_strategy_id"):
         set_app_config("active_strategy_id", "pure_factor")
@@ -106,18 +106,21 @@ def seed_operators_and_strategies() -> int:
 
 
 def _cleanup_legacy_llm() -> None:
-    """清理已下线的回测 LLM 算子 + 依赖它的策略(幂等)。
+    """清理已下线的回测 legacy 算子 + 依赖它的策略(幂等)。
 
-    回测侧 LLM 算子(operators/llm/)下线后,operator 表的 4 行 LLM(trend/contrarian/risk/
-    valuation)与 strategy 表的 classic_4advisors/hybrid 成为残留。本函数显式删除,
-    并把指向它们的 active_strategy_id 指针拨回 pure_factor。operator_result 里这些
-    算子的历史缓存随后由 cleanup_operator_results() 按 operator_id 孤儿规则清掉。
+    覆盖两类下线物:① LLM 算子(operators/llm/ 删后,operator 表 trend/contrarian/risk/
+    valuation 4 行 + strategy 表 classic_4advisors/hybrid);② risk_veto 聚合器(0 策略引用
+    下线)。本函数显式删除,并把指向 LLM 策略的 active_strategy_id 指针拨回 pure_factor。
+    operator_result 里这些算子的历史缓存随后由 cleanup_operator_results() 按 operator_id
+    孤儿规则清掉。
     """
     from sqlalchemy import text
 
     from stockfu.db import engine
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM operator WHERE type = 'llm'"))
+        # risk_veto 聚合器已下线(0 策略引用,全 yaml 用 weighted_sum):清 operator 表残留
+        conn.execute(text("DELETE FROM operator WHERE operator_id = 'risk_veto'"))
         conn.execute(text(
             "DELETE FROM strategy WHERE strategy_id IN ('classic_4advisors', 'hybrid')"
         ))

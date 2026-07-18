@@ -71,7 +71,10 @@ def get_index_daily(symbol: str, start: str, end: str) -> list[dict]:
     if rows:
         return rows
     from stockfu.data.baostock_source import get_index_daily_baostock
-    return get_index_daily_baostock(symbol, start, end)
+    rows = get_index_daily_baostock(symbol, start, end)
+    if rows:
+        return rows
+    return _get_index_daily_sina(symbol, start, end)   # 新浪兜底(科创50 000688 等)
 
 
 def _get_index_daily_akshare(symbol: str, start: str, end: str) -> list[dict]:
@@ -107,6 +110,57 @@ def _get_index_daily_akshare(symbol: str, start: str, end: str) -> list[dict]:
             })
         except (KeyError, ValueError, TypeError):
             continue
+    return results
+
+
+def _get_index_daily_sina(symbol: str, start: str, end: str) -> list[dict]:
+    """akshare 新浪指数日线(stock_zh_index_daily):东财/baostock 无数据时的末级兜底。
+
+    东财 index_zh_a_hist 对部分指数(如科创50 000688)无历史、baostock 亦无,但新浪有。
+    新浪返回全历史(无 start/end),按 [start,end] 过滤;无涨跌幅列 → pct_chg 由前后收盘算。
+    symbol: 指数裸代码如 '000688';asset_code = ('sz' if 399 else 'sh') + symbol。
+    """
+    with direct_connection():
+        try:
+            import akshare as ak
+        except Exception:
+            return []
+        try:
+            sina_sym = ("sz" if symbol.startswith("399") else "sh") + symbol
+            df = ak.stock_zh_index_daily(symbol=sina_sym)
+        except Exception:
+            return []
+    if df is None or df.empty:
+        return []
+    asset_code = ("sz" if symbol.startswith("399") else "sh") + symbol
+    start_d = pd.to_datetime(start).date()
+    end_d = pd.to_datetime(end).date()
+    df = df.sort_values("date")              # 升序,供 pct_chg 前后项
+    results: list[dict] = []
+    prev_close: float | None = None
+    for _, r in df.iterrows():
+        try:
+            d = pd.to_datetime(r["date"]).date()
+        except (KeyError, ValueError, TypeError):
+            continue
+        close_val = float(r["close"]) if pd.notna(r.get("close")) else None
+        if close_val is None:
+            continue
+        pct = round((close_val / prev_close - 1) * 100, 3) if prev_close else None
+        prev_close = close_val
+        if d < start_d or d > end_d:
+            continue
+        results.append({
+            "asset_code": asset_code,
+            "quote_date": d,
+            "open": float(r["open"]) if pd.notna(r.get("open")) else None,
+            "high": float(r["high"]) if pd.notna(r.get("high")) else None,
+            "low": float(r["low"]) if pd.notna(r.get("low")) else None,
+            "close": close_val,
+            "pct_chg": pct,
+            "volume": float(r["volume"]) if pd.notna(r.get("volume")) else None,
+            "amount": float(r["amount"]) if pd.notna(r.get("amount")) else None,
+        })
     return results
 
 
@@ -399,10 +453,6 @@ class AkshareSource(DataSource):
                 df, code, cur, latest_price, source=f"akshare:{used}")
         return build_metric_from_df(
             df, code, currency=cur, latest_price=latest_price, source=f"akshare:{used}")
-
-    def get_dividends(self, code: str, years: int = 5):
-        m = self.get_dividend_metric(code)
-        return m.events if m else []
 
     # -------- 资金流（大资金/板块情绪） --------
     def get_stock_fund_flow(self, code: str) -> dict:

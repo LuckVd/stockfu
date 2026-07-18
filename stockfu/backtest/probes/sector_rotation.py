@@ -32,9 +32,9 @@ from stockfu.ai.operators.factors.weekly_bollinger import (
     _calc_bollinger, _weekly_series_from_rows)
 from stockfu.ai.action import PositionManager, resolve_action
 from stockfu.backtest.engine import (
-    BENCHMARK, COMMISSION_RATE, INITIAL_CASH, MIN_COMMISSION, STAMP_DUTY_RATE,
+    BENCHMARK, COMMISSION_RATE, INITIAL_CASH, MIN_COMMISSION,
     TRANSFER_FEE_RATE, Position, VirtualAccount, _apply_gross_cap,
-    _benchmark_curve, _metrics, _trade_calendar_days)
+    _benchmark_curve, _metrics, _trade_calendar_days, stamp_duty_rate)
 from stockfu.scheduler.jobs import INDUSTRY_ETFS, SW_INDUSTRIES
 
 SW_CODES = [f"sw{c}" for c in SW_INDUSTRIES]   # 31 个申万行业指数 asset_code
@@ -84,10 +84,33 @@ def compute_sentiment(closes: list[float], amounts: list[float]) -> dict | None:
 # 轮动策略(纯函数,可单测)
 # ============================================================
 
-def selection_score(v: dict, panic_direction: str) -> float:
-    """候选优先级(越高越先入选):贴下轨(pct_b 低)+ 不贪(greed 低)+ (高恐版:fear 高 / 低恐版:fear 低)。"""
-    fear, greed, pct_b = v.get("fear"), v.get("greed"), v.get("pct_b")
-    if fear is None or greed is None or pct_b is None:
+# sentiment_mode:
+#   full            — 现行:fear/greed/heat 各 top-N 排除 + fear 方向 + 低 greed + %b
+#   price_only      — 仅 %b 下轨筛选/排序(情绪增量对照用,不做情绪排除)
+#   no_fear_exclude — 保留情绪门槛与打分,排除集合不含 fear top(只排 greed/heat)
+
+def _exclude_metrics(sentiment_mode: str) -> tuple[str, ...]:
+    if sentiment_mode == "price_only":
+        return ()
+    if sentiment_mode == "no_fear_exclude":
+        return ("greed", "heat")
+    return ("fear", "greed", "heat")  # full
+
+
+def selection_score(v: dict, panic_direction: str,
+                    sentiment_mode: str = "full") -> float:
+    """候选优先级(越高越先入选)。
+
+    full/no_fear_exclude:贴下轨 + 不贪 + (高恐版 fear 高 / 低恐版 fear 低)。
+    price_only:仅 −pct_b×40(越贴下轨越高)。
+    """
+    pct_b = v.get("pct_b")
+    if pct_b is None:
+        return -1e9
+    if sentiment_mode == "price_only":
+        return -pct_b * 40.0
+    fear, greed = v.get("fear"), v.get("greed")
+    if fear is None or greed is None:
         return -1e9
     fear_term = fear if panic_direction == "high" else (100 - fear)
     return fear_term - greed - pct_b * 40.0
@@ -96,16 +119,17 @@ def selection_score(v: dict, panic_direction: str) -> float:
 def rotation_policy(cross: dict, *, panic_direction: str, exclude_top_n: int = 3,
                     boll_buy_max: float = 0.3, fear_high: float = 60.0,
                     greed_low: float = 40.0, max_positions: int = 8,
-                    max_w_per_industry: float = 0.20) -> dict[str, float]:
+                    max_w_per_industry: float = 0.20,
+                    sentiment_mode: str = "full") -> dict[str, float]:
     """轮动 → {code: 目标权重}(仅入场目标;出场由日循环每日处理)。
 
-    1) 排除 fear/greed/heat 各 top-N 并集  2) 筛选(方向×fear + greed 低 + %b 下轨区)
-    3) selection_score 排序取前 max_positions(**不凑数**,合格数不足则只持合格的)
-    4) 按离下轨距离定仓(越贴下轨越大)。每行业最多 1 只 = 1 code,天然满足(是上限不是定额)。
+    1) 排除 top-N 并集(随 sentiment_mode)  2) 筛选(情绪门槛可选 + %b 下轨区)
+    3) selection_score 排序取前 max_positions(**不凑数**)
+    4) 按离下轨距离定仓。
     """
     # ① 排除并集
     excl: set[str] = set()
-    for metric in ("fear", "greed", "heat"):
+    for metric in _exclude_metrics(sentiment_mode):
         ranked = sorted(((c, cross[c][metric]) for c in cross
                          if cross[c].get(metric) is not None),
                         key=lambda x: x[1], reverse=True)
@@ -117,21 +141,26 @@ def rotation_policy(cross: dict, *, panic_direction: str, exclude_top_n: int = 3
     cands: dict[str, dict] = {}
     for c, v in eligible.items():
         fear, greed, pct_b = v.get("fear"), v.get("greed"), v.get("pct_b")
-        if fear is None or greed is None or pct_b is None:
+        if pct_b is None:
             continue
-        if panic_direction == "high" and fear < fear_cut:
-            continue
-        if panic_direction == "low" and fear > fear_cut:
-            continue
-        if greed > greed_low:
-            continue
+        if sentiment_mode != "price_only":
+            if fear is None or greed is None:
+                continue
+            if panic_direction == "high" and fear < fear_cut:
+                continue
+            if panic_direction == "low" and fear > fear_cut:
+                continue
+            if greed > greed_low:
+                continue
         if pct_b > boll_buy_max:
             continue
         cands[c] = v
 
     # ③ 排序 + 持仓上限(不凑数)
-    chosen = sorted(cands, key=lambda c: selection_score(cands[c], panic_direction),
-                    reverse=True)[:max_positions]
+    chosen = sorted(
+        cands,
+        key=lambda c: selection_score(cands[c], panic_direction, sentiment_mode),
+        reverse=True)[:max_positions]
 
     # ④ 定仓:离下轨越近越大
     targets: dict[str, float] = {}
@@ -146,23 +175,28 @@ def rotation_policy(cross: dict, *, panic_direction: str, exclude_top_n: int = 3
 def rotation_policy_stocks(cross: dict, industry_of: dict, *, panic_direction: str,
                            exclude_top_n: int = 3, boll_buy_max: float = 0.3,
                            fear_high: float = 60.0, greed_low: float = 40.0,
-                           max_positions: int = 8, max_w_per_industry: float = 0.20
+                           max_positions: int = 8, max_w_per_industry: float = 0.20,
+                           sentiment_mode: str = "full"
                            ) -> dict[str, float]:
     """个股版轮动:行业级排除/筛选(用行业情绪)+ 每行业选 1 只股票(用个股 %b)。
 
     cross[code] = {fear,greed,heat(行业级,继承), pct_b(个股), pct_b_ind(行业), close}。
-    1) 行业级 top-N 排除(并集)2) 行业级筛选(方向×fear + greed 低 + 行业 %b≤下轨)3) 行业按 score 排序取前 max_positions
-    4) 每选中行业挑 1 只股票(contrarian:个股 %b 最低=最超跌;calm:最高)5) 按个股 %b 定仓。
+    sentiment_mode 同 rotation_policy。
     """
-    # 行业情绪(从任一成员继承,同行业相同)
+    # 行业情绪(从任一成员继承,同行业相同);price_only 时也收 %b_ind
     ind_sent: dict[str, dict] = {}
     for code, v in cross.items():
         ind = industry_of.get(code)
-        if ind and ind not in ind_sent and v.get("fear") is not None:
+        if not ind or ind in ind_sent:
+            continue
+        if sentiment_mode == "price_only":
+            if v.get("pct_b_ind") is not None:
+                ind_sent[ind] = v
+        elif v.get("fear") is not None:
             ind_sent[ind] = v
     # ① 排除行业 top-N 并集
     excl_ind: set[str] = set()
-    for metric in ("fear", "greed", "heat"):
+    for metric in _exclude_metrics(sentiment_mode):
         ranked = sorted(((i, ind_sent[i][metric]) for i in ind_sent
                          if ind_sent[i].get(metric) is not None),
                         key=lambda x: x[1], reverse=True)
@@ -174,18 +208,21 @@ def rotation_policy_stocks(cross: dict, industry_of: dict, *, panic_direction: s
         if i in excl_ind:
             continue
         f, g, pbi = v.get("fear"), v.get("greed"), v.get("pct_b_ind")
-        if f is None or g is None or pbi is None:
+        if pbi is None:
             continue
-        if panic_direction == "high" and f < fear_cut:
-            continue
-        if panic_direction == "low" and f > fear_cut:
-            continue
-        if g > greed_low:
-            continue
+        if sentiment_mode != "price_only":
+            if f is None or g is None:
+                continue
+            if panic_direction == "high" and f < fear_cut:
+                continue
+            if panic_direction == "low" and f > fear_cut:
+                continue
+            if g > greed_low:
+                continue
         if pbi > boll_buy_max:
             continue
         sel_score[i] = selection_score(
-            {"fear": f, "greed": g, "pct_b": pbi}, panic_direction)
+            {"fear": f, "greed": g, "pct_b": pbi}, panic_direction, sentiment_mode)
     # ③ 行业排序 + 上限
     chosen_ind = sorted(sel_score, key=lambda i: sel_score[i], reverse=True)[:max_positions]
     # ④ 每行业挑 1 只 + 定仓
@@ -202,6 +239,44 @@ def rotation_policy_stocks(cross: dict, industry_of: dict, *, panic_direction: s
                      if boll_buy_max > 0 else 0.0)
         targets[pick] = round(max_w_per_industry * closeness, 4)
     return targets
+
+
+def regime_scale(bench_closes: list[float], *, regime: str = "off",
+                 ma_window: int = 60, dd_limit: float = 0.15,
+                 risk_off_scale: float = 0.0) -> float:
+    """大盘 regime → 目标仓缩放系数(1.0=正常, risk_off_scale=触发后,默认清新风险)。
+
+    ma: 收盘 < MA(ma_window) → risk_off。
+    dd: 自窗口内峰值回撤 > dd_limit → risk_off。
+    off: 恒 1.0。样本不足 → 1.0(不拦)。
+    """
+    if regime == "off" or not bench_closes:
+        return 1.0
+    px = bench_closes[-1]
+    if px is None or px <= 0:
+        return 1.0
+    if regime == "ma":
+        w = min(ma_window, len(bench_closes))
+        if w < max(5, ma_window // 4):
+            return 1.0
+        ma = sum(bench_closes[-w:]) / w
+        return risk_off_scale if px < ma else 1.0
+    if regime == "dd":
+        peak = max(bench_closes)
+        if peak <= 0:
+            return 1.0
+        dd = (peak - px) / peak
+        return risk_off_scale if dd > dd_limit else 1.0
+    return 1.0
+
+
+def _apply_regime(targets: dict[str, float], scale: float) -> dict[str, float]:
+    """等比缩放正目标权重;scale=1 原样;scale=0 清空开仓目标。"""
+    if scale >= 1.0 - 1e-12:
+        return targets
+    if scale <= 0:
+        return {c: 0.0 for c in targets}
+    return {c: (round(w * scale, 4) if w > 0 else w) for c, w in targets.items()}
 
 
 def _ladder_weight(pct_b: float, cur_w: float,
@@ -223,7 +298,8 @@ class NotionalAccount(VirtualAccount):
     仅重写 apply_action 去掉 int(.../100)*100 的整百股逻辑。"""
 
     def apply_action(self, code: str, action: str, target_weight: float,
-                     price: float, prices: dict[str, float]) -> dict | None:
+                     price: float, prices: dict[str, float],
+                     as_of: date | None = None) -> dict | None:
         if price <= 0 or action == "hold":
             return None
         total = self.equity(prices)
@@ -253,7 +329,7 @@ class NotionalAccount(VirtualAccount):
                 return None
             proceeds = shares * price
             fee = (max(proceeds * COMMISSION_RATE, MIN_COMMISSION)
-                   + proceeds * (STAMP_DUTY_RATE + TRANSFER_FEE_RATE))
+                   + proceeds * (stamp_duty_rate(as_of) + TRANSFER_FEE_RATE))
             realized = (price - pos.avg_cost) * shares - fee
             pos.shares -= shares
             self.cash += (proceeds - fee)
@@ -362,6 +438,34 @@ def _cross_one(pre_code: dict, as_of: date, boll_window: int, boll_k: float,
 # 主回测
 # ============================================================
 
+def _preload_bench_closes(end: date) -> dict:
+    """基准 sh000001 截至 end 的 {dates, closes},供 regime 用(日期/收盘一一对齐)。"""
+    with session_scope() as s:
+        rows = s.exec(select(IndexQuoteDaily).where(
+            IndexQuoteDaily.asset_code == BENCHMARK,
+            IndexQuoteDaily.quote_date <= end,
+        ).order_by(IndexQuoteDaily.quote_date)).all()
+    dates, closes = [], []
+    for r in rows:
+        if r.close is None:
+            continue
+        dates.append(r.quote_date)
+        closes.append(float(r.close))
+    return {"dates": dates, "closes": closes}
+
+
+def _bench_closes_asof(pre_bench: dict, as_of: date, lookback: int = 252) -> list[float]:
+    """as_of 及之前最多 lookback 根收盘(含 as_of)。"""
+    dates, closes = pre_bench.get("dates") or [], pre_bench.get("closes") or []
+    if not dates:
+        return []
+    i = bisect.bisect_right(dates, as_of) - 1
+    if i < 0:
+        return []
+    lo = max(0, i - lookback + 1)
+    return closes[lo:i + 1]
+
+
 def run_probe(start: date, end: date, *, panic_direction: str = "high",
               rebalance_freq: str = "weekly", max_gross: float = 0.95,
               max_positions: int = 8, stop_loss_pct: float = 0.20,
@@ -370,11 +474,15 @@ def run_probe(start: date, end: date, *, panic_direction: str = "high",
               max_w_per_industry: float = 0.20, buy_cool_down_days: int = 0,
               max_target_step: float = 1.0, lock_days: int = 0,
               codes: list[str] | None = None,
+              sentiment_mode: str = "full", regime: str = "off",
+              regime_ma: int = 60, regime_dd: float = 0.15,
+              regime_scale_off: float = 0.0,
               initial_cash: float = INITIAL_CASH, pre: dict | None = None) -> dict:
     uni = codes or SW_CODES
     days = _trade_calendar_days(start, end)
     if pre is None:
         pre = _preload(uni, end)
+    pre_bench = _preload_bench_closes(end) if regime != "off" else {"dates": [], "closes": []}
     acct = NotionalAccount(initial_cash)
     pm = PositionManager(buy_cool_down_days=buy_cool_down_days,
                          max_target_step=max_target_step, min_trade_weight=0.0)
@@ -415,7 +523,8 @@ def run_probe(start: date, end: date, *, panic_direction: str = "high",
             entries = rotation_policy(
                 cross, panic_direction=panic_direction, exclude_top_n=3,
                 boll_buy_max=boll_buy_max, fear_high=fear_high, greed_low=greed_low,
-                max_positions=max_positions, max_w_per_industry=max_w_per_industry)
+                max_positions=max_positions, max_w_per_industry=max_w_per_industry,
+                sentiment_mode=sentiment_mode)
             targets = {c: entries.get(c, 0.0) for c in (set(cross) | held)}
         else:
             targets = {c: acct.weight(c, prices) for c in held}
@@ -437,6 +546,13 @@ def run_probe(start: date, end: date, *, panic_direction: str = "high",
             if info and info["pct_b"] >= 0.70:
                 targets[code] = min(targets.get(code, cw), _ladder_weight(info["pct_b"], cw))
 
+        # ③b 大盘 regime:调仓日缩放目标(在 lock 之后,可强平风险;止损已优先)
+        if is_reb and regime != "off":
+            rs = regime_scale(_bench_closes_asof(pre_bench, as_of),
+                              regime=regime, ma_window=regime_ma,
+                              dd_limit=regime_dd, risk_off_scale=regime_scale_off)
+            targets = _apply_regime(targets, rs)
+
         # ④ 总仓阀(等比裁 Σ正值权重 ≤ max_gross)
         targets = _apply_gross_cap(targets, max_gross)
 
@@ -450,7 +566,7 @@ def run_probe(start: date, end: date, *, panic_direction: str = "high",
             cw = acct.weight(code, prices)
             act, eff_tw, _ = pm.should_act(code, tw, cw, as_of, days)
             action = resolve_action(cw, eff_tw) if act else "hold"
-            rec = acct.apply_action(code, action, eff_tw, px, prices)
+            rec = acct.apply_action(code, action, eff_tw, px, prices, as_of=as_of)
             if rec:
                 trades.append({**rec, "date": as_of.isoformat()})
                 if rec["kind"] == "buy":       # 新建仓 → 记建仓日
@@ -493,16 +609,21 @@ def run_stock_probe(start: date, end: date, *, panic_direction: str = "high",
                     fear_high: float = 60.0, greed_low: float = 40.0,
                     max_w_per_industry: float = 0.20, buy_cool_down_days: int = 0,
                     max_target_step: float = 1.0, lock_days: int = 0, stock_top_k: int = 10,
+                    sentiment_mode: str = "full", regime: str = "off",
+                    regime_ma: int = 60, regime_dd: float = 0.15,
+                    regime_scale_off: float = 0.0,
                     initial_cash: float = INITIAL_CASH) -> dict:
     """个股版探测:行业情绪(ETF 派生)驱动行业排除/筛选,每个选中行业挑 1 只个股(个股周布林 %b)。
 
     两层横截面:① ETF 行业情绪/行业%b(同 ETF 版)② 个股 %b(quote_snapshot)。
     rotation_policy_stocks 做行业级排除/筛选 + 每行业 1 只。出场/执行同 run_probe。
+    sentiment_mode / regime 同 run_probe。
     """
     days = _trade_calendar_days(start, end)
     pre_etf = _preload(ETF_CODES, end)
     industry_of, stock_codes = load_stock_universe(top_k=stock_top_k)
     pre_stk = _preload(stock_codes, end) if stock_codes else {}
+    pre_bench = _preload_bench_closes(end) if regime != "off" else {"dates": [], "closes": []}
     acct = NotionalAccount(initial_cash)
     pm = PositionManager(buy_cool_down_days=buy_cool_down_days,
                          max_target_step=max_target_step, min_trade_weight=0.0)
@@ -558,7 +679,8 @@ def run_stock_probe(start: date, end: date, *, panic_direction: str = "high",
             entries = rotation_policy_stocks(
                 cross, industry_of, panic_direction=panic_direction, exclude_top_n=3,
                 boll_buy_max=boll_buy_max, fear_high=fear_high, greed_low=greed_low,
-                max_positions=max_positions, max_w_per_industry=max_w_per_industry)
+                max_positions=max_positions, max_w_per_industry=max_w_per_industry,
+                sentiment_mode=sentiment_mode)
             targets = {c: entries.get(c, 0.0) for c in (set(cross) | held)}
         else:
             targets = {c: acct.weight(c, prices) for c in held}
@@ -580,6 +702,13 @@ def run_stock_probe(start: date, end: date, *, panic_direction: str = "high",
             if info and info["pct_b"] >= 0.70:
                 targets[code] = min(targets.get(code, cw), _ladder_weight(info["pct_b"], cw))
 
+        # ④b 大盘 regime:调仓日缩放(在 lock 之后)
+        if is_reb and regime != "off":
+            rs = regime_scale(_bench_closes_asof(pre_bench, as_of),
+                              regime=regime, ma_window=regime_ma,
+                              dd_limit=regime_dd, risk_off_scale=regime_scale_off)
+            targets = _apply_regime(targets, rs)
+
         # ⑤ 总仓阀 + 边沿触发 + 执行
         targets = _apply_gross_cap(targets, max_gross)
         for code, tw in sorted(targets.items()):
@@ -591,7 +720,7 @@ def run_stock_probe(start: date, end: date, *, panic_direction: str = "high",
             cw = acct.weight(code, prices)
             act, eff_tw, _ = pm.should_act(code, tw, cw, as_of, days)
             action = resolve_action(cw, eff_tw) if act else "hold"
-            rec = acct.apply_action(code, action, eff_tw, px, prices)
+            rec = acct.apply_action(code, action, eff_tw, px, prices, as_of=as_of)
             if rec:
                 trades.append({**rec, "date": as_of.isoformat()})
                 if rec["kind"] == "buy":
@@ -658,6 +787,15 @@ def main() -> None:
     ap.add_argument("--max-w-per-industry", type=float, default=0.20)
     ap.add_argument("--fear-high", type=float, default=60.0)
     ap.add_argument("--greed-low", type=float, default=40.0)
+    ap.add_argument("--sentiment-mode", choices=["full", "price_only", "no_fear_exclude"],
+                    default="full",
+                    help="full=现行情绪;price_only=仅%%b对照;no_fear_exclude=保留情绪但不排除fear top")
+    ap.add_argument("--regime", choices=["off", "ma", "dd"], default="off",
+                    help="大盘 regime:off/ma(收盘<MA)/dd(峰值回撤超限)→缩放目标仓")
+    ap.add_argument("--regime-ma", type=int, default=60, help="regime=ma 的均线窗口")
+    ap.add_argument("--regime-dd", type=float, default=0.15, help="regime=dd 的回撤阈值")
+    ap.add_argument("--regime-scale", type=float, default=0.0,
+                    help="regime 触发后目标仓乘数(0=空仓新开/调仓清风险,0.5=半仓)")
     ap.add_argument("--save-curve", default=None,
                     help="存 equity_curve + metrics 的 JSON 路径(可选)")
     args = ap.parse_args()
@@ -675,6 +813,8 @@ def main() -> None:
         universes = [args.universe]
 
     print("⚠ 保真度简化:当日收盘成交(非 T+1 开盘)、ETF/指数计印花税、存活偏差。仅判 edge。\n")
+    print(f"sentiment_mode={args.sentiment_mode} regime={args.regime}"
+          f"(ma={args.regime_ma},dd={args.regime_dd},scale={args.regime_scale})\n")
     results: dict[str, dict] = {}
     for u in universes:
         for d in dirs:
@@ -687,7 +827,10 @@ def main() -> None:
                                     boll_k=args.boll_k, boll_buy_max=args.boll_buy_max,
                                     fear_high=args.fear_high, greed_low=args.greed_low,
                                     max_w_per_industry=args.max_w_per_industry,
-                                    lock_days=args.lock_days, stock_top_k=args.stock_top_k)
+                                    lock_days=args.lock_days, stock_top_k=args.stock_top_k,
+                                    sentiment_mode=args.sentiment_mode, regime=args.regime,
+                                    regime_ma=args.regime_ma, regime_dd=args.regime_dd,
+                                    regime_scale_off=args.regime_scale)
             else:
                 codes = uni_map[u]
                 print(f"── 标的池={u}（{len(codes)} 只）──")
@@ -697,7 +840,9 @@ def main() -> None:
                               boll_k=args.boll_k, boll_buy_max=args.boll_buy_max,
                               fear_high=args.fear_high, greed_low=args.greed_low,
                               max_w_per_industry=args.max_w_per_industry, lock_days=args.lock_days,
-                              codes=codes)
+                              codes=codes, sentiment_mode=args.sentiment_mode, regime=args.regime,
+                              regime_ma=args.regime_ma, regime_dd=args.regime_dd,
+                              regime_scale_off=args.regime_scale)
             key = f"{u}:{d}"
             results[key] = r
             _print(key, r["metrics"])

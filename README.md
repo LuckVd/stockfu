@@ -37,7 +37,7 @@ stockfu/
 │   ├── api/             # FastAPI 路由
 │   ├── tui/             # textual 终端看板
 │   ├── scheduler/       # 每日抓取/落库/推送
-│   ├── ai/              # AI 4顾问 + operators算子平台(13) + rebalancers选股层(3)
+│   ├── ai/              # AI 4顾问 + operators算子平台(10:8math+2聚合,回测LLM已下线G10) + rebalancers选股层(3)
 │   └── backtest/        # 回测引擎(四层架构:算子→策略→选股→T+1执行,见 docs/BACKTEST.md)
 └── data/stockfu.db         # SQLite（运行时生成）
 ```

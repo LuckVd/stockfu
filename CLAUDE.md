@@ -25,12 +25,12 @@ nohup python3 main.py --schedule >> data/schedule.log 2>&1 &   # daemon:定时�
 - **数据全在 `data/stockfu.db`**(SQLite 单文件,**WAL 模式**;搬迁=拷贝它——**WAL 下先 `PRAGMA wal_checkpoint(TRUNCATE)` 或一并拷 -wal/-shm**;已备份 `data/stockfu.db.bak.*`);回测结果在 `data/backtest/`(已 gitignore,运行时产物)
 - **回测防未来函数**:取数严格 `<= as_of`;`build_context(code, as_of=None)` / `ma_alignment(code, lookback, as_of=None)` 都支持 as_of,实盘不传=取最新
 - **量化平台四层**(`stockfu/ai/` + `stockfu/backtest/`):
-  - 算子 `operators/`(8 math + 2 聚合,共 10;**回测 LLM 算子已下线 G10**,实盘 AI 4 顾问走 `ai/skills/` 独立链路)。**G10 后**:算子 score 连续不 clamp,signal 降级为派生标签(不参与决策),仓位统一 continuous 映射(满仓刻度 `score_full`,详见 BACKTEST.md §8)
-  - 策略 `strategies/*.yaml` + DB strategy 表(5 个纯 math;active 走 `app_config.active_strategy_id`,默认 `pure_factor`)
+  - 算子 `operators/`(9 math + 2 聚合,共 11;**回测 LLM 算子已下线 G10**,实盘 AI 4 顾问走 `ai/skills/` 独立链路)。**G10 后**:算子 score 连续不 clamp,signal 降级为派生标签(不参与决策),仓位统一 continuous 映射(满仓刻度 `score_full`,详见 BACKTEST.md §8)
+  - 策略 `strategies/*.yaml` + DB strategy 表(6 个纯 math,含 `cn_momentum_rotation` 已全周期证伪;active 走 `app_config.active_strategy_id`,默认 `pure_factor`)
   - 选股 `rebalancers/`(pass_through / cap_and_rank / top_n_picker;active 走 `app_config.active_rebalancer_id`)
   - 执行 `backtest/engine.py`(VirtualAccount + T+1 开盘 + 真实费用 + 完整 metrics)+ `scheduler.py`(注入 CompiledStrategy + 算子缓存)
 - **算子缓存** `operator_result` 表:同 `(code, as_of, fingerprint)` 全局复用(fingerprint 含算子源码 hash → 改算子代码自动失效缓存,治 P2-5;G10),首次回测慢(算+写),后续读缓存秒级。**G09 性能**:复合唯一键覆盖热路径(4 单列索引已删)+ meta 进程级 `lru_cache` + WAL/`synchronous=NORMAL`/`busy_timeout`;`python3 main.py --vacuum`(停 daemon 时跑)回收空闲页
-- **行情已拆表**:`QuoteSnapshot`(个股,含 pe/pb/ps_ttm/pcf) / `EtfQuoteDaily` / `IndexQuoteDaily` 三表分离;`quote_model_for` 仍仅返 QuoteSnapshot;**回测基准 G02 已激活**:基准=上证综指 sh000001(1990起,`index_quote_daily`),`_benchmark_curve` 直读不走 `quote_model_for`;`run_scheduled_fetch` 每日更新;`--backfill-benchmark` 全量回补
+- **行情已拆表**:`QuoteSnapshot`(个股,含 pe/pb/ps_ttm/pcf) / `EtfQuoteDaily` / `IndexQuoteDaily` 三表分离;`quote_model_for` 按类型路由(个股→QuoteSnapshot / ETF→EtfQuoteDaily / 指数→IndexQuoteDaily);**回测基准 G02 已激活**:基准=上证综指 sh000001(1990起,`index_quote_daily`),`_benchmark_curve` 直读不走 `quote_model_for`;`run_scheduled_fetch` 每日更新;`--backfill-benchmark` 全量回补
 
 ## 状态
 🚧 MVP 开发中。已完成:数据层(多源 fallback)→ 存储 → 持仓/股息/网格 → TUI → API → 三层情绪指数 → 历史回补 → AI 4 顾问 → 四层架构回测引擎。待办见 `docs/PROJECT_STATE.md` 第 8 节。

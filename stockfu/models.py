@@ -29,7 +29,6 @@ class Asset(SQLModel, table=True):
     sector: str = ""                               # 板块/行业
     currency: str = "CNY"
     is_watch: bool = Field(default=False, index=True)
-    note: str = ""
     updated_at: datetime = Field(default_factory=_now)
 
 

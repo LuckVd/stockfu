@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from stockfu.api import routes
 
 _BASE = Path(__file__).resolve().parent.parent       # 包根 stockfu/(web/ 在包内)
+_WEB_DIR = _BASE / "web"                             # 旧单页前端(web/index.html，share 卡片在此)
 _FRONTEND_DIST = _BASE.parent / "frontend" / "dist"  # 项目根 frontend/(Vue 工程在包外)
 
 

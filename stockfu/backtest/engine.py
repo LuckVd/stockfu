@@ -27,9 +27,22 @@ from stockfu.backtest.cash_scaler import scale_buys_to_cash
 INITIAL_CASH = 1_000_000.0
 COMMISSION_RATE = 0.0003      # 券商佣金 万3(双边)
 MIN_COMMISSION = 5.0          # 最低 5 元/笔
-STAMP_DUTY_RATE = 0.0005      # 印花税 0.05%(仅卖出,2023-08 起)
+STAMP_DUTY_RATE = 0.0005      # 印花税 0.05%(仅卖出,现行最新;2023-08-28 起)
+STAMP_DUTY_RATE_OLD = 0.001   # 印花税 0.1%(仅卖出,2023-08-28 前)
+STAMP_DUTY_CUTOFF = date(2023, 8, 28)   # 印花税减半生效日(千一→万五)
 TRANSFER_FEE_RATE = 0.00001   # 过户费 0.001%(双边,2022 起沪深统一)
 BENCHMARK = "sh000001"        # 上证综指（回测基准，1990 起）
+
+
+def stamp_duty_rate(as_of: date | None) -> float:
+    """印花税率(仅卖出单边征收):2023-08-28 前 0.001(千一),之后 0.0005(万五)。
+
+    as_of=None → 现行最新 0.0005(向后兼容:无日期回退,如实盘即时成交)。
+    P2-3 第一步:跨历史区间回测费用不失真(旧版全期按 0.0005,2023-08 前低估一半)。
+    """
+    if as_of is None or as_of >= STAMP_DUTY_CUTOFF:
+        return STAMP_DUTY_RATE
+    return STAMP_DUTY_RATE_OLD
 
 # 资金分配 / 风控默认值(对标 rqalpha order_target_portfolio_smart + backtrader Margin 思路,
 # 详见 docs/ARCHITECTURE_REVIEW.md):
@@ -70,11 +83,13 @@ class VirtualAccount:
         return pos.shares * prices.get(code, 0.0) / total
 
     def apply_action(self, code: str, action: str, target_weight: float,
-                     price: float, prices: dict[str, float]) -> dict | None:
+                     price: float, prices: dict[str, float],
+                     as_of: date | None = None) -> dict | None:
         """按 target_weight 调仓(整百股)。返回交易记录(含 realized pnl)或 None。
 
         买入受可用现金约束(不足则收敛到能买的整百股);卖出按目标算股数。
         action 仅用于记录语义(buy/add/reduce/sell),实际方向由 target vs current 决定。
+        as_of: 成交日,决定卖出印花税率(见 stamp_duty_rate);None=现行最新。
         """
         if price <= 0 or action == "hold":
             return None
@@ -117,7 +132,7 @@ class VirtualAccount:
                 return None
             proceeds = shares * price
             fee = (max(proceeds * COMMISSION_RATE, MIN_COMMISSION)
-                   + proceeds * (STAMP_DUTY_RATE + TRANSFER_FEE_RATE))
+                   + proceeds * (stamp_duty_rate(as_of) + TRANSFER_FEE_RATE))
             realized = (price - pos.avg_cost) * shares - fee   # 已实现盈亏(扣费后,含印花税+过户费)
             pos.shares -= shares
             self.cash += (proceeds - fee)
@@ -136,9 +151,9 @@ class VirtualAccount:
 def _get_quote_dict(codes: list[str], as_of: date, field: str = "close") -> dict[str, float]:
     """取单日单字段 → {code: value}，个股回测信号路径用。
 
-    注：quote_model_for 当前为单表(一律 QuoteSnapshot——G01 拆表已回滚，见 G02 OQ4)，
-    故此处实际只查 quote_snapshot；ETF/指数不在该表。回测基准(_benchmark_curve)
-    单独直读 IndexQuoteDaily，不经此函数。
+    注：quote_model_for 按资产类型路由三表(G01 拆表:个股→QuoteSnapshot / ETF→EtfQuoteDaily
+    / 指数→IndexQuoteDaily)，下方按 model 分组查询。个股回测信号路径只传个股 code →
+    实际查 QuoteSnapshot；回测基准(_benchmark_curve)单独直读 IndexQuoteDaily，不经此函数。
     """
     from stockfu.services.factors import quote_model_for
     groups: dict[type, list[str]] = {}
@@ -368,6 +383,8 @@ def run_backtest(codes: list[str], start: date, end: date,
       risk_confirm_days: risk 否决需连续 N 天才生效(机制1确认棒,治根因①);默认1=原行为。
       target_mode: "discrete"=阶跃查表(原);"continuous"=total 连续映射+双向滞回死区
         (机制7连续映射+机制2滞回,治根因②③=换手主因)。max_weight/total_dead 为其参数。
+        (注:G10 后 action.compute_target_weight 已无 discrete 分支、仓位统一连续映射,
+        target_mode 现仅记录到 metrics 归档、不参与仓位计算;参数保留待阶段3 执行层抽象清理。)
       min_trade_weight: 调仓幅度<此值(占总资产)不下单(机制7死区,治根因④);默认0。
       sell_cooldown_days: 部分减仓冷却天数(清仓/风险否决不限,机制4,治根因④);默认0。
       conf_gate: 弱 confidence(<此值)的清仓信号降级为维持(机制1 confidence gate,治根因⑤);默认0=关。
@@ -501,7 +518,7 @@ def run_backtest(codes: list[str], start: date, end: date,
 
             def _exec(code, tw, px, source, **extra):
                 tr = acct.apply_action(code, resolve_action(acct.weight(code, open_prices), tw),
-                                        tw, px, open_prices)
+                                        tw, px, open_prices, as_of=as_of)
                 if tr:
                     tr.update(date=as_of.isoformat(), signal=None, reason="open_exec",
                               price_source=source, status="filled", **extra)
@@ -629,7 +646,7 @@ def run_backtest(codes: list[str], start: date, end: date,
 
             # 信号→目标仓位(discrete=阶跃查表;continuous=total 连续映射+滞回死区)
             target_weight = compute_target_weight(
-                signal, risk_vetoed, current_w, ai_target,
+                risk_vetoed, current_w, ai_target,
                 total_score=total_score,
                 max_w=max_weight, dead=total_dead,
                 score_full=debounce.score_full if debounce else 20.0,

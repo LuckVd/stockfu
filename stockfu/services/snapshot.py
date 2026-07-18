@@ -176,7 +176,7 @@ def index_quotes_view() -> dict:
     上证取 market→MARKET；创业板/科创50 取 sector→板块名（与 compute_all 保存时一致）。
     pct_chg 优先用落盘值；backfill 未存时从最近两条 close 算。
     """
-    from stockfu.models import IndexSnapshot
+    from stockfu.models import IndexQuoteDaily, IndexSnapshot
     td = date.today()
     cfg = {"000001": ("sh000001", "上证指数", "market", "MARKET"),
            "399006": ("sz399006", "创业板指", "sector", "创业板"),
@@ -184,9 +184,9 @@ def index_quotes_view() -> dict:
     out: dict = {}
     with session_scope() as s:
         for c, (idx_code, name, lvl, scope) in cfg.items():
-            snaps = s.exec(select(QuoteSnapshot).where(
-                QuoteSnapshot.asset_code == idx_code
-            ).order_by(QuoteSnapshot.quote_date.desc()).limit(2)).all()
+            snaps = s.exec(select(IndexQuoteDaily).where(
+                IndexQuoteDaily.asset_code == idx_code
+            ).order_by(IndexQuoteDaily.quote_date.desc()).limit(2)).all()
             snap = snaps[0] if snaps else None
             prev_close = snaps[1].close if len(snaps) >= 2 else None
             rows = s.exec(select(IndexSnapshot).where(

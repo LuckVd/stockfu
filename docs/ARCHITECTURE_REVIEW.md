@@ -4,7 +4,7 @@
 > 结论:StockFu 四层架构方向正确且有差异化优势;软肋集中在**执行层资金分配**,本轮已修(P0+P1)。
 > P2 较大改动单独立项,本文逐条记录**问题 / 原因 / 该怎么做 / 对标 / 定位**,供后续实施。
 
-> **🔄 G10 后状态(2026-07-15)**:P2-5(算子指纹纳入源码 hash,治缓存失效坑)与 P2-6(清理 `operators/llm` 重复)已随 G10 完成——回测 LLM 算子整目录下线,算子数变为 **8 math + 2 聚合 = 10**(本文若干处仍写 13/7math/4llm,属历史记录,以本注为准;score 已连续不 clamp、signal 降级派生、统一 continuous 映射)。下阶段执行层演进走 P2-1/7→P2-8/4→P2-3/2(见 §8 顺序);另规划**阶段2 因子诊断层**(alphalens 思路,不在本文 P2 清单,见 `PROJECT_STATE.md` §8)。
+> **🔄 G10 后状态(2026-07-15)**:P2-5(算子指纹纳入源码 hash,治缓存失效坑)与 P2-6(清理 `operators/llm` 重复)已随 G10 完成——回测 LLM 算子整目录下线,算子数变为 **9 math + 2 聚合 = 11**(2026-07-16 加 trend_linearity 配 cn_momentum_rotation)(本文若干处仍写 13/7math/4llm,属历史记录,以本注为准;score 已连续不 clamp、signal 降级派生、统一 continuous 映射)。下阶段执行层演进走 P2-1/7→P2-8/4→P2-3/2(见 §8 顺序);另规划**阶段2 因子诊断层**(alphalens 思路,不在本文 P2 清单,见 `PROJECT_STATE.md` §8)。
 
 ---
 
@@ -86,7 +86,10 @@
 - **工作量**:中偏大(拆类 + 实盘 Broker 需对应券商 API)。
 
 ### P2-3. Sizer / CommissionInfo 抽象(费用/整手数可替换)
-- **问题**:费用率(`COMMISSION_RATE` 等)和整百股规则**硬编码为模块常量**(`engine.py:27-30`)。A股费率历史调整(如印花税 2023-08 改单边),跨历史区间回测会失真;不同品种(股/ETF/港股)整手数不同(港股 1 手非 100)。
+
+> **进度(2026-07-18)**:第一步「印花税日期化」已落地——`stamp_duty_rate(as_of)`(2023-08-28 前千一 0.001 / 后万五 0.0005)接入 `VirtualAccount.apply_action`(加 `as_of` 形参)+ probe 的 `NotionalAccount`,治跨历史区间失真;§7 基准窗口全在 08-28 后故逐值不变(可证明零行为改变)。过户费日期化(2022 沪深统一)、CommInfo/Sizer 抽象仍待做。
+
+- **问题**:费用率(`COMMISSION_RATE` 等)和整百股规则**硬编码为模块常量**(`engine.py:27-30`)。A股费率历史调整(如印花税 2023-08 降税率千一→万五,**已日期化**;过户费 2022 沪深统一仍未日期化),跨历史区间回测会失真;不同品种(股/ETF/港股)整手数不同(港股 1 手非 100)。
 - **原因**:没有可替换的费用/合约规格对象。
 - **怎么做**:对标 backtrader `CommissionInfo`(`getsize/getcommission/profitandloss`,stocklike/futures、perc/fixed)+ `Sizer`(`_getsizing(comminfo,cash,data,isbuy)→int`)。把 `apply_action` 里整百股 + 费用计算抽成 `CommInfo`/`Sizer` 对象,按 code 绑定不同规格。
 - **对标**:backtrader `comminfo.py`、`sizer.py`;PyPortfolioOpt `discrete_allocation.py`(连续权重→整手)。
@@ -212,24 +215,24 @@ for k in ["total_return","annualized","max_drawdown","sharpe","sortino","calmar"
 EOF
 ```
 
-| 指标 | 基准值(2026-07-15,本轮 P0+P1 后) |
+| 指标 | 基准值(2026-07-18 重锚;strict 宇宙默认 + 数据更新后) |
 |---|---|
-| total_return | 0.24 |
-| annualized | 1.37 |
-| max_drawdown | 1.78 |
-| sharpe | 0.36 |
-| sortino | 0.26 |
-| calmar | 0.77 |
+| total_return | 0.04 |
+| annualized | 0.22 |
+| max_drawdown | 1.05 |
+| sharpe | 0.11 |
+| sortino | 0.08 |
+| calmar | 0.21 |
 | win_rate | 60.0 |
 | trade_count | 13 |
-| avg_gross_leverage | 22.1 |
-| max_gross_leverage | 37.7 |
-| max_single_weight | 14.1 |
+| avg_gross_leverage | 12.2 |
+| max_gross_leverage | 20.8 |
+| max_single_weight | 14.2 |
 | cash_constraint_hits | 0 |
-| total_fee | 532.88 |
-| final_equity | 1002374.62 |
+| total_fee | 177.8 |
+| final_equity | 1000384.23 |
 
-> 基准锚定当前实现(max_w=0.10 / max_gross=0.90 / 先卖后买 / 买单缩放)。若某 P2 同时改了这些(如 P2-3 调费率),需同步更新本表。
+> 基准锚定当前实现(max_w=0.10 / max_gross=0.90 / 先卖后买 / 买单缩放 / strict 宇宙默认)。2026-07-18 重锚:07-15 后 strict 时点宇宙(§9)+ 数据刷新落地,metrics 较 07-15 表漂移(total_fee 532.88→177.8 等),属行为演进非回归。若某 P2 同时改了这些(如 P2-3 调费率),需同步更新本表。
 
 ---
 

@@ -39,7 +39,7 @@ class MeanReversionOperator(BaseOperator):
             score = 20 * (1 - rsi / oversold)
             signal = "buy"
             reasoning = f"RSI({period})={rsi:.1f} 超卖,反转买入"
-        elif rsi > overbought:                            # ��买→卖
+        elif rsi > overbought:                            # 超买→卖
             score = -20 * (1 - (100 - rsi) / (100 - overbought))
             signal = "sell"
             reasoning = f"RSI({period})={rsi:.1f} 超买,反转卖出"
