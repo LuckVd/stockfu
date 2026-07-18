@@ -1,7 +1,7 @@
 """每日定时任务：抓行情/分红/ETF份额 → 落库(天级快照) → 算指数。
 
 触发方式：
-  python main.py --fetch      # 立即跑一次 run_daily_job
+  python main.py --fetch      # 立即跑一次 run_scheduled_fetch
   python main.py --backfill   # 回填关键标的 90 日历史（首次必跑，指数才能算）
   python main.py --schedule   # APScheduler 按 daily_cron 长驻运行
 """
@@ -152,41 +152,6 @@ def _upsert_fundflow(code: str) -> bool:
             s.add(snap)
         s.commit()
     return True
-
-
-def _upsert_index_quotes() -> int:
-    """主要指数(上证/创业板/科创50)当日行情落 quote_snapshot（akshare 东财指数系列）。"""
-    import akshare as ak
-    from stockfu.services.snapshot import beijing_today
-    today = beijing_today()
-    cfg = {"上证系列指数": [("000001", "sh000001"), ("000688", "sh000688")],
-           "深证系列指数": [("399006", "sz399006")]}
-    n = 0
-    for sym, codes in cfg.items():
-        try:
-            df = ak.stock_zh_index_spot_em(symbol=sym)
-        except Exception:  # noqa: BLE001
-            continue
-        want = {c for c, _ in codes}
-        imap = {c: ic for c, ic in codes}
-        for _, r in df.iterrows():
-            c = str(r.get("代码", "")).strip()
-            if c not in want:
-                continue
-            try:
-                price = float(r.get("最新价")); chg = float(r.get("涨跌幅"))
-            except (TypeError, ValueError):
-                continue
-            with session_scope() as s:
-                snap = s.exec(select(QuoteSnapshot).where(
-                    QuoteSnapshot.asset_code == imap[c], QuoteSnapshot.quote_date == today)).first()
-                snap = snap or QuoteSnapshot(asset_code=imap[c], quote_date=today)
-                snap.close = price; snap.pct_chg = chg
-                if snap.id is None:
-                    s.add(snap)
-                s.commit()
-            n += 1
-    return n
 
 
 def _bar_pct(b, prev_close: float | None) -> float | None:
@@ -391,6 +356,41 @@ def update_index_benchmark(code: str = "sh000001") -> int:
     return n
 
 
+def update_etf_benchmark(code: str) -> int:
+    """ETF 日线增量更新:查 etf_quote_daily 最新日期 → 拉 gap → 幂等 upsert。
+
+    akshare fund_etf_hist_em(前复权)走国内直连。板块情绪 compute_sector 依赖代表 ETF
+    的 K 线分位,行情拆表后 ETF 历史在 etf_quote_daily(非 quote_snapshot)。返回新增行数。
+    范式同 update_index_benchmark。
+    """
+    from stockfu.data.akshare_source import get_etf_daily
+    with session_scope() as s:
+        last_row = s.exec(select(EtfQuoteDaily).where(
+            EtfQuoteDaily.asset_code == code
+        ).order_by(EtfQuoteDaily.quote_date.desc()).limit(1)).first()
+    last_date = last_row.quote_date if last_row else None
+    today = date.today()
+    if last_date and last_date >= today:
+        return 0
+    start = (last_date + timedelta(days=1)).isoformat() if last_date else "2010-01-01"
+    rows = get_etf_daily(code, start, today.isoformat())
+    if not rows:
+        return 0
+    n = 0
+    with session_scope() as s:
+        for r in rows:
+            existing = s.exec(select(EtfQuoteDaily).where(
+                EtfQuoteDaily.asset_code == code,
+                EtfQuoteDaily.quote_date == r["quote_date"],
+            )).first()
+            if existing:
+                continue
+            s.add(EtfQuoteDaily(**r))
+            n += 1
+        s.commit()
+    return n
+
+
 def run_backfill_benchmark(code: str = "sh000001") -> dict:
     """一次性回补整个指数历史（从最早日期到今天），首次部署用。"""
     from stockfu.data.akshare_source import get_index_daily
@@ -489,6 +489,9 @@ def backfill_industry_etf() -> dict:
                          "total": len(rows), "new": len(new_rows),
                          "have_before": len(have_dates)}
     return summary
+
+
+def run_backfill(days: int) -> dict:
     """回填宽基/行业 ETF + 自选 + 板块自身K线 + 大盘资金流 的历史，供指数/情绪计算。"""
     init_db()
     with session_scope() as s:
@@ -545,31 +548,6 @@ def ensure_stock_data_and_index(code: str, days: int = 1825) -> dict:
     }
 
 
-def run_daily_job() -> dict:
-    """每日：行情落库 + 分红落库 + ETF份额落库 + 算指数。"""
-    init_db()
-    from stockfu.services import indices as indices_svc
-    from stockfu.services import dividend as div_svc
-
-    with session_scope() as s:
-        codes = [a.code for a in s.exec(select(Asset)).all()]
-    key_codes = list(dict.fromkeys(codes + INDEX_ETFS))
-
-    quotes = sum(1 for c in key_codes if _upsert_quote(c))
-    divs = sum(div_svc.persist_dividends(c) for c in codes)
-    flows = sum(1 for c in INDEX_ETFS if _upsert_fundflow(c))
-    # 板块当日主力资金流（即时攒历史）
-    from stockfu.services import backfill as bf
-    sector_flow = bf.backfill_sector_flow_today()
-    indices = indices_svc.compute_and_save()
-    # 三层情绪指数（市场 / 个股 / 板块）
-    from stockfu.services import composite
-    comp = composite.compute_all(codes)
-    return {"quotes": quotes, "dividends": divs,
-            "fundflow_etfs": flows, "indices": indices,
-            "sector_flow": sector_flow, "composite_levels": len(comp)}
-
-
 def _batch_fetch_today(codes: list[str]) -> tuple[list[str], list[str]]:
     """对 codes 逐个 _upsert_quote。返回 (成功, 失败)。"""
     ok, fail = [], []
@@ -607,9 +585,19 @@ def run_scheduled_fetch() -> dict:
         ok2, fail = _batch_fetch_today(fail)
         ok.extend(ok2)
 
-    # 主要指数当日行情落盘 + 基准 sh000001 日线更新
-    _upsert_index_quotes()
-    update_index_benchmark("sh000001")
+    # 三大指数日线落 IndexQuoteDaily（行情拆表后指数在此;读路径 index_quotes_view/share.perf 直读此表）
+    for _idx in ("sh000001", "sz399006", "sh000688"):
+        try:
+            update_index_benchmark(_idx)
+        except Exception:  # noqa: BLE001
+            pass
+    # SECTOR_MAP 代表 ETF 日线增量(板块情绪 compute_sector 依赖;拆表后 ETF 在 etf_quote_daily)
+    from stockfu.services.composite import SECTOR_MAP as _SECTOR_ETF_MAP
+    for _etf in _SECTOR_ETF_MAP.values():
+        try:
+            update_etf_benchmark(_etf)
+        except Exception:  # noqa: BLE001
+            pass
     # 板块当日主力资金流（即时，每日攒历史；落库后供 compute_sector 用）
     from stockfu.services import backfill as bf
     sector_flow = bf.backfill_sector_flow_today()

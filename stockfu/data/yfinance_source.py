@@ -121,10 +121,6 @@ class YfinanceSource(DataSource):
             ttm_yield_pct=yp, events=events[:8], coverage="yfinance_dividends",
         )
 
-    def get_dividends(self, code: str, years: int = 5):
-        m = self.get_dividend_metric(code)
-        return m.events if m else []
-
     # -------- K 线 --------
     def get_kline(self, code: str, days: int = 365) -> list[KlineBar]:
         import yfinance as yf

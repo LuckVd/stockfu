@@ -1,7 +1,7 @@
-"""MACD 金叉/���叉算子: 日�� + 周线双维度交叉检测。
+"""MACD 金叉/死叉算子: 日线 + 周线双维度交叉检测。
 
 从 quote_snapshot 读日线 close → 算日/周 MACD → 组合评分。
-现有 LLM tool(macd.py) 的 EMA 计算逻��复用于此。
+现有 LLM tool(macd.py) 的 EMA 计算逻辑复用于此。
 """
 from datetime import date, timedelta
 
@@ -14,7 +14,7 @@ from stockfu.models import QuoteSnapshot
 from stockfu.services.factors import quote_model_for, quote_series
 
 
-# ── EMA 计算(与 stockfu/ai/operators/llm/tools/macd.py 复用) ──
+# ── EMA 计算 ──
 def _ema(data: list[float], period: int) -> list[float | None]:
     if len(data) < period:
         return [None] * len(data)
@@ -26,7 +26,7 @@ def _ema(data: list[float], period: int) -> list[float | None]:
 
 
 def _macd_series(closes: list[float], fast: int, slow: int, signal: int):
-    """计算 MACD 三线, 返��� (dif_list, dea_list, hist_list) 与最新值对齐。"""
+    """计算 MACD 三线, 返回 (dif_list, dea_list, hist_list) 与最新值对齐。"""
     if len(closes) < slow + signal:
         return [], [], []
     ema_f = _ema(closes, fast)
@@ -62,7 +62,7 @@ def _check_cross(dif: list[float | None], dea: list[float | None]) -> str:
 
 
 def _weekly_closes(code: str, as_of: date | None, lookback_days: int) -> list[float]:
-    """按周聚合收盘价: 取每周最后一���交易日的 close。"""
+    """按周聚合收盘价: 取每周最后一个交易日的 close。"""
     ref = as_of or date.today()
     start = ref - timedelta(days=lookback_days)
     model = quote_model_for(code)
@@ -107,10 +107,10 @@ class MacdCrossOperator(BaseOperator):
         dif_d, dea_d, _ = _macd_series(closes, fast, slow, signal)
         daily_cross = _check_cross(dif_d, dea_d)
 
-        # --- 周�� MACD ---
+        # --- 周线 MACD ---
         weekly = _weekly_closes(ctx.code, ctx.as_of, need)
         if len(weekly) < slow + signal:
-            # 周线��据不足 → 只用日线
+            # 周线数据不足 → 只用日线
             weekly_cross = "none"
         else:
             dif_w, dea_w, _ = _macd_series(weekly, fast, slow, signal)
@@ -128,7 +128,7 @@ class MacdCrossOperator(BaseOperator):
             reason = "日线金叉(周线无交叉)"
         elif daily_cross == "none" and weekly_cross == "golden":
             score, signal_out = 7.0, "buy"
-            reason = "周线金叉(���线无交叉)"
+            reason = "周线金叉(日线无交叉)"
         elif daily_cross == "death" and weekly_cross == "death":
             score, signal_out = -10.0, "strong_sell"
             reason = "日线死叉 + 周线死叉"
@@ -141,7 +141,7 @@ class MacdCrossOperator(BaseOperator):
         else:  # 冲突: 日金叉+周死叉 或 日死叉+周金叉
             score, signal_out = 0.0, "hold"
             direction = "周线金叉" if weekly_cross == "golden" else "周线死叉"
-            daily_dir = "���线金叉" if daily_cross == "golden" else "��线死叉"
+            daily_dir = "日线金叉" if daily_cross == "golden" else "日线死叉"
             reason = f"冲突: {daily_dir}+{direction}, 观望"
             confidence = 0.3
             return OpResult(operator=self.operator_id, type="math",

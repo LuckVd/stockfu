@@ -5,7 +5,7 @@
 4 个风格正交的常驻投资顾问（趋势/逆向/风险/估值）+ 规则汇总 + LLM 润色，
 基于 stockfu 已有的情绪指数/估值分位数据，给单只股票一句话决策解读。
 
-> 4 顾问同时作为 **LLM 算子**注册到 `stockfu/ai/operators/llm/advisors/`,供回测引擎按策略调用(`hybrid`/`classic_4advisors` 策略,需 LLM key);实盘分析仍走 `ai.analyze.analyze`。详见 `docs/BACKTEST.md`。
+> 实盘分析走 `ai.analyze.analyze`(4 顾问在 `ai/skills/advisors/`,独立链路)。**G10(2026-07-15)已下线回测 LLM 算子**——4 顾问不再作为回测算子,`hybrid`/`classic_4advisors` 策略已废弃;详见 `docs/BACKTEST.md` §8。
 
 ## 为什么是 4 顾问，不是别的
 

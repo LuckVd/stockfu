@@ -21,13 +21,15 @@ def perf(code: str, days: int) -> Optional[float]:
     from sqlmodel import select
 
     from stockfu.db import session_scope
-    from stockfu.models import QuoteSnapshot
+    from stockfu.models import IndexQuoteDaily, QuoteSnapshot
 
     start = date.today() - timedelta(days=days)
+    # 指数(sh/sz 前缀)行情在 IndexQuoteDaily；个股/ETF(纯数字代码)在 QuoteSnapshot
+    model = IndexQuoteDaily if code.startswith(("sh", "sz")) else QuoteSnapshot
     with session_scope() as s:
-        rows = s.exec(select(QuoteSnapshot).where(
-            QuoteSnapshot.asset_code == code, QuoteSnapshot.quote_date >= start,
-        ).order_by(QuoteSnapshot.quote_date)).all()
+        rows = s.exec(select(model).where(
+            model.asset_code == code, model.quote_date >= start,
+        ).order_by(model.quote_date)).all()
     closes = [r.close for r in rows if r.close is not None]
     if len(closes) < 2 or not closes[0]:
         return None

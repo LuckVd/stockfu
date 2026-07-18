@@ -113,6 +113,45 @@ class TestRotationPolicy(unittest.TestCase):
         self.assertIn("L", t)
         self.assertNotIn("P", t)
 
+    def test_no_fear_exclude_keeps_fear_tops(self):
+        """no_fear_exclude:fear top(F1-3)可入选;greed/heat top 仍排除。"""
+        from stockfu.backtest.probes.sector_rotation import rotation_policy
+        t = rotation_policy(self._cross(), panic_direction="high", max_positions=10,
+                            sentiment_mode="no_fear_exclude")
+        self.assertIn("F1", t)          # 高恐+低贪+贴下轨,不再被 fear 排除
+        for excl in ("G1", "G2", "G3", "H1", "H2", "H3"):
+            self.assertNotIn(excl, t)
+
+    def test_price_only_ignores_sentiment_gates(self):
+        """price_only:不看 fear/greed 门槛;U(pct_b=0.5)仍因 %b 超阈剔除;F1 可贴下轨入选。"""
+        from stockfu.backtest.probes.sector_rotation import rotation_policy
+        t = rotation_policy(self._cross(), panic_direction="high", max_positions=10,
+                            boll_buy_max=0.3, sentiment_mode="price_only")
+        self.assertNotIn("U", t)
+        # G1 greed 极高但 price_only 不筛 greed,pct_b=0.10 → 可入选
+        self.assertIn("G1", t)
+        self.assertIn("F1", t)
+
+
+class TestRegimeScale(unittest.TestCase):
+    def test_ma_risk_off(self):
+        from stockfu.backtest.probes.sector_rotation import regime_scale
+        # 60 根 100 + 跌到 90 → 低于 MA → 0
+        closes = [100.0] * 60 + [90.0]
+        self.assertEqual(regime_scale(closes, regime="ma", ma_window=60), 0.0)
+        self.assertEqual(regime_scale(closes, regime="off"), 1.0)
+        # 上行在均线上方
+        up = [100.0 + i * 0.1 for i in range(61)]
+        self.assertEqual(regime_scale(up, regime="ma", ma_window=60), 1.0)
+
+    def test_dd_risk_off(self):
+        from stockfu.backtest.probes.sector_rotation import regime_scale, _apply_regime
+        closes = [100.0, 110.0, 100.0, 90.0]  # peak 110 → dd≈18%
+        self.assertEqual(regime_scale(closes, regime="dd", dd_limit=0.15), 0.0)
+        self.assertEqual(regime_scale(closes, regime="dd", dd_limit=0.25), 1.0)
+        self.assertEqual(_apply_regime({"A": 0.2, "B": 0.0}, 0.0), {"A": 0.0, "B": 0.0})
+        self.assertEqual(_apply_regime({"A": 0.2}, 0.5)["A"], 0.1)
+
 
 class TestLadderWeight(unittest.TestCase):
     def test_ladder(self):

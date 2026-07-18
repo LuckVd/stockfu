@@ -40,7 +40,6 @@ class StrategyDebounce:
     max_weight: float = 0.15
     total_dead: float = 3.0
     score_full: float = 20.0  # 满仓刻度(total_score≥score_full→满仓 max_weight;按算子集量纲配)
-    targets: dict | None = None  # 信号→仓位映射表(YAML position.targets传入,None=用框架默认)
     # 资金分配/风控(可选,YAML risk 段配;None=未配,用 engine 默认)
     max_gross: float | None = None
     stop_loss_pct: float | None = None
@@ -58,7 +57,6 @@ class StrategyDebounce:
             "max_weight": self.max_weight,
             "total_dead": self.total_dead,
             "score_full": self.score_full,
-            "targets": self.targets or {},
             "max_gross": self.max_gross,
             "stop_loss_pct": self.stop_loss_pct,
             "portfolio_brake_dd": self.portfolio_brake_dd,
@@ -144,8 +142,6 @@ class CompiledStrategy:
                     save_operator_result(code, as_of, spec["id"], fp, r, cls.type)
 
             r.weight = float(spec.get("weight", 1.0))
-            if spec.get("veto_role") and r.signal in ("sell", "strong_sell"):
-                r.veto = True   # 显式 veto_role 标记兜底(risk 算子自身也设)
             results.append(r)
             if cls.type == "math" and r.value is not None:
                 ctx.factors[spec["id"]] = r.value
@@ -200,7 +196,6 @@ class CompiledStrategy:
             max_weight=p.get("max_w", 0.15),
             total_dead=p.get("dead", 3.0),
             score_full=p.get("score_full", 20.0),
-            targets=p.get("targets"),
             max_gross=rk.get("max_gross"),
             stop_loss_pct=rk.get("stop_loss"),
             portfolio_brake_dd=rk.get("portfolio_brake"),
@@ -241,12 +236,6 @@ def _load_operator_meta(operator_id: str) -> int:
     with session_scope() as s:
         row = s.get(Operator, operator_id)
         return row.version if row else 1
-
-
-def load_yaml(path: str) -> "CompiledStrategy":
-    """从 YAML 文件加载编译策略(供 strategies/*.yaml 模板导入)。"""
-    with open(path, encoding="utf-8") as f:
-        return compile_strategy(f.read())
 
 
 def compile_strategy(yaml_text: str) -> CompiledStrategy:

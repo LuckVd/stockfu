@@ -119,20 +119,6 @@ def margin_total() -> dict | None:
             "source": "akshare"}
 
 
-def northbound_total() -> dict | None:
-    """北向资金净流入（外资情绪，2024 起实时停，可能拿不到）。"""
-    df = _call([
-        ("stock_em_hsgt_north_net_flow_in", {"symbol": "北上"}),
-        ("stock_hsgt_fund_flow_summary_hk", {}),
-        ("stock_hsgt_hist_em", {"symbol": "沪股通"}),
-    ])
-    if df is None:
-        return None
-    row = df.iloc[-1]
-    return {"net_buy": _f(_pick(row, "当日成交净买额", "净流入", "净买额")),
-            "source": "akshare"}
-
-
 def bond_yield_10y() -> float | None:
     """十年期国债收益率（用于 ERP）。"""
     end = date.today().strftime("%Y%m%d")
@@ -188,46 +174,4 @@ def stock_margin(code: str) -> dict | None:
             r = row.iloc[0]
             return {"date": d, "balance": _f(_pick(r, "融资余额", "余额")),
                     "buy_amount": _f(_pick(r, "融资买入额", "买入额"))}
-    return None
-
-
-def northbound_stock(code: str) -> dict | None:
-    """个股北向持股变化（外资态度，可能停）。"""
-    df = _call([
-        ("stock_hsgt_hold_stock_em", {"market": "北向", "indicator": "今日排行"}),
-        ("stock_hk_hold_info", {"stock": code}),
-    ])
-    if df is None:
-        return None
-    code_col = next((c for c in df.columns if "代码" in str(c)), None)
-    if code_col is None:
-        return None
-    row = df[df[code_col].astype(str) == code]
-    if row.empty:
-        return None
-    r = row.iloc[0]
-    return {"hold_shares": _f(_pick(r, "持股数", "持股数量")),
-            "hold_market_value": _f(_pick(r, "持股市值", "市值")),
-            "hold_ratio": _f(_pick(r, "持股比例", "占比"))}
-
-
-def shareholder_count(code: str) -> dict | None:
-    """股东人数变化（筹码集中度：人数↓=集中=主力吸筹）。"""
-    df = _call([("stock_zh_a_gdhs_detail_em", {"symbol": code})])
-    if df is None or len(df) < 2:
-        return None
-    num_col = next((c for c in df.columns if "股东户数" in str(c) or "人数" in str(c)), None)
-    if num_col is None:
-        return None
-    s = pd.to_numeric(df[num_col], errors="coerce").dropna()
-    if len(s) < 2:
-        return None
-    latest, prev = float(s.iloc[-1]), float(s.iloc[-2])
-    return {"latest": latest, "prev": prev,
-            "change_pct": round((latest / prev - 1) * 100, 2) if prev else None}
-
-
-def valuation_history(code: str):
-    """个股历史 PE/PB 序列。akshare 1.18 无 stock_a_indicator_lg，legu 付费不通 —— 暂不可用。
-    PE/PB 分位改为每日 fetch 累积短历史（quote_snapshot.pe/pb），或接 tushare token。"""
     return None

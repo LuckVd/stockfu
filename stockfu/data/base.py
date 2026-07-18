@@ -14,7 +14,6 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from functools import wraps
 
 # ----------------------------- 领域枚举 -----------------------------
 
@@ -244,16 +243,6 @@ class DividendMetric:
     events: list[DividendEventDTO] = field(default_factory=list)
     coverage: str = ""
 
-    @property
-    def annual_cash_per_share(self) -> float:
-        """简单按年聚合最近完整一年的每股派息（估算年红利）。"""
-        if not self.events:
-            return 0.0
-        by_year: dict[int, float] = {}
-        for e in self.events:
-            by_year[e.ex_date.year] = by_year.get(e.ex_date.year, 0.0) + e.per_share_cash
-        return max(by_year.values()) if by_year else 0.0
-
 
 @dataclass
 class KlineBar:
@@ -276,19 +265,6 @@ class KlineBar:
 # --------------------------- 数据源基类 ---------------------------
 
 
-def make_retry():
-    """统一的 tenacity 重试装饰器（网络类异常指数退避，最多 3 次）。"""
-    from tenacity import (retry, stop_after_attempt, wait_exponential,
-                          retry_if_exception_type)
-
-    return retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
-        reraise=True,
-    )
-
-
 class DataSource:
     """所有数据源的统一接口。子类实现具体抓取，基类提供熔断 + 缓存护栏。"""
 
@@ -299,15 +275,9 @@ class DataSource:
         self.breaker = CircuitBreaker()
         self._quote_cache = TTLCache(1200)
 
-    def supports_market(self, market: str) -> bool:
-        return market in self.supports
-
     def get_quote(self, code: str) -> Quote | None:
         """对外接口 = 带熔断 + 缓存的模板；子类实现 _fetch_quote。"""
         return self.get_quote_cached(code)
-
-    def get_dividends(self, code: str, years: int = 5) -> list[DividendEventDTO]:
-        return []
 
     def get_kline(self, code: str, days: int = 365) -> list[KlineBar]:
         return []

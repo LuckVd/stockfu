@@ -18,7 +18,7 @@
 | `data/` 数据层 | 多源抓取 + fallback | `DataProviderManager` 7 源：efinance/tencent/sina/pytdx/baostock(含估值)/akshare/yfinance；代理分流：港美股走 7890，国内源 no_proxy 直连 |
 | `db.py`+`models.py` 存储层 | SQLModel engine + 开发期迁移 + seed | 单文件 `data/stockfu.db`；QuoteSnapshot/EtfQuoteDaily/IndexQuoteDaily 三表分离；搬迁 = 拷贝单文件 |
 | `services/` 服务层 | 业务计算 | factors(历史分位)/market_data(宏观)/composite(三层情绪合成)/portfolio/dividend/grid/fundflow/sentiment/trading(移动加权)/backfill |
-| `ai/` AI 层 | 实盘 4 顾问 + 算子平台 + 选股层 | 4 常驻顾问(趋势/逆向/风险/估值，实盘走 skills/)；operators(8 math + 2 聚合，回测 LLM 已下线)；rebalancers(pass_through/cap_and_rank/top_n_picker)；active 走 `app_config` |
+| `ai/` AI 层 | 实盘 4 顾问 + 算子平台 + 选股层 | 4 常驻顾问(趋势/逆向/风险/估值，实盘走 skills/)；operators(9 math + 2 聚合，回测 LLM 已下线)；rebalancers(pass_through/cap_and_rank/top_n_picker)；active 走 `app_config` |
 | `backtest/` 回测层 | 天级回测引擎 | `engine.py`: VirtualAccount + T+1 开盘 + 真实费用 + 完整 metrics；防未来函数：取数 `<= as_of` |
 | 算子缓存 | 跨回测复用算子结果 | `operator_result` 表：同 `(code, as_of, fingerprint)` 全局命中；首次慢，后续秒级 |
 | `scheduler/` 调度层 | 定时任务 | `run_daily_job`(行情+分红+ETF+三层指数)/backfill_kline/ensure_stock_data_and_index；`--schedule` daemon 可内嵌 web |
@@ -56,7 +56,7 @@
 
 **回测演进（G10 后优先）**：
 - **阶段2 · 因子诊断层 ✅ 已完成（2026-07-15）**：alphalens 思路——单算子连续 `score`（已不 clamp）算 IC / 分位收益 / 换手 / 衰减，验证单个因子**不必搭整条策略管道**。`backtest/factor_diag.py`（纯 Python 统计）+ CLI `--factor-diag <operator>`（`--codes all`=全市场 801 票），复用回测算子缓存（指纹逐字一致、跨场景互通）。补因子研究工作流缺口。详见 `docs/BACKTEST.md` §11 + `PROJECT_STATE.md` §8。
-- **阶段3 · 执行层抽象**：见 `docs/ARCHITECTURE_REVIEW.md` §4 P2 清单——Broker(回测/实盘共用 P2-2)/Sizer-CommInfo(P2-3)/Analyzer 可组合(P2-4)/Position 开平分解(P2-8)/math 向量化 run_batch(P2-1/P2-7 治冷启动慢)。建议顺序 P2-1/7→P2-8/4→P2-3/2（P2-5 已于 G10 完成）。
+- **阶段3 · 执行层抽象**：见 `docs/ARCHITECTURE_REVIEW.md` §4 P2 清单——Broker(回测/实盘共用 P2-2)/Sizer-CommInfo(P2-3)/Analyzer 可组合(P2-4)/Position 开平分解(P2-8)/math 向量化 run_batch(P2-1/P2-7 治冷启动慢)。建议顺序 P2-1/7→P2-8/4→P2-3/2（P2-5 已于 G10 完成；P2-3 第一步「印花税日期化」已于 2026-07-18 落地，见 `ARCHITECTURE_REVIEW.md` §4）。
 
 **数据/信号/体验**：
 - **数据缺口补全**：行情拆表(G01)+ 回测基准(G02)已完成；PE/PB 历史分位延至 10 年(G04)；连板长期断点续传(G05)。

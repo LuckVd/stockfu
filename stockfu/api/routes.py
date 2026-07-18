@@ -14,8 +14,7 @@ from sqlmodel import select
 from stockfu.data.manager import get_manager
 from stockfu.db import session_scope
 from stockfu.models import Asset
-from stockfu.services import (dividend, fundflow, grid, indices, portfolio,
-                           sentiment, trading)
+from stockfu.services import portfolio, trading
 
 router = APIRouter()
 
@@ -38,28 +37,6 @@ def share_card():
     return jsonable_encoder(share.build_card())
 
 
-@router.get("/quote/{code}")
-def quote(code: str):
-    """最新天级收盘快照（今日若已收盘落盘则当日，否则前一交易日；缺则按需补一次）。"""
-    from stockfu.services.snapshot import latest_snapshot
-    snap = latest_snapshot(code)
-    return jsonable_encoder(snap) if snap else {"error": "no quote", "code": code}
-
-
-@router.get("/dividend/{code}")
-def dividend_api(code: str):
-    from stockfu.services.snapshot import latest_snapshot
-    mgr = get_manager()
-    snap = latest_snapshot(code)
-    m = mgr.get_dividend_metric(code, latest_price=snap.close if snap else None)
-    return jsonable_encoder(m) if m else {"error": "no dividend", "code": code}
-
-
-@router.get("/grid/{code}")
-def grid_api(code: str):
-    return grid.build_grid(code) or {"error": "no data", "code": code}
-
-
 @router.get("/watchlist")
 def watchlist():
     """自选/追踪股：现价/涨跌/股息率/三层情绪（不含持仓字段）。"""
@@ -67,61 +44,6 @@ def watchlist():
 
 
 # ---------- P1：市场情绪 / 资金流 ----------
-
-@router.get("/indices")
-def indices_api():
-    """自定义指数：恐慌/热度 当日值 + 近30日历史。"""
-    cur: dict[str, float] = {}
-    for k, fn in (("fear", indices.compute_fear), ("heat", indices.compute_heat)):
-        v = fn()
-        if v is not None:
-            cur[k] = v
-    return {"current": cur, "history": indices.latest(30)}
-
-
-@router.get("/indices/market")
-def indices_market():
-    """市场层 fear/greed/heat。优先读今日落库（避免每次刷新都重算外部因子），
-    当天首次实时算并落库，之后刷新毫秒级返回。"""
-    from datetime import date as _d
-    from sqlmodel import select
-    from stockfu.db import session_scope
-    from stockfu.models import IndexSnapshot
-    from stockfu.services import composite, factors as F
-    today = _d.today()
-    with session_scope() as s:
-        rows = s.exec(select(IndexSnapshot).where(
-            IndexSnapshot.level == "market", IndexSnapshot.scope == "MARKET",
-            IndexSnapshot.snap_date == today)).all()
-    if rows:
-        out = {"level": "market", "scope": "MARKET",
-               **{r.index_key: r.value for r in rows}}
-    else:
-        r = composite.compute_market()   # 当天首次：实时算（慢）+ 落库
-        composite.save(r)
-        out = dict(r)
-    closes = F.quote_series(composite.BENCH, "close", 30)
-    out["today_chg"] = round((closes[-1] / closes[-2] - 1) * 100, 2) if len(closes) >= 2 else None
-    # 附加副指数：创业板 / 科创50（板块层，已落库）
-    out["sectors"] = {}
-    with session_scope() as s:
-        for name in ("创业板", "科创50"):
-            srows = s.exec(select(IndexSnapshot).where(
-                IndexSnapshot.level == "sector", IndexSnapshot.scope == name,
-                IndexSnapshot.snap_date == today)).all()
-            out["sectors"][name] = {r.index_key: r.value for r in srows}
-    return out
-
-
-@router.get("/indices/sector/{name}")
-def indices_sector(name: str):
-    """板块层 fear/greed/heat。name 见 composite.SECTOR_MAP。"""
-    from stockfu.services import composite
-    etf = composite.SECTOR_MAP.get(name)
-    if not etf:
-        return {"error": "unknown sector", "available": list(composite.SECTOR_MAP)}
-    return composite.compute_sector(etf, name)
-
 
 @router.get("/indices/stock/{code}")
 def indices_stock(code: str):
@@ -152,42 +74,6 @@ def indices_history(level: str = "market", scope: str = "MARKET", days: int = 30
     return out
 
 
-@router.get("/fundflow")
-def fundflow_api(lookback: int = Query(30, ge=1, le=180)):
-    """大资金流向：宽基/行业 ETF 份额变化 + 偏好判断。"""
-    return fundflow.flow_board(lookback)
-
-
-@router.get("/sentiment")
-def sentiment_api(top_n: int = Query(10, ge=1, le=50)):
-    """板块情绪：行业资金流排名 + 温度。"""
-    return sentiment.sector_board(top_n)
-
-
-@router.get("/sectors")
-def sectors(top_n: int = Query(8, ge=1, le=30)):
-    """板块资金流原始排名（兼容旧端点）。"""
-    return get_manager().get_sector_fund_flow(top_n)
-
-
-@router.get("/sectors/kline/{name}")
-def sector_kline(name: str, days: int = Query(365, ge=1, le=2000)):
-    """板块指数K线+成交额历史（读 sector_snapshot；数据由 --backfill / --fetch 攒）。"""
-    from datetime import date, timedelta
-    from stockfu.models import SectorSnapshot
-    from stockfu.services.composite import SECTOR_MAP
-    if name not in SECTOR_MAP:
-        return {"error": "unknown sector", "available": list(SECTOR_MAP)}
-    start = date.today() - timedelta(days=days + 15)
-    with session_scope() as s:
-        rows = s.exec(select(SectorSnapshot).where(
-            SectorSnapshot.sector_name == name,
-            SectorSnapshot.snap_date >= start).order_by(SectorSnapshot.snap_date)).all()
-    return {"sector": name, "days": days, "points": [
-        {"date": r.snap_date.isoformat(), "close": r.close, "amount": r.amount,
-         "pct_chg": r.pct_chg} for r in rows]}
-
-
 @router.get("/sectors/flow")
 def sector_flow_today_api(top_n: int = Query(10, ge=1, le=90)):
     """板块当日主力资金流即时排名（同花顺，列全且不受东财限流；按净额降序）。
@@ -201,57 +87,7 @@ def sector_flow_today_api(top_n: int = Query(10, ge=1, le=90)):
             "bottom": list(reversed(rows[-top_n:])) if len(rows) > top_n else []}
 
 
-@router.get("/sectors/flow/{name}")
-def sector_flow_history(name: str, days: int = Query(30, ge=1, le=365)):
-    """单板块净流入历史（读 sector_flow_snapshot，每日 --fetch 攒）。"""
-    from datetime import date, timedelta
-    from stockfu.models import SectorFlowSnapshot
-    from stockfu.services.composite import SECTOR_MAP
-    if name not in SECTOR_MAP:
-        return {"error": "unknown sector", "available": list(SECTOR_MAP)}
-    start = date.today() - timedelta(days=days + 15)
-    with session_scope() as s:
-        rows = s.exec(select(SectorFlowSnapshot).where(
-            SectorFlowSnapshot.sector_name == name,
-            SectorFlowSnapshot.snap_date >= start).order_by(SectorFlowSnapshot.snap_date)).all()
-    return {"sector": name, "points": [
-        {"date": r.snap_date.isoformat(), "net_inflow": r.net_inflow,
-         "inflow": r.inflow, "outflow": r.outflow,
-         "leading_stock": r.leading_stock} for r in rows]}
-
-
-@router.get("/market/fundflow")
-def market_fundflow(days: int = Query(120, ge=1, le=365)):
-    """大盘资金流历史（主力/超大/大/中/小单净额+占比，读 factor_snapshot level=market）。"""
-    from datetime import date, timedelta
-    from stockfu.models import FactorSnapshot
-    factors = ("main_net_inflow", "main_net_inflow_pct", "super_large_net", "super_large_pct",
-               "large_net", "large_pct", "mid_net", "mid_pct", "small_net", "small_pct")
-    start = date.today() - timedelta(days=days + 15)
-    with session_scope() as s:
-        rows = s.exec(select(FactorSnapshot).where(
-            FactorSnapshot.level == "market", FactorSnapshot.scope == "MARKET",
-            FactorSnapshot.snap_date >= start).order_by(FactorSnapshot.snap_date)).all()
-    series: dict[str, list] = {}
-    for r in rows:
-        if r.factor in factors:
-            series.setdefault(r.factor, []).append(
-                {"date": r.snap_date.isoformat(), "value": r.raw_value})
-    return {"days": days, "series": series}
-
-
-@router.get("/fundflow/{code}")
-def fundflow_one(code: str):
-    return get_manager().get_stock_fund_flow(code) or {"error": "no data", "code": code}
-
-
 # ---------- 交易录入（前端买卖，对应 TUI 的 b/s）----------
-
-@router.get("/holdings")
-def holdings_api():
-    """当前持仓列表。"""
-    return trading.list_holdings()
-
 
 @router.delete("/holding/{code}")
 def delete_holding_api(code: str):

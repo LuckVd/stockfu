@@ -164,7 +164,7 @@ def _total_to_weight(total: float | None, max_w: float = 0.15,
     return round(max_w * min(total / score_full, 1.0), 4)
 
 
-def compute_target_weight(signal: str, risk_vetoed: bool,
+def compute_target_weight(risk_vetoed: bool,
                           current_weight: float,
                           ai_target_weight: float | None = None,
                           total_score: float | None = None,

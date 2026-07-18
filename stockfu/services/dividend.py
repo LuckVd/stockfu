@@ -8,11 +8,6 @@ from stockfu.db import session_scope
 from stockfu.models import DividendEvent
 
 
-def get_metric(code: str, latest_price: float | None = None):
-    """返回 DividendMetric（TTM 每股派息、股息率、近 N 次事件）。"""
-    return get_manager().get_dividend_metric(code, latest_price=latest_price)
-
-
 def persist_dividends(code: str) -> int:
     """拉取分红事件并写入 dividend_event 表（按 ex_date 去重）。返回写入条数。"""
     metric = get_manager().get_dividend_metric(code)

@@ -6,8 +6,8 @@
 ## 1. 四层架构
 
 ```
-算子 operator        一个独立信号源,输出 OpResult{signal, score(±20 语义), raw_score(连续排序), confidence, ...}
-   │                 两类:math(纯本地技术指标,7个)/ llm(4 顾问,复用 ai.analyze 链路)
+算子 operator        一个独立信号源,输出 OpResult{signal(派生标签), score(连续不 clamp), confidence, ...}
+   │                 math(纯本地技术指标,8 个,全部支持 as_of 回测;G10 已下线回测 LLM 算子)
    ▼
 策略 strategy        一组算子 + 权重 + 聚合规则 + 去抖参数(YAML,存 strategy 表 + ai/strategies/*.yaml)
    │                 CompiledStrategy.analyze(code, as_of) → {context, opinions, aggregate, narrative}
@@ -61,7 +61,7 @@ python3 main.py --backtest macd_cross \
 
 ```python
 from stockfu.db import set_app_config
-set_app_config("active_strategy_id", "macd_cross")  # 默认 active 是 bollinger_reversion;此处换 macd_cross(纯 math,已验证无未来函数)
+set_app_config("active_strategy_id", "macd_cross")  # 默认 active 是 pure_factor(G10 后);此处换 macd_cross(纯 math,已验证无未来函数)
 from stockfu.ai.operators.registry import discover_and_register
 discover_and_register()
 from stockfu.backtest.scheduler import run
@@ -72,23 +72,24 @@ print(r["trades"][:5])
 print(r["equity_curve"][-1])
 ```
 
-## 3. 策略(`strategy` 表 + `ai/strategies/*.yaml`,7 个)
+## 3. 策略(`strategy` 表 + `ai/strategies/*.yaml`,6 个纯 math)
 
 | ID | 用到的算子 | 聚合 | 回测可用 |
 |----|-----------|------|---------|
-| `bollinger_reversion` ⭐ | daily_bollinger + weekly_bollinger + mean_reversion + trend_strength | weighted_sum | ✅ 纯 math(active 默认) |
+| `pure_factor` ⭐ | momentum + mean_reversion + trend_strength + value | weighted_sum | ✅ 纯 math(active 默认,G10 后) |
+| `bollinger_reversion` | daily_bollinger + weekly_bollinger + mean_reversion + trend_strength | weighted_sum | ✅ 纯 math |
 | `momentum_breakout` | monthly_bollinger + momentum + trend_strength | weighted_sum | ✅ 纯 math |
 | `dual_bollinger` | weekly_bollinger + monthly_bollinger + momentum | weighted_sum | ✅ 纯 math |
 | `macd_cross` | macd_cross | weighted_sum | ✅ 纯 math(单算子,最快) |
-| `pure_factor` | momentum + mean_reversion + trend_strength + value | weighted_sum | ✅ 纯 math |
-| `hybrid` | valuation + trend + momentum + value + risk | risk_veto | ⚠️ 部分(含 LLM,需 key) |
-| `classic_4advisors` | trend + contrarian + risk + valuation | risk_veto | ⚠️ 全 LLM,需 key |
+| `cn_momentum_rotation` | momentum + trend_linearity + trend_strength | weighted_sum | ✅ 纯 math(🛑全周期证伪:5.5 年年化 4.34%/夏普 0.30,超额全靠 2026 中小盘 beta;详见 yaml 注释 + memory cn-momentum-rotation) |
+| ~~`hybrid`~~ | ~~valuation + trend + momentum + value + risk~~ | ~~risk_veto~~ | ❌ G10 废弃(含 LLM 算子,已下线) |
+| ~~`classic_4advisors`~~ | ~~trend + contrarian + risk + valuation~~ | ~~risk_veto~~ | ❌ G10 废弃(全 LLM,已下线) |
 
 切换策略:`set_app_config("active_strategy_id", "macd_cross")` 或 CLI `--backtest macd_cross`。
 
-## 4. 算子(`operator` 表 + `ai/operators/`,14 个)
+## 4. 算子(`operator` 表 + `ai/operators/`,11 个 = 9 math + 2 聚合)
 
-**Math 算子(8 个,`ai/operators/factors/`,全部支持 `as_of` 回测):**
+**Math 算子(9 个,`ai/operators/factors/`,全部支持 `as_of` 回测):**
 
 | 算子 | 逻辑 | 关键参数 |
 |------|------|---------|
@@ -100,10 +101,11 @@ print(r["equity_curve"][-1])
 | `trend_strength` | MA5/10/20 多空头排列 | — |
 | `value` | PE/PB 历史分位(读 `quote_snapshot.pe/pb`,`services.valuation.valuation_percentile`) | years |
 | `macd_cross` | MACD 金叉/死叉 + 柱值 | fast, slow, signal |
+| `trend_linearity` | 价格对时间线性回归 r²×方向(滤鱼尾/伪强势,与 momentum 正交:r²×sign(slope)×40) | window |
 
-> **score 双值**:每个算子输出 `score`(±20 clamp,语义分档 → signal)和 `raw_score`(clamp 前连续强度,排序用)。连续型(momentum / 三个 bollinger / mean_reversion / value)头部可分;离散型(trend_strength / macd_cross,交叉/排列是离散事件)raw=score。动机:±20 clamp 为对齐 LLM 量纲,却压平头部区分度 → rebalancer 排名走 raw(见 §5)。
+> **score 连续不 clamp**(G10 后):每个算子输出单一连续 `score`(原 `raw_score` 已并入;各算子保留满强度刻度,如 momentum ±20=±10%涨幅、bollinger 跌破下轨≈20、value 低估≈20,但不硬截断)→ 头部连续可分,rebalancer 截面排名与因子诊断(§12)都直接消费它。`signal` 降级为派生标签(仅供展示/审计),不参与仓位决策。详见 §8。
 
-**LLM 算子(4 个,`ai/operators/llm/advisors/`):** trend / contrarian / risk / valuation —— 即 `stockfu/ai/` 的 4 个常驻顾问(见 `docs/AI_ADVISORS.md`),作为算子注册后可在回测中按策略调用(需 LLM key)。
+**~~LLM 算子(4 个)~~ 已于 G10(2026-07-15)下线**(`operators/llm/` 整目录删)。trend / contrarian / risk / valuation 4 顾问**仅作实盘 AI 顾问**(`ai/skills/advisors/`,独立链路,见 `docs/AI_ADVISORS.md`),不再参与回测。
 
 **聚合器(2 个,`ai/operators/aggregators/`,不缓存):** `weighted_sum`(同时聚合 `total_score`=Σ(score×w) 语义 + `total_raw`=Σ(raw×w) 排序)/ `risk_veto`(风险一票否决)。
 
@@ -130,10 +132,10 @@ print(r["equity_curve"][-1])
 
 每个 math 算子在 `(code, as_of, fingerprint)` 下只算一次,结果存 `operator_result` 表,后续任何策略/回测命中即读不重算:
 
-- **fingerprint** = `sha1({version, params})`[:16](math)/ `sha1({version, prompt, temperature})`(llm)
-- code/as_of 不进指纹(是表 key);prompt/params 改 → 指纹变 → 自动失效重算
+- **fingerprint** = `sha1({version, params, source_hash})`(math;G10 纳入算子源码 hash `inspect.getsource(cls)`,改代码自动失效,治 P2-5)
+- code/as_of 不进指纹(是表 key);params 改 / 算子源码改 → 指纹变 → 自动失效重算
 - aggregator 不缓存(纯函数重算廉价)
-- `raw_score` 存在 detail JSON 字段;改算子 score 逻辑后需 bump version 或删旧缓存让其重算(否则旧缓存 raw=None 退化为 score)
+- G10 后 score 连续不 clamp(原 `raw_score` 已并入 `score`);改算子逻辑会因 source_hash 变动自动失效旧缓存,无需人工 bump version
 
 **效果**:首次回测算 + 写缓存;同区间重跑 / 跨策略复用时秒级(直接读缓存)。首次大样本(如 788 票 × 全年)较慢是正常投入。
 
@@ -159,7 +161,7 @@ print(r["equity_curve"][-1])
 2. **Phase 2**:`ThreadPoolExecutor` 并发跑 `analyze_fn`(`CompiledStrategy.analyze`,含算子+聚合+缓存)→ 信号
 3. **Phase 3**:仓位层 `compute_target_weight`(信号→desired)+ risk 连续确认棒 + confidence gate → `rebalancer.adjust`(选股)→ `PositionManager` 边沿触发/冷却 → 挂单
 
-**费用**(VirtualAccount,贴近真实):佣金万 3(最低 5 元/笔,双边)+ 印花税 0.05%(仅卖出)+ 过户费 0.001%(双边);A 股整百股。
+**费用**(VirtualAccount,贴近真实):佣金万 3(最低 5 元/笔,双边)+ 印花税(**日期化** `stamp_duty_rate(as_of)`:2023-08-28 前千一 0.001、之后万五 0.0005,仅卖出)+ 过户费 0.001%(双边);A 股整百股。
 
 **资金分配 / 风控约束**(本轮对标 rqalpha/backtrader 升级,详见 `docs/ARCHITECTURE_REVIEW.md`):
 - 单仓 `max_w=0.10`、总仓 `max_gross=0.90`(留 10% cash sleeve,对所有 rebalancer 生效)
@@ -188,7 +190,7 @@ print(r["equity_curve"][-1])
 
 - **score**:算子直出**连续值**(删 ±20 clamp;原 `raw_score` 并入 `score`)。各算子保留满强度刻度(momentum ±20=±10%涨幅 / bollinger 跌破下轨≈20 / value 低估≈20),但不硬截断 → 头部连续可分。
 - **signal**:降级为**派生标签**(`score_to_signal` 从 total_score 派生,仅供展示/审计),**不参与仓位决策**。
-- **仓位映射**:统一 **continuous 连续映射** `_total_to_weight(total/score_full → max_w)`;`score_full` 满仓刻度参数化(默认 20,策略 yaml `position.score_full` 可配,如 `macd_cross=10`)。discrete 模式 + `_SIGNAL_TARGET` 表已删,所有策略走 continuous。
+- **仓位映射**:统一 **continuous 连续映射** `_total_to_weight(total/score_full → max_w)`;`score_full` 满仓刻度参数化(默认 20,策略 yaml `position.score_full` 可配,如 `macd_cross=10`)。`action.compute_target_weight` 已无 discrete 分支(G10 铲除 ±20/signal 阶跃查表 + `_SIGNAL_TARGET` 表),所有策略仓位由 `total_score` 连续映射决定;yaml `position.mode` 仅作 metrics 归档记录(不参与仓位计算)。⚠ **`strategy.config` 运行时从 DB 读(非 yaml 文件)**——改 `strategies/*.yaml` 后须重新 seed/同步 DB(`runner.get_active_strategy` 读 `Strategy.config` 列),否则 DB 滞后:曾发现 macd_cross 的 `score_full:10` 未同步致仓位减半、cn_momentum_rotation 证伪注释缺失(2026-07-19 已同步修正)。
 - **OpResult**:删 `raw_score`/`evidence`/`tools_used`(剩 10 字段)。算子缓存指纹纳入**源码 hash**(`sha1(inspect.getsource(cls))`,治 P2-5:改算子代码自动失效旧缓存,不再依赖人工 bump version)。
 - **回测 LLM 算子下线**(`operators/llm/` 整目录删);`hybrid`/`classic_4advisors` 策略废弃;active 默认改 `pure_factor`。**实盘 AI 4 顾问**(`ai/skills` 的 Opinion)独立链路保留,不受影响。
 - **行为影响**:属行为改变类——同策略 metrics 不与旧基准逐值一致(连续映射替代 discrete 阶跃),但**确定性**(同参双跑全等)+ **防未来函数**(前缀一致性)红线均通过。
@@ -271,7 +273,7 @@ look-ahead 最强检验——同一起点跑两次、终点不同,看"较早终�
 
 ## 11. 待办
 
-- G02 / G09 / 时点宇宙+可成交(§9) 已落地。后续可选:流动性参与率、印花税历史档、未复权涨停价。
+- G02 / G09 / 时点宇宙+可成交(§9) / 印花税日期化(P2-3 第一步,2026-07-18)已落地。后续可选:流动性参与率、过户费日期化(2022 沪深统一)、CommInfo/Sizer 抽象(P2-3 后续)、未复权涨停价。
 
 ## 12. 因子诊断层（alphalens 思路，阶段2 / 2026-07-15）
 
