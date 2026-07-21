@@ -29,7 +29,7 @@ nohup python3 main.py --schedule >> data/schedule.log 2>&1 &
 ## 关键约定(踩坑点)
 - **Python 用 `python3`**;系统 Python PEP668,pip 加 `--break-system-packages`
 - **代理**:港美股(yfinance)走 7890(`source /opt/clash/proxy.sh`);国内源(akshare/efinance)no_proxy 直连
-- **baostock** 是裸 TCP(不认 HTTP_PROXY);三复权回补默认免费代理池(`--proxy-mode free`，HTTP CONNECT/SOCKS，需 `PySocks`)，失败剔除换 IP
+- **baostock** 是裸 TCP(不认 HTTP_PROXY);三复权回补默认免费代理池(`--proxy-mode free`，HTTP CONNECT/SOCKS，需 `PySocks`)，失败剔除换 IP;池自愈(耗尽重拉 `BAOSTOCK_REBOOTSTRAP_*`、死IP TTL `BAOSTOCK_DEAD_TTL`、常驻刷新 `BAOSTOCK_MAX_AGE`/`BAOSTOCK_MIN_ALIVE`);源经 clash 拉、可外置 `data/proxy_sources.json`(`BAOSTOCK_SOURCE_PROXY`)
 - **数据**在 `data/stockfu.db`(WAL);回测产物 `data/backtest/`(gitignore)
 - **回测防未来函数**:取数 `<= as_of`
 - **价格口径**(`quote_snapshot`):
