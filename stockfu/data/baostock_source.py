@@ -167,9 +167,16 @@ class BaostockSource(DataSource):
         err = str(getattr(rs, "error_code", "1") or "1")
         if err != "0":
             msg = getattr(rs, "error_msg", "") or ""
-            # 网络/登录类 → 抛错触发换代理；其它参数类返回空
-            if err.startswith("10002") or err in (
-                "10001001", "10001011", "10001005",
+            low = f"{err} {msg}".lower()
+            # 网络/接收/连接类 → 抛错触发换代理（即便 error_code 不在 10002 段，
+            # 只要 msg 含"接收数据异常/连接/超时"也认定为代理坏）
+            if (
+                err.startswith("10002")
+                or err in ("10001001", "10001011", "10001005")
+                or any(m in low for m in (
+                    "接收数据异常", "连接失败", "连接超时", "timeout",
+                    "receive", "you don't login",
+                ))
             ):
                 raise RuntimeError(f"baostock query err {err}: {msg}")
             return []
@@ -197,6 +204,11 @@ class BaostockSource(DataSource):
                 pb=_f(row[11]) if len(row) > 11 else None,
                 turnover=_f(row[12]) if len(row) > 12 else None,
             ))
+        # 循环若因 error_code 变非 0 而终止（中途"接收数据异常"/掉线）→ 抛错换代理；
+        # 否则残缺数据当成功写入会漏日期、污染回补。
+        if getattr(rs, "error_code", "1") != "0":
+            msg = getattr(rs, "error_msg", "") or ""
+            raise RuntimeError(f"baostock stream broken code={rs.error_code} {msg}")
         return bars
 
     def get_kline_triple(self, code: str, start: str,
