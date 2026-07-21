@@ -40,6 +40,40 @@ python3 main.py --backtest macd_cross \
 
 入口链:`main.py --backtest` → `set_app_config(active_strategy_id)` → **`scheduler.run`**(注入 CompiledStrategy + temp=0 + 断点续跑缓存)→ `engine.run_backtest`。
 
+> **注意**:`--backtest` **不能**传 rebalancer。全周期验收口径(策略+选股层+宇宙)请用下方「全周期更新」。
+
+### 全周期更新到最新(固化)
+
+补完行情后,用与 `PROJECT_STATE` §0.3 一致的口径**整段重跑**到库内行情末日(靠 `operator_result` 热路径加速旧区间)。实现:`stockfu/backtest/full_cycle_update.py`。
+
+```bash
+# 目录全部策略 → end=库内 max(quote_date)
+python3 main.py --update-backtests
+
+# 只更新点名的策略
+python3 main.py --update-backtests --strategies cross_section_factor,dividend_cross_section
+
+# 列出目录 / 只看计划不跑
+python3 main.py --list-strategies
+python3 main.py --update-backtests --dry-run
+python3 main.py --update-backtests --strategies pure_factor --dry-run
+
+# 显式区间(覆盖默认 start=2021-01-01 / end=行情末日)
+python3 main.py --update-backtests --start 2021-01-01 --end 2026-07-20
+```
+
+| 行为 | 说明 |
+|------|------|
+| 未传 `--strategies` | 更新目录内**全部**策略(hot→warm→cold 顺序) |
+| 传了 `--strategies a,b` | **只**重跑点名策略 |
+| start | 默认 `2021-01-01` |
+| end | 默认 `QuoteSnapshot`/`EtfQuoteDaily` 的 `max(quote_date)` |
+| rebalancer / 宇宙 | 目录固化(含 cap_and_rank / top_n_picker / etf / universe_788) |
+| 产物 | 每策略 `data/backtest/upd-{id}-{end}.json.gz` + meta;批跑摘要 `update_summary-*.json` |
+| app_config | 批跑结束**恢复**原 active 指针 |
+
+新增策略要进全量更新:在 `full_cycle_update.FULL_CYCLE_CATALOG` 登记 `StrategyRunSpec`。
+
 输出示例(2026-07-14 实测,`macd_cross`):
 ```
 回测 macd_cross  2025-06-01 → 2025-08-01  初始资金 1,000,000  (5只票) …
@@ -72,24 +106,35 @@ print(r["trades"][:5])
 print(r["equity_curve"][-1])
 ```
 
-## 3. 策略(`strategy` 表 + `ai/strategies/*.yaml`,6 个纯 math)
+## 3. 策略(`strategy` 表 + `ai/strategies/*.yaml`,~16 条 top_n+CS;全周期总表见 PROJECT_STATE §0.3)
 
-| ID | 用到的算子 | 聚合 | 回测可用 |
-|----|-----------|------|---------|
+| ID | 用到的算子 | 聚合 | 回测可用 / 全周期 2021→2026-07-17 |
+|----|-----------|------|----------------------------------|
 | `pure_factor` ⭐ | momentum + mean_reversion + trend_strength + value | weighted_sum | ✅ 纯 math(active 默认,G10 后) |
-| `bollinger_reversion` | daily_bollinger + weekly_bollinger + mean_reversion + trend_strength | weighted_sum | ✅ 纯 math |
-| `momentum_breakout` | monthly_bollinger + momentum + trend_strength | weighted_sum | ✅ 纯 math |
+| `bollinger_reversion` | daily+weekly_bollinger + mean_reversion + trend_strength | weighted_sum | ✅ top_n。**+17.4% / 超额 +10.0%**(`ext-bollinger_reversion-2021-v3`) |
+| `momentum_breakout` | monthly_bollinger + momentum + trend_strength | weighted_sum | ✅ top_n。**+51.5% / 超额 +44.0%**(`ext-momentum_breakout-2021-v2`) |
 | `dual_bollinger` | weekly_bollinger + monthly_bollinger + momentum | weighted_sum | ✅ 纯 math |
 | `macd_cross` | macd_cross | weighted_sum | ✅ 纯 math(单算子,最快) |
-| `cn_momentum_rotation` | momentum + trend_linearity + trend_strength | weighted_sum | ✅ 纯 math(🛑全周期证伪:5.5 年年化 4.34%/夏普 0.30,超额全靠 2026 中小盘 beta;详见 yaml 注释 + memory cn-momentum-rotation) |
-| ~~`hybrid`~~ | ~~valuation + trend + momentum + value + risk~~ | ~~risk_veto~~ | ❌ G10 废弃(含 LLM 算子,已下线) |
-| ~~`classic_4advisors`~~ | ~~trend + contrarian + risk + valuation~~ | ~~risk_veto~~ | ❌ G10 废弃(全 LLM,已下线) |
+| `cn_momentum_rotation` | momentum + trend_linearity + trend_strength | weighted_sum | ✅ 纯 math(🛑全周期证伪:年化 4.34%/夏普 0.30;详见 yaml) |
+| `etf_momentum_rotation` | momentum + trend_linearity + trend_strength | weighted_sum | ✅ ETF 池。🛑 −9.98% / 超额 −17.4% |
+| `dividend_low_vol` | dividend_yield + low_volatility + value | weighted_sum | ✅ top_n。−4.5% / 超额 −12% |
+| `reversal_strategy` | reversal + mean_reversion + value | weighted_sum | ✅ top_n。+5.2% / 超额 −2.3% |
+| `cross_section_factor` | reversal + low_volatility + value | weighted_sum | ✅ **cap_and_rank**。**+39.6% / 超额 +32.1%** |
+| `reversal_cross_section` | reversal + mean_reversion + value | weighted_sum | ✅ cap_and_rank。**+39.5% / 超额 +32.1%** |
+| `dividend_cross_section` | dividend_yield + low_volatility + value | weighted_sum | ✅ cap_and_rank。**+28.0% / 超额 +20.5%** |
+| `cn_momentum_cross_section` | momentum + trend_linearity + trend_strength | weighted_sum | ✅ cap_and_rank。+4.1% / 超额 −3.4% |
+| `etf_momentum_cross_section` | 同上 | weighted_sum | ✅ ETF。−6.7% / 超额 −14.2% |
+| `momentum_breakout_cross_section` | monthly_bollinger + momentum + trend | weighted_sum | ✅ cap_and_rank。+7.8% / 超额 +0.4%(`run-20260720-045051`) |
+| `bollinger_reversion_cross_section` | daily+weekly_bollinger + mean_reversion + trend | weighted_sum | ✅ cap_and_rank。**−11.0% / 超额 −18.5%**(`run-20260720-045312`) |
+| ~~`hybrid`~~ / ~~`classic_4advisors`~~ | — | — | ❌ G10 废弃 |
+
+> **全表与选股分数**：`docs/PROJECT_STATE.md` §0.3（回测 metrics）/ §0.4（空仓选股 as_of=7.17）。空仓选股入口：`python3 scripts/pick_cs_asof.py --as-of 2026-07-17`。
 
 切换策略:`set_app_config("active_strategy_id", "macd_cross")` 或 CLI `--backtest macd_cross`。
 
-## 4. 算子(`operator` 表 + `ai/operators/`,11 个 = 9 math + 2 聚合)
+## 4. 算子(`operator` 表 + `ai/operators/`,13 个 = 12 math + 1 聚合)
 
-**Math 算子(9 个,`ai/operators/factors/`,全部支持 `as_of` 回测):**
+**Math 算子(12 个,`ai/operators/factors/`,全部支持 `as_of` 回测):**
 
 | 算子 | 逻辑 | 关键参数 |
 |------|------|---------|
@@ -102,12 +147,15 @@ print(r["equity_curve"][-1])
 | `value` | PE/PB 历史分位(读 `quote_snapshot.pe/pb`,`services.valuation.valuation_percentile`) | years |
 | `macd_cross` | MACD 金叉/死叉 + 柱值 | fast, slow, signal |
 | `trend_linearity` | 价格对时间线性回归 r²×方向(滤鱼尾/伪强势,与 momentum 正交:r²×sign(slope)×40) | window |
+| `reversal` | N 日收益率**取负**(短期反转;A 股反转>动量实证;= -momentum score,满强度 ±20) | window |
+| `low_volatility` | N 日日收益 std 的**时序分位**(低波动异象:低波票风险调整后占优;低波→+20,取 hist_years 年滚动 std 序列算分位) | window, hist_years |
+| `dividend_yield` | TTM 每股现金分红/close 的**绝对股息率映射**(高息→+20;依赖 `dividend_event` 表,`--backfill-dividend` 回补) | high_yield |
 
 > **score 连续不 clamp**(G10 后):每个算子输出单一连续 `score`(原 `raw_score` 已并入;各算子保留满强度刻度,如 momentum ±20=±10%涨幅、bollinger 跌破下轨≈20、value 低估≈20,但不硬截断)→ 头部连续可分,rebalancer 截面排名与因子诊断(§12)都直接消费它。`signal` 降级为派生标签(仅供展示/审计),不参与仓位决策。详见 §8。
 
 **~~LLM 算子(4 个)~~ 已于 G10(2026-07-15)下线**(`operators/llm/` 整目录删)。trend / contrarian / risk / valuation 4 顾问**仅作实盘 AI 顾问**(`ai/skills/advisors/`,独立链路,见 `docs/AI_ADVISORS.md`),不再参与回测。
 
-**聚合器(2 个,`ai/operators/aggregators/`,不缓存):** `weighted_sum`(同时聚合 `total_score`=Σ(score×w) 语义 + `total_raw`=Σ(raw×w) 排序)/ `risk_veto`(风险一票否决)。
+**聚合器(1 个,`ai/operators/aggregators/`,不缓存):** `weighted_sum`(Σ(score×w) → total_score,thresholds 派生 final_signal 标签)。~~`risk_veto`~~ 随 LLM 算子 G10 下线(`seed.py::_cleanup_legacy_llm` 清理 operator 表残留)。
 
 ## 5. 选股层 rebalancer(`ai/rebalancers/`,3 个)
 
@@ -116,7 +164,7 @@ print(r["equity_curve"][-1])
 | 方案 | 逻辑 |
 |------|------|
 | `pass_through` | desired 原样透传(等价"无选股层") |
-| `cap_and_rank` | 总仓位上限(`max_gross=0.90`)+ 增仓按**横截面百分位×confidence** 排序竞争额度 |
+| `cap_and_rank` | 总仓位上限(`max_gross=0.90`)+ 增仓按**横截面百分位×confidence** 排序竞争额度(**2026-07-19 `cross_section_factor` 首次启用**;此前 9 策略全用 top_n_picker) |
 | `top_n_picker` | **每日全市场按横截面百分位(raw 连续强度)排名选 Top N(默认 10)+ 建仓锁定(20 日)+ Top10% 保护 + 限换手(每日 ≤2 只)** |
 
 > **max_gross 总仓安全阀**(engine 层,本轮新增,对所有 rebalancer 生效,默认 0.90):Σ目标权重
@@ -137,15 +185,26 @@ print(r["equity_curve"][-1])
 - aggregator 不缓存(纯函数重算廉价)
 - G10 后 score 连续不 clamp(原 `raw_score` 已并入 `score`);改算子逻辑会因 source_hash 变动自动失效旧缓存,无需人工 bump version
 
-**效果**:首次回测算 + 写缓存;同区间重跑 / 跨策略复用时秒级(直接读缓存)。首次大样本(如 788 票 × 全年)较慢是正常投入。
+**效果**:首次回测算 + 写缓存;同区间重跑 / 跨策略复用时秒级(直接读缓存)。首次大样本(如 788 票 × 全年)仍需算子计算,但写库已批量。
 
-### 性能(G09:meta 缓存 + 索引策略 + WAL)
+### 性能(G09 + 冷启动批量写)
 
-热缓存天级回测的三个加速杠杆(纯基础设施,**不改信号**——优化前后 metrics 逐值一致,已回归验证):
+热/冷路径加速杠杆(纯基础设施,**不改信号**——优化前后 metrics 逐值一致,已回归验证):
 
 - **算子元信息进程级缓存**:`_load_operator_meta`(`runner.py`)挂 `@functools.lru_cache`,同进程内每个算子只查 1 次 `operator` 表;`CompiledStrategy._ensure_op_meta` 再做实例级缓存(每策略 + temperature 算一次)。砍掉旧的"每 (code, as_of, 算子) 一次 session 开闭"路径。
 - **复合唯一键覆盖热路径**:`operator_result` 唯一复合索引 `uq_op_result_code_date_op_fp(asset_code, as_of, operator_id, fingerprint)` 覆盖全部查询点(全键等值 / `asset_code` 前导 IN / 单日批量预读);4 个单列索引已删(`models.py` 去 `index=True` + `db._migrate` 幂等 `DROP INDEX`)。`EXPLAIN QUERY PLAN` 均走复合索引,无全表扫。
 - **WAL 模式**:`db.py` connect 监听器每连接设 `journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000`。读不阻塞写(scheduler daemon 写入期回测读不 `SQLITE_BUSY`)、冷启动批量写缓存省 fsync。
+- **冷启动批量写(对齐 factor_diag)**:`CompiledStrategy.prefetch_cache` 在 engine Phase 2 前:单日批量读命中 → miss 线程池只算不写 → `save_operator_results_batch` **一日多算子一次 commit**。旧路径 miss 时 `analyze` 内逐行 `save_operator_result`(800 票×3 算子 ≈ 2400 次 commit/日 + 写锁互挤,实测 ~35 行/s);新路径约 1 次 commit/日。`analyze` 内单行 save 仅作无 prefetch 兜底。
+- **热路径执行层(不改信号)**:① `_get_day_market` 单日一次 SQL 派生 close/open/bars(合并原 2~3 次扫表);② 有 prefill 时 analyze **串行**(全 hit 时线程池提交开销 > 并行收益,实测 w=4 慢于 w=1 且 metrics 一致);③ 整段回测复用一个 `ThreadPoolExecutor`(仅无 prefill 兜底路径用池)。纯基础设施,优化前后 metrics 应逐值一致。
+- **紧凑区间预载 D+E(不改信号)**:回测启动时 ① **D** `_preload_market_range` raw SQL 拉 `[start,end]×codes` 行情,bar=定长 tuple;② **E** `begin_run_cache` → `load_operator_results_range` raw SQL 流式 pack=`(signal,score,conf,value,veto)` 结构 `{as_of:{op_id:{code:pack}}}`(勿 ORM `.all()` 全量物化——实测可顶到 3GB+)。`end_run_cache` 释放。2026-07-19 红利全 hit 全周期 ~35min、峰值 RSS ~1.3GB;短窗 metrics 与改前逐值一致。
+
+### 超额口径与 2026-07-19 全周期对照
+
+- **基准** = 上证 `sh000001`(`IndexQuoteDaily`);`benchmark_return = (bm末/bm首 − 1)×100`
+- **策略** `total_return = (期末权益/初始资金 − 1)×100`(已扣佣金/印花税等)
+- **超额** `excess = total_return − benchmark_return`(**百分点算术差**,非几何超额)
+- 窗口示例 `2021-01-04→2026-07-17`:库内 3502.96→3764.15 → **上证 +7.46%**(各策略 meta 的 `benchmark_return` 恒为 7.46)
+- 四策略对照与归因见 `PROJECT_STATE.md` §3「策略族」表(横截面唯一明显正超额;动量/半仓/锁仓为主要拖累)
 
 > **WAL 备份 / 搬迁**:开 WAL 产生 `data/stockfu.db-wal` / `-shm` 旁路文件。备份或搬迁前先 checkpoint 把 -wal 并回主库,即可照旧单文件拷贝:
 > ```bash
@@ -158,7 +217,7 @@ print(r["equity_curve"][-1])
 按**交易日**步进(akshare 交易日历;离线时自动 fallback 到 `quote_snapshot` 历史行情日):
 
 1. **Phase 1**:T+1 开盘价执行前日挂单(停牌顺延,不丢弃)
-2. **Phase 2**:`ThreadPoolExecutor` 并发跑 `analyze_fn`(`CompiledStrategy.analyze`,含算子+聚合+缓存)→ 信号
+2. **Phase 2**:`prefetch_fn` 单日批量读/冷填算子缓存 → 有 prefill 时 **串行** `analyze_fn`(热路径任务极轻,线程池为负优化);无 prefill 兜底才用池。行情走区间预载 D 或 `_get_day_market`
 3. **Phase 3**:仓位层 `compute_target_weight`(信号→desired)+ risk 连续确认棒 + confidence gate → `rebalancer.adjust`(选股)→ `PositionManager` 边沿触发/冷却 → 挂单
 
 **费用**(VirtualAccount,贴近真实):佣金万 3(最低 5 元/笔,双边)+ 印花税(**日期化** `stamp_duty_rate(as_of)`:2023-08-28 前千一 0.001、之后万五 0.0005,仅卖出)+ 过户费 0.001%(双边);A 股整百股。
