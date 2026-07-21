@@ -1,0 +1,27 @@
+version: 1
+name: 反转均值回归(短期反转+RSI超卖+低估)
+# A股短期反转效应主导(实证反转 > 动量):reversal(近期跌幅大→反弹,主信号)
+#   + mean_reversion(RSI 超卖确认)+ value(低估安全边际)。
+# 三因子打分,top_n_picker 选 top 8 超卖低估股等权 + lock 20 天锁仓。
+# 反转策略典型特征:截断亏损(不追高)、逆势买入超卖优质股,盈亏比高、胜率偏低。
+# 个股 strict 模式 + 动态宇宙池。
+# 满仓刻度 score_full=8(reversal 20×1.0 + mean_reversion 20×0.6 + value 20×0.4 = 40,8/40=20% 满仓)。
+operators:
+  - {id: reversal,        type: math, weight: 1.0, params: {window: 20}}
+  - {id: mean_reversion,  type: math, weight: 0.6, params: {rsi_period: 14, oversold: 30, overbought: 70}}
+  - {id: value,           type: math, weight: 0.4, params: {years: 5}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.12
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 5
+  sell_cooldown_days: 3
+  max_target_step: 0.3
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.3

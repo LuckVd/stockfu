@@ -1,10 +1,10 @@
-"""回测调度: 注入 CompiledStrategy + temp=0(确定性)+ 单日批量预读缓存 + 产物保存。
+"""回测调度: 注入 CompiledStrategy + temp=0(确定性)+ 单日批量预读/冷填缓存 + 产物保存。
 
-run(codes, start, end): 跑完整回测。算子级缓存在 operator_result 表(math/llm 全局复用,
-read-through),engine Phase 2 前单日批量预读命中注入各 analyze(_make_prefetch_fn)→ 跳过
-逐 (code,as_of,算子) 的 get_operator_result 往返。同区间重跑命中缓存秒级;改策略参数无需
-新 run_id(算子缓存不依赖策略参数,只 PositionManager 依赖)。产物存 data/backtest/{run_id}.json.gz
-+ {run_id}.meta.json(轻量摘要,list_runs 只扫 meta)。
+run(codes, start, end): 跑完整回测。算子级缓存在 operator_result 表(math 全局复用,
+read-through),engine Phase 2 前 _make_prefetch_fn → CompiledStrategy.prefetch_cache:
+单日批量读命中 + miss 并发算 + 批量落库(一日一 commit)→ 预填注入各 analyze,跳过
+逐 (code,as_of,算子) 的 get/save 往返。同区间重跑命中缓存秒级;冷启动亦不再逐行 commit。
+产物存 data/backtest/{run_id}.json.gz + {run_id}.meta.json(轻量摘要,list_runs 只扫 meta)。
 """
 from __future__ import annotations
 
@@ -80,29 +80,32 @@ def _make_cached_analyze(strategy=None, temperature: float = 0.0):
     return _fn
 
 
-def _make_prefetch_fn(strategy=None, temperature: float = 0.0):
-    """返回 prefetch_fn(codes, as_of) → {(code, op_id): OpResult}:单日批量预读算子缓存。
+def _make_prefetch_fn(strategy=None, temperature: float = 0.0,
+                      max_workers: int = 8):
+    """返回 prefetch_fn(codes, as_of) → {(code, op_id): OpResult}。
 
     与 _make_cached_analyze 同 strategy+temperature 配对(engine Phase 2 前调一次)。
-    指纹在策略编译时算一次(CompiledStrategy._ensure_op_meta),不依赖 code/as_of →
-    一次 SELECT 取回当日全部命中。
+    内部 = 单日批量读 + miss 并发算 + 批量落库(见 CompiledStrategy.prefetch_cache);
+    max_workers 与 engine 分析池共用同一配额。
     """
     if strategy is None:
         from stockfu.ai.operators.runner import get_active_strategy
         strategy = get_active_strategy()
 
     def _fn(codes, as_of):
-        return strategy.prefetch_cache(codes, as_of, temperature=temperature)
+        return strategy.prefetch_cache(
+            codes, as_of, temperature=temperature, max_workers=max_workers)
     return _fn
 
 
 def run(codes: list[str], start, end, initial_cash: float = engine.INITIAL_CASH,
-        run_id: str | None = None, max_workers: int = 4,
+        run_id: str | None = None, max_workers: int = 8,
         buy_cool_down_days: int | None = None, max_target_step: float | None = None,
         risk_confirm_days: int | None = None,
         target_mode: str | None = None, max_weight: float | None = None,
         total_dead: float | None = None, min_trade_weight: float | None = None,
         sell_cooldown_days: int | None = None, conf_gate: float | None = None,
+        score_full: float | None = None,
         strict: bool = True, universe_rules=None) -> dict:
     """跑回测(active 策略驱动 analyze + debounce)。run_id 自动生成;分析缓存按 (code,as_of)
     进 ai_report 表,同区间重跑复用已入库行 = 断点续跑。返回结果并存盘。
@@ -119,19 +122,24 @@ def run(codes: list[str], start, end, initial_cash: float = engine.INITIAL_CASH,
     cs = get_active_strategy()
     run_id = run_id or new_run_id()
     analyze_fn = _make_cached_analyze(cs)
-    prefetch_fn = _make_prefetch_fn(cs)
+    prefetch_fn = _make_prefetch_fn(cs, max_workers=max_workers)
     # 基线=active 策略 YAML 的 StrategyDebounce;显式覆盖参数(非 None)替换对应字段
     db = cs.debounce_params
     overrides = {"buy_cool_down_days": buy_cool_down_days, "max_target_step": max_target_step,
                  "risk_confirm_days": risk_confirm_days, "target_mode": target_mode,
                  "max_weight": max_weight, "total_dead": total_dead,
                  "min_trade_weight": min_trade_weight, "sell_cooldown_days": sell_cooldown_days,
-                 "conf_gate": conf_gate}
+                 "conf_gate": conf_gate, "score_full": score_full}
     db = dataclasses.replace(db, **{k: v for k, v in overrides.items() if v is not None})
-    result = engine.run_backtest(codes, start, end, initial_cash,
-                                 analyze_fn=analyze_fn, prefetch_fn=prefetch_fn,
-                                 max_workers=max_workers, debounce=db,
-                                 strict=strict, universe_rules=universe_rules)
+    # E: 区间算子缓存紧凑预载(一次 SQL);日循环内存 hit。finally 释放,避免策略常驻。
+    try:
+        cs.begin_run_cache(list(codes), start, end, temperature=0.0)
+        result = engine.run_backtest(codes, start, end, initial_cash,
+                                     analyze_fn=analyze_fn, prefetch_fn=prefetch_fn,
+                                     max_workers=max_workers, debounce=db,
+                                     strict=strict, universe_rules=universe_rules)
+    finally:
+        cs.end_run_cache()
     result["run_id"] = run_id
     # 落盘策略身份:engine 只拿到 analyze_fn 闭包、看不到策略,故在此补齐(cs 现成)。
     # 同时记算子 id 列表,产物可追溯(策略名 + 算子指纹)。

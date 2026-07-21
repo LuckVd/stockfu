@@ -12,12 +12,15 @@
   执行层  →  VirtualAccount.apply_action() 整百股调仓
 
 无未来函数:每个 as_of 只用 ≤as_of 数据(build_context 的 as_of 已保证)。
-LLM 调用由调用方注入 analyze_fn(scheduler 负责 temp=0 + 并发 + 断点续跑)。
+analyze_fn 由调用方注入(scheduler: temp=0 + prefetch 批量缓存 + 算子冷填)。
+热路径:单日一次行情 SQL(_get_day_market);有 prefill 时 analyze 串行(避免线程池负优化)。
 """
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from sqlmodel import select, and_
 
@@ -154,6 +157,8 @@ def _get_quote_dict(codes: list[str], as_of: date, field: str = "close") -> dict
     注：quote_model_for 按资产类型路由三表(G01 拆表:个股→QuoteSnapshot / ETF→EtfQuoteDaily
     / 指数→IndexQuoteDaily)，下方按 model 分组查询。个股回测信号路径只传个股 code →
     实际查 QuoteSnapshot；回测基准(_benchmark_curve)单独直读 IndexQuoteDaily，不经此函数。
+
+    主循环优先走 _get_day_market(一次 SQL 派生 close/open/bars);本函数保留给单字段场景。
     """
     from stockfu.services.factors import quote_model_for
     groups: dict[type, list[str]] = {}
@@ -186,34 +191,257 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
     return 0.0, "unavailable"
 
 
+# 紧凑 bar 下标:(open, high, low, close, pct_chg, is_st, trade_status, amount)
+_BI_O, _BI_H, _BI_L, _BI_C, _BI_PCT, _BI_ST, _BI_TS, _BI_AMT = range(8)
+
+# quote_series 字段 → 紧凑 bar 下标(供回测内存供给器切片)
+_QS_FIELD_IDX = {"open": _BI_O, "high": _BI_H, "low": _BI_L, "close": _BI_C}
+# 回测预载需提前覆盖算子最大回看(low_volatility hist_years=3 ≈ 1160 历日;留余量到 1300)
+_PRELOAD_LOOKBACK_DAYS = 1300
+
+
+@contextmanager
+def _backtest_series_ctx(market_cache: dict):
+    """挂载 factors.quote_series 的内存供给器:从预载 market_cache 切片,零 DB。
+
+    market_cache = {quote_date: {code: (o,h,l,c,pct,st,ts,amt)}}(紧凑 D)。重排为
+    {code: ([(date, tuple)], [dates])} 升序,供 bisect 切窗口 [start, ref_date]。
+    与 DB quote_series 逐值一致:同一行集、同窗口、同 None 过滤、同升序(窗口左溢出时
+    两者都返回库内最早日起的部分序列,行为相同)。code/字段不在预载 → 返回 None 回落查库
+    (保正确)。结束自动摘除 → live 路径与未预载调用方不受影响。
+    """
+    from stockfu.services.factors import (clear_backtest_series_provider,
+                                          set_backtest_series_provider)
+    if not market_cache:
+        yield
+        return
+    per_code: dict[str, list] = {}
+    for _d, _cmap in market_cache.items():
+        for _code, _t in _cmap.items():
+            per_code.setdefault(_code, []).append((_d, _t))
+    index: dict[str, tuple] = {}
+    for _code, _lst in per_code.items():
+        _lst.sort(key=lambda x: x[0])
+        index[_code] = (_lst, [_d for _d, _ in _lst])
+
+    def provide(code, field, start, ref_date):
+        entry = index.get(code)
+        if entry is None:
+            return None                       # code 不在预载宇宙 → 回落
+        idx = _QS_FIELD_IDX.get(field)
+        if idx is None:
+            return None                       # 未知字段 → 回落
+        lst, dates = entry
+        lo = bisect_left(dates, start)
+        hi = bisect_right(dates, ref_date)
+        out = []
+        for i in range(lo, hi):
+            v = lst[i][1][idx]
+            if v is not None:
+                out.append(v)
+        return out
+
+    set_backtest_series_provider(provide)
+    try:
+        yield
+    finally:
+        clear_backtest_series_provider()
+
+
+def _pack_bar_row(r) -> tuple:
+    """ORM 行 → 定长 tuple(区间预载用;比 dict 省数倍)。
+
+    成交价优先显式前复权 *_qfq,回落遗留 open/high/low/close。
+    """
+    def _fq(primary: str, legacy: str):
+        v = getattr(r, primary, None)
+        if v is None:
+            v = getattr(r, legacy, None)
+        return float(v) if v is not None else None
+
+    def _f(name):
+        v = getattr(r, name, None)
+        return float(v) if v is not None else None
+    is_st = getattr(r, "is_st", None)
+    trade_status = getattr(r, "trade_status", None)
+    return (
+        _fq("open_qfq", "open"), _fq("high_qfq", "high"),
+        _fq("low_qfq", "low"), _fq("close_qfq", "close"), _f("pct_chg"),
+        1 if is_st else 0,
+        int(trade_status) if trade_status is not None else 1,
+        _f("amount"),
+    )
+
+
+def _bar_from_tuple(t: tuple) -> dict:
+    """紧凑 tuple → 旧 day_bars 字段 dict(调用方字段名不变)。"""
+    return {
+        "open": t[_BI_O], "high": t[_BI_H], "low": t[_BI_L], "close": t[_BI_C],
+        "pct_chg": t[_BI_PCT],
+        "is_st": bool(t[_BI_ST]),
+        "trade_status": int(t[_BI_TS]) if t[_BI_TS] is not None else 1,
+        "amount": t[_BI_AMT],
+    }
+
+
+def _bar_from_row(r) -> dict:
+    """ORM 行情行 → 日 bar dict(字段缺失时用 getattr 默认,兼容 ETF/指数表无 is_st 等列)。"""
+    return _bar_from_tuple(_pack_bar_row(r))
+
+
 def _get_day_bars(codes: list[str], as_of: date) -> dict[str, dict]:
     """单日完整 bar → {code: {open,high,low,close,pct_chg,is_st,trade_status,amount}}。
 
     供涨跌停近似 / 停牌 / 宇宙日 flags;仅 as_of 当日行,无未来。
+    主循环优先 _get_day_market;本函数保留兼容/单测。
     """
-    from stockfu.models import QuoteSnapshot
+    close_px, _open_px, bars = _get_day_market(codes, as_of)
+    return bars
+
+
+def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
+    """区间 raw SQL 预载行情 → {quote_date: {code: bar_tuple}}(紧凑 D)。
+
+    不经 ORM 全量物化(95 万行 ORM 峰值过高);只 SELECT 必要列 + fetchmany。
+    按 quote_model_for 分表(个股/ETF/指数)。
+    """
+    from sqlalchemy import text
+
+    from stockfu.db import engine as db_engine
+    from stockfu.services.factors import quote_model_for
+
     if not codes:
         return {}
-    out: dict[str, dict] = {}
+    # 表名: SQLModel/SQLAlchemy __tablename__
+    groups: dict[str, list[str]] = {}
+    for c in codes:
+        model = quote_model_for(c)
+        groups.setdefault(model.__tablename__, []).append(c)
+
+    # 各表列略有差异:统一取共有 OHLC + 可选字段
+    # quote_snapshot 有 is_st/trade_status/amount/pct_chg; etf/index 可能缺 is_st
+    # 个股:COALESCE 显式前复权列与遗留列(迁移过渡期两者可能只填一侧)
+    col_sets = {
+        "quote_snapshot": (
+            "asset_code, quote_date, "
+            "COALESCE(open_qfq, open), COALESCE(high_qfq, high), "
+            "COALESCE(low_qfq, low), COALESCE(close_qfq, close), pct_chg, "
+            "is_st, trade_status, amount"
+        ),
+        "etf_quote_daily": (
+            "asset_code, quote_date, open, high, low, close, pct_chg, "
+            "NULL as is_st, 1 as trade_status, amount"
+        ),
+        "index_quote_daily": (
+            "asset_code, quote_date, open, high, low, close, pct_chg, "
+            "NULL as is_st, 1 as trade_status, NULL as amount"
+        ),
+    }
+    cache: dict = {}
+    start_s = start.isoformat()
+    end_s = end.isoformat()
+
+    def _chunks(xs, n=400):
+        for i in range(0, len(xs), n):
+            yield xs[i:i + n]
+
+    with db_engine.connect() as conn:
+        for table, cs in groups.items():
+            cols = col_sets.get(table)
+            if not cols:
+                # 未知表回退 ORM 单表(少见)
+                continue
+            for chunk in _chunks(cs, 400):
+                ph = ", ".join(f":c{i}" for i in range(len(chunk)))
+                params = {f"c{i}": v for i, v in enumerate(chunk)}
+                params["start"] = start_s
+                params["end"] = end_s
+                sql = text(
+                    f"SELECT {cols} FROM {table} "
+                    f"WHERE quote_date >= :start AND quote_date <= :end "
+                    f"AND asset_code IN ({ph})"
+                )
+                result = conn.execute(sql, params)
+                while True:
+                    rows = result.fetchmany(5000)
+                    if not rows:
+                        break
+                    for row in rows:
+                        (asset_code, qdate, o, h, l, c, pct,
+                         is_st, trade_status, amount) = row
+                        if isinstance(qdate, str):
+                            qdate = date.fromisoformat(qdate[:10])
+                        packed = (
+                            float(o) if o is not None else None,
+                            float(h) if h is not None else None,
+                            float(l) if l is not None else None,
+                            float(c) if c is not None else None,
+                            float(pct) if pct is not None else None,
+                            1 if is_st else 0,
+                            int(trade_status) if trade_status is not None else 1,
+                            float(amount) if amount is not None else None,
+                        )
+                        bucket = cache.get(qdate)
+                        if bucket is None:
+                            bucket = {}
+                            cache[qdate] = bucket
+                        bucket[asset_code] = packed
+    return cache
+
+
+def _day_market_from_pack(
+    pack: dict[str, tuple] | None,
+) -> tuple[dict[str, float], dict[str, float], dict[str, dict]]:
+    """紧凑日包 → (close, open, bars dict)。bars 仍为字段 dict 以兼容 check_fill/宇宙。"""
+    if not pack:
+        return {}, {}, {}
+    close_prices: dict[str, float] = {}
+    open_prices: dict[str, float] = {}
+    day_bars: dict[str, dict] = {}
+    for code, t in pack.items():
+        bar = _bar_from_tuple(t)
+        day_bars[code] = bar
+        if bar["close"] is not None:
+            close_prices[code] = bar["close"]
+        if bar["open"] is not None:
+            open_prices[code] = bar["open"]
+    return close_prices, open_prices, day_bars
+
+
+def _get_day_market(codes: list[str], as_of: date,
+                    market_cache: dict | None = None,
+                    ) -> tuple[dict[str, float], dict[str, float], dict[str, dict]]:
+    """单日行情 → (close_prices, open_prices, day_bars)。
+
+    market_cache 命中则零 SQL;否则按表分组一次 SELECT(兼容未预载/单测)。
+    字段语义与旧路径一致 → 信号/成交不变。
+    """
+    if market_cache is not None:
+        return _day_market_from_pack(market_cache.get(as_of))
+    from stockfu.services.factors import quote_model_for
+    if not codes:
+        return {}, {}, {}
+    groups: dict[type, list[str]] = {}
+    for c in codes:
+        groups.setdefault(quote_model_for(c), []).append(c)
+    close_prices: dict[str, float] = {}
+    open_prices: dict[str, float] = {}
+    day_bars: dict[str, dict] = {}
     with session_scope() as s:
-        rows = s.exec(
-            select(QuoteSnapshot).where(
-                and_(QuoteSnapshot.quote_date == as_of,
-                     QuoteSnapshot.asset_code.in_(codes))
-            )
-        ).all()
-        for r in rows:
-            out[r.asset_code] = {
-                "open": float(r.open) if r.open is not None else None,
-                "high": float(r.high) if r.high is not None else None,
-                "low": float(r.low) if r.low is not None else None,
-                "close": float(r.close) if r.close is not None else None,
-                "pct_chg": float(r.pct_chg) if r.pct_chg is not None else None,
-                "is_st": bool(r.is_st) if r.is_st is not None else False,
-                "trade_status": int(r.trade_status) if r.trade_status is not None else 1,
-                "amount": float(r.amount) if r.amount is not None else None,
-            }
-    return out
+        for model, cs in groups.items():
+            rows = s.exec(
+                select(model).where(
+                    and_(model.quote_date == as_of, model.asset_code.in_(cs))
+                )
+            ).all()
+            for r in rows:
+                bar = _bar_from_row(r)
+                day_bars[r.asset_code] = bar
+                if bar["close"] is not None:
+                    close_prices[r.asset_code] = bar["close"]
+                if bar["open"] is not None:
+                    open_prices[r.asset_code] = bar["open"]
+    return close_prices, open_prices, day_bars
 
 
 def _apply_gross_cap(final: dict[str, float | None], max_gross: float) -> dict[str, float | None]:
@@ -350,7 +578,7 @@ def _trade_calendar_days(start: date, end: date) -> list[date]:
 def run_backtest(codes: list[str], start: date, end: date,
                  initial_cash: float = INITIAL_CASH, analyze_fn=None,
                  prefetch_fn=None,
-                 max_workers: int = 4, buy_cool_down_days: int = 5,
+                 max_workers: int = 8, buy_cool_down_days: int = 5,
                  max_target_step: float = 1.0,
                  risk_confirm_days: int = 1,
                  target_mode: str = "discrete",
@@ -374,7 +602,7 @@ def run_backtest(codes: list[str], start: date, end: date,
 
     analyze_fn(code, as_of, holding_override[, cache_prefill]) 默认用 ai.analyze;
     scheduler 注入带 temp=0/断点续跑缓存的版本。prefetch_fn(codes, as_of) 可选:Phase 2
-    前单日批量预读算子缓存 → 注入 analyze 的 cache_prefill(跳过逐次 get_operator_result
+    前单日批量预读+冷 miss 填充 → 注入 analyze 的 cache_prefill(跳过逐次 get/save
     往返);为 None 时退回原路径。analyze_fn 须能接 cache_prefill(第 4 参)才用预读。
 
     去抖旋钮(默认均为原行为;按业界 whipsaw 应对机制设计,治 5 条根因):
@@ -455,19 +683,29 @@ def run_backtest(codes: list[str], start: date, end: date,
     peak_equity: float = float(initial_cash)  # 组合回撤刹车:追踪回测内权益峰值
     cash_constraint_hits: int = 0             # 当日买单触发现金缩放的天数(可观测,对标 backtrader Margin)
 
-    for as_of in days:
-        close_prices = _get_quote_dict(codes, as_of, "close")
+    # D: 区间行情紧凑预载(一次 SQL → {date: {code: tuple}});日循环零扫库。
+    # 预载起点提前 _PRELOAD_LOOKBACK_DAYS,覆盖算子最大回看(low_volatility ~1160 历日),
+    # 使 _backtest_series_ctx 能从内存零查库喂给 quote_series(与 DB 逐值一致)。
+    _pre_start = start - timedelta(days=_PRELOAD_LOOKBACK_DAYS)
+    market_cache = _preload_market_range(list(codes), _pre_start, end) if days else {}
+
+    # 整段回测复用一个线程池(旧:每天 with 创建/销毁;冷 miss 并行在 prefetch 内,
+    # analyze 热路径有 prefill 时串行,池仅兜底无 prefill 路径)。
+    # _backtest_series_ctx 挂内存行情供给器 → 算子 quote_series 零查库(冷启提速核心)。
+    with _backtest_series_ctx(market_cache), ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+      for as_of in days:
+        close_prices, open_prices_day, day_bars = _get_day_market(
+            list(codes), as_of, market_cache=market_cache)
         if not close_prices:
             continue
         last_close.update(close_prices)   # 停牌日 close 缺失时,沿用上一交易日价估值(不记 0)
-        day_bars = _get_day_bars(list(codes), as_of)
 
         # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌/涨跌停顺延或拒绝)----
         # 先卖后买 + 买单等比缩放到可用现金(对标 rqalpha order_target_portfolio_smart):
         #   卖单先成交释放现金 → 买单再用释放后的现金;买单总额 > 现金时用 safety 标量等比
         #   缩放,不逐笔 min(delta,cash) 夹断丢目标。各方向内部按 code 排序保跨进程可复现。
         if pending_target:
-            open_prices = _get_quote_dict(codes, as_of, "open")
+            open_prices = dict(open_prices_day)  # 当日 open 已与 close/bars 同次查出
             still_pending: dict[str, float] = {}
             sells: list[tuple[str, float, float, str]] = []   # (code, target_weight, px, source)
             buys: list[tuple[str, float, float, str]] = []
@@ -585,15 +823,22 @@ def run_backtest(codes: list[str], start: date, end: date,
                 analyze_codes.add(code)
 
         results: dict[str, dict] = {}
-        # 单日批量预读缓存:只预读宇宙内 codes
+        # 单日批量预读(+冷 miss 填充):只预读宇宙内 codes
         prefill = prefetch_fn(list(analyze_codes), as_of) if prefetch_fn else None
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            if prefill is not None:
-                fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"], prefill): c
-                       for c in analyze_codes if c in snap}
-            else:
-                fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"]): c
-                       for c in analyze_codes if c in snap}
+        # 有 prefill 时 analyze 几乎全 hit(纯聚合,实测 ~0.05ms/票),线程池提交开销
+        # 大于并行收益 → 串行;无 prefill 的兜底路径(实盘/旧调用)才用池并行。
+        to_run = [c for c in analyze_codes if c in snap]
+        if prefill is not None or max_workers <= 1:
+            for c in to_run:
+                try:
+                    if prefill is not None:
+                        results[c] = _analyze(c, as_of, snap[c]["holding"], prefill)
+                    else:
+                        results[c] = _analyze(c, as_of, snap[c]["holding"])
+                except Exception:  # noqa: BLE001
+                    pass
+        else:
+            fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"]): c for c in to_run}
             for f in as_completed(fut):
                 c = fut[f]
                 try:
@@ -751,6 +996,7 @@ def run_backtest(codes: list[str], start: date, end: date,
             "equity": round(eq_total, 2),
             "positions": day_pos,
         })
+      # for as_of 结束;with 退出时 pool.shutdown
 
     # ---- 绩效 ----
     benchmark, bench_window = _benchmark_curve(BENCHMARK, days)

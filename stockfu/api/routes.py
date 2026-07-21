@@ -87,7 +87,7 @@ def sector_flow_today_api(top_n: int = Query(10, ge=1, le=90)):
             "bottom": list(reversed(rows[-top_n:])) if len(rows) > top_n else []}
 
 
-# ---------- 交易录入（前端买卖，对应 TUI 的 b/s）----------
+# ---------- 交易录入（前端买卖）----------
 
 @router.delete("/holding/{code}")
 def delete_holding_api(code: str):

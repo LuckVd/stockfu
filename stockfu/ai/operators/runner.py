@@ -101,15 +101,100 @@ class CompiledStrategy:
         cache[temperature] = meta
         return meta
 
-    def prefetch_cache(self, codes: list[str], as_of,
-                       temperature: float = 0.0) -> dict:
-        """单日批量预读缓存(回测 engine Phase 2 前调一次,主线程):
-        一次 SELECT 取回 (codes × as_of × 算子集) 全部命中 → {(code, op_id): OpResult}。
-        命中预填注入各 analyze,跳过逐 (code,as_of,算子) 的 get_operator_result 往返。"""
-        from stockfu.ai.operator_cache import get_operator_results_batch
+    def begin_run_cache(self, codes: list[str], start, end,
+                        temperature: float = 0.0) -> dict:
+        """回测启动:区间紧凑预载算子缓存到实例(_run_op_cache)。
+
+        一次 SQL 拉 [start,end]×codes×策略叶子算子,pack 为 tuple 存内存;
+        之后 prefetch_cache 日循环优先内存 hit,不再每日扫 operator_result。
+        返回 {days: n_as_of, entries: n_packs} 供日志;失败/空则 _run_op_cache={}.
+        """
+        from stockfu.ai.operator_cache import load_operator_results_range
+
         meta = self._ensure_op_meta(temperature)
         op_fps = [(spec["id"], fp) for spec, cls, fp, version in meta if fp is not None]
-        return get_operator_results_batch(codes, as_of, op_fps)
+        op_types = {spec["id"]: cls.type for spec, cls, fp, version in meta if fp is not None}
+        self._run_op_types = op_types  # type: ignore[attr-defined]
+        self._run_op_fps = op_fps  # type: ignore[attr-defined]
+        cache = load_operator_results_range(
+            list(codes or []), start, end, op_fps, op_types=op_types)
+        self._run_op_cache = cache  # type: ignore[attr-defined]
+        n_entries = sum(len(d) for d in cache.values())
+        return {"days": len(cache), "entries": n_entries, "operators": len(op_fps)}
+
+    def end_run_cache(self) -> None:
+        """释放区间预载,避免策略实例常驻占内存。"""
+        self._run_op_cache = None  # type: ignore[attr-defined]
+        self._run_op_types = None  # type: ignore[attr-defined]
+        self._run_op_fps = None  # type: ignore[attr-defined]
+
+    def prefetch_cache(self, codes: list[str], as_of,
+                       temperature: float = 0.0,
+                       max_workers: int = 4) -> dict:
+        """单日批量预读 + 冷 miss 并发算 + 批量落库(回测 engine Phase 2 前主线程调一次)。
+
+        有 begin_run_cache 时:从紧凑内存取 hit,miss 再算+写库+回填内存。
+        无预载时:回退单日 get_operator_results_batch(兼容旧调用)。
+        返回 {(code, op_id): OpResult}。
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from stockfu.ai.operator_cache import (
+            get_operator_results_batch,
+            prefill_from_run_cache,
+            pack_opresult,
+            save_operator_results_batch,
+        )
+
+        codes = list(codes or [])
+        meta = self._ensure_op_meta(temperature)
+        op_fps = [(spec["id"], fp) for spec, cls, fp, version in meta if fp is not None]
+        op_types = {spec["id"]: cls.type for spec, cls, fp, version in meta if fp is not None}
+        if not codes or not op_fps:
+            return {}
+
+        run_cache = getattr(self, "_run_op_cache", None)
+        if run_cache is not None:
+            prefill = prefill_from_run_cache(run_cache, as_of, codes, op_fps, op_types)
+        else:
+            prefill = get_operator_results_batch(codes, as_of, op_fps)
+
+        # miss 任务:(code, op_id, cls, params, fp, op_type)
+        tasks: list[tuple] = []
+        for spec, cls, fp, version in meta:
+            if fp is None:
+                continue
+            op_id = spec["id"]
+            params = dict(spec.get("params") or {})
+            for c in codes:
+                if (c, op_id) not in prefill:
+                    tasks.append((c, op_id, cls, params, fp, cls.type))
+        if not tasks:
+            return prefill
+
+        def _eval(task):
+            c, op_id, cls, params, fp, op_type = task
+            r = cls().run(OpContext(code=c, name="", as_of=as_of), params)
+            return c, op_id, fp, op_type, r
+
+        entries: list[tuple] = []
+        workers = max(1, int(max_workers or 4))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            fut = {pool.submit(_eval, t): t for t in tasks}
+            for f in as_completed(fut):
+                try:
+                    c, op_id, fp, op_type, r = f.result()
+                except Exception:  # noqa: BLE001
+                    continue
+                prefill[(c, op_id)] = r
+                entries.append((c, op_id, fp, op_type, r))
+                if run_cache is not None:
+                    day = run_cache.setdefault(as_of, {})
+                    by_code = day.setdefault(op_id, {})
+                    by_code[c] = pack_opresult(r)
+        if entries:
+            save_operator_results_batch(as_of, entries)
+        return prefill
 
     def analyze(self, code: str, as_of=None, holding_override=None,
                 temperature: float = 0.0, cache_prefill: dict | None = None) -> dict:
@@ -120,7 +205,8 @@ class CompiledStrategy:
         # 1. 跑所有叶子算子(math 先跑,结果进 ctx.factors 供 llm 算子参考)。
         #    算子级缓存:math/llm read-through(operator_result),aggregator 不缓存。
         #    算子元信息(指纹/prompt/version)预算一次(_ensure_op_meta);cache_prefill
-        #    命中则跳过 get_operator_result 往返,miss 仍落单行计算+upsert。
+        #    命中则跳过 get_operator_result 往返。回测路径 prefetch_cache 已 fill-on-miss
+        #    + 批量落库,此处 miss+单行 save 仅兜底(无 prefetch / 预填不全 / 实盘单票)。
         from stockfu.ai.operator_cache import (get_operator_result,
                                                save_operator_result)
         meta = self._ensure_op_meta(temperature)

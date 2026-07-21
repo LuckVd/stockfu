@@ -27,6 +27,7 @@ _OP_NAMES = {
     "monthly_bollinger": "月线布林带",
     "weekly_bollinger": "周线布林带",
     "trend_linearity": "趋势线性度",
+    "reversal": "反转", "low_volatility": "低波动", "dividend_yield": "股息率",
 }
 
 # 策略清单: strategy_id。name + config 从 strategies/{id}.yaml 读(单一真源)。
@@ -35,9 +36,19 @@ _STRATEGIES = [
     "pure_factor",
     "macd_cross",
     "momentum_breakout",
+    "momentum_breakout_cross_section",
     "dual_bollinger",
     "bollinger_reversion",
+    "bollinger_reversion_cross_section",
     "cn_momentum_rotation",
+    "cn_momentum_cross_section",
+    "etf_momentum_rotation",
+    "etf_momentum_cross_section",
+    "dividend_low_vol",
+    "dividend_cross_section",
+    "reversal_strategy",
+    "reversal_cross_section",
+    "cross_section_factor",
 ]
 
 _STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
