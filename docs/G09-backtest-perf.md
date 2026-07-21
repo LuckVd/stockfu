@@ -40,7 +40,7 @@
 
 1. **meta 缓存**：同进程内 `_load_operator_meta(op_id)` 对每个算子只查 1 次 DB，后续命中缓存；回测功能不变（同输入同输出）。
 2. **冗余索引清理**：`operator_result` 仅剩 PK + 唯一复合索引，4 个单列索引消失；`create_all`/全新 `--init-db` **不再重建**；3 个查询点 `EXPLAIN QUERY PLAN` 均走 `uq_op_result_code_date_op_fp`（或 PK），不走全表扫描。
-3. **WAL**：DB 实测 `journal_mode=wal`、`synchronous=NORMAL`；产生 `data/stockfu.db-wal`/`-shm`；回测/TUI/API/scheduler 多进程访问读不互相阻塞。
+3. **WAL**：DB 实测 `journal_mode=wal`、`synchronous=NORMAL`；产生 `data/stockfu.db-wal`/`-shm`；回测/API/scheduler 多进程访问读不互相阻塞。
 4. **文件瘦身**：`VACUUM` 后 `data/stockfu.db` 体积显著下降（记录前后 MB）；可用内存/swap 压力缓解。
 5. **防未来函数红线不破（硬约束）**：纯基础设施改动不改信号——同一区间同一策略，优化前后 metrics（`equity_curve`/`trades`/最终净值）逐项一致。
 6. **实测加速**：同一回测命令（同区间同 codes）优化前后 wall-clock 对比，记录加速比。

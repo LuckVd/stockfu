@@ -4,9 +4,9 @@
 
 ## 1. 概述
 
-**StockFu · 资产管理终端**：本地优先的综合资产 + 市场情绪终端。覆盖 A股/港股/美股/ETF 持仓管理、TTM 股息率与股息率网格、三层（市场/板块/个股）fear-greed-heat 情绪指数、历史回补、AI 4 顾问、天级回测（算子→策略→选股→执行 四层架构）。技术栈：Python + SQLModel/SQLite + textual TUI + FastAPI + Vue3 前端。
+**StockFu · 资产管理终端**：本地优先的综合资产 + 市场情绪终端。覆盖 A股/港股/美股/ETF 持仓管理、TTM 股息率与股息率网格、三层（市场/板块/个股）fear-greed-heat 情绪指数、历史回补、AI 4 顾问、天级回测（算子→策略→选股→执行 四层架构）。技术栈：Python + SQLModel/SQLite + FastAPI + Vue3 前端（看板走 Web；TUI 已移除）。
 
-**当前阶段**：MVP。数据层（多源 fallback）→ 存储 → 持仓/股息/网格 → TUI/API → 三层情绪指数 → 历史回补 → AI 4 顾问 → 四层架构回测引擎均已落地；回测基准已激活（G02）；**回测性能优化（G09）已完成**；**回测做减法（G10，2026-07-15）已完成**——砍回测 LLM 算子 + 铲 ±20/signal 体系，回测变纯连续因子；**因子诊断层（阶段2，2026-07-15）已完成**——单算子 IC/分位收益/换手/衰减。下阶段重点：**执行层抽象（阶段3）**、数据缺口补全、板块轮动信号与 TUI 多屏（见 §5）。
+**当前阶段**：MVP。数据层 → 存储 → 持仓/股息/网格 → Web/API → 三层情绪 → 历史回补 → AI 4 顾问 → 四层回测引擎均已落地；G02 / G09 / G10 / 因子诊断阶段2 已完成。**2026-07-19→20**：分红回补 + 红利/反转/低波 + **横截面孪生全族**全周期验收（§`PROJECT_STATE` 0.3 总表：多因子/反转 CS ~+40% 超额+32%；红利 CS +28%；动量 top_n +51%；布林 CS −11% 等）+ top_n 重跑 7.17 + **全市场 K 补齐 7.17** + 空仓选股脚本 `pick_cs_asof`。下阶段重点：**执行层抽象（阶段3）**、横截面样本外/ rebalancer 对照（尤其动量 top_n vs CS）、Web 体验增强（见 §5 + `PROJECT_STATE.md`）。
 
 ## 2. 总体技术架构
 
@@ -14,15 +14,15 @@
 
 | 模块 | 职责 | 关键点 |
 |---|---|---|
-| `main.py` | 统一 CLI 入口 | `--init-db/--buy/--backfill*/--fetch/--backtest/--serve/--schedule/--test-mail`，默认 TUI |
-| `data/` 数据层 | 多源抓取 + fallback | `DataProviderManager` 7 源：efinance/tencent/sina/pytdx/baostock(含估值)/akshare/yfinance；代理分流：港美股走 7890，国内源 no_proxy 直连 |
+| `main.py` | 统一 CLI 入口 | `--init-db/--buy/--backfill*/--fetch/--backtest/--update-backtests/--serve/--schedule/--test-mail`，无参默认 Web |
+| `data/` 数据层 | 多源抓取 + fallback（**行情一律前复权**） | `DataProviderManager`：baostock/efinance/tencent/akshare/yfinance（已移除 sina/pytdx 不复权源）；代理分流：港美股走 7890，国内源 no_proxy 直连 |
 | `db.py`+`models.py` 存储层 | SQLModel engine + 开发期迁移 + seed | 单文件 `data/stockfu.db`；QuoteSnapshot/EtfQuoteDaily/IndexQuoteDaily 三表分离；搬迁 = 拷贝单文件 |
 | `services/` 服务层 | 业务计算 | factors(历史分位)/market_data(宏观)/composite(三层情绪合成)/portfolio/dividend/grid/fundflow/sentiment/trading(移动加权)/backfill |
 | `ai/` AI 层 | 实盘 4 顾问 + 算子平台 + 选股层 | 4 常驻顾问(趋势/逆向/风险/估值，实盘走 skills/)；operators(9 math + 2 聚合，回测 LLM 已下线)；rebalancers(pass_through/cap_and_rank/top_n_picker)；active 走 `app_config` |
 | `backtest/` 回测层 | 天级回测引擎 | `engine.py`: VirtualAccount + T+1 开盘 + 真实费用 + 完整 metrics；防未来函数：取数 `<= as_of` |
 | 算子缓存 | 跨回测复用算子结果 | `operator_result` 表：同 `(code, as_of, fingerprint)` 全局命中；首次慢，后续秒级 |
 | `scheduler/` 调度层 | 定时任务 | `run_daily_job`(行情+分红+ETF+三层指数)/backfill_kline/ensure_stock_data_and_index；`--schedule` daemon 可内嵌 web |
-| `api/`+`tui/` 接口层 | 对外呈现 | FastAPI；textual TUI 看板 + 交易录入模态 |
+| `api/` + `frontend/` 接口层 | 对外呈现 | FastAPI + Vue3 Web 看板（交易/情绪/设置/AI） |
 
 **关键数据流**：`data/manager.py`(多源) → `services/*`(各因子) → `services/composite.py`(三层 fear/greed/heat 合成) → `index_snapshot` 表。回测：`scheduler.run` 注入 `CompiledStrategy` → 算子执行(命中 `operator_result`) → rebalancer 选股 → `engine.py` T+1 执行 → metrics。
 
@@ -47,7 +47,7 @@
 | G04 | 估值窗口延至 10 年 | baostock PE/PB 5 年历史(2021 起)继续 backfill 延长至 10 年 | 📋 | — | — | — | — | baostock 个股历史深度受限；PE/PB 分位已可用(valuation.py) |
 | G05 | 连板长期回补 | 多次 `--backfill-limit` 断点续传补连板/涨停长期序列 | 📋 | — | — | — | — | 东财 `stock_zt_pool_em` 限流；机械补数 |
 | G06 | 板块轮动信号 | 连续 N 日净流入排名 / 板块间资金切换信号 | 📋 | — | — | — | — | 历史地基已就位(sector_flow/factor_snapshot) |
-| G07 | TUI 多屏 | 个股/板块情绪详情屏 | 📋 | — | — | — | — | 体验向 |
+| G07 | ~~TUI 多屏~~ | 个股/板块情绪详情屏 | ❌废弃 | — | — | 2026-07-20 | — | TUI 已移除；看板统一走 Web，体验增强归前端 |
 | G08 | 美股 quote 修复 | 美股 quote_snapshot 抓取修复（AAPL 等为空） | 📋 | — | — | — | — | yfinance 取数/字段口径 |
 | G09 | 回测性能优化 | operator meta 进程级 lru_cache + 删冗余单列索引 + WAL；热缓存纯读回测提速 | ✅ | — | 已验收 | 2026-07-15 | — | meta lru_cache + 删 4 单列索引(复合唯一键覆盖热路径)+ WAL/synchronous=NORMAL/busy_timeout + `--vacuum` 工具；优化前后 metrics 逐值一致(防未来函数红线通过)。详见 [G09-backtest-perf.md](./G09-backtest-perf.md) |
 | G10 | 回测做减法 | 砍回测 LLM 算子 + 铲 ±20/signal → 纯连续因子；OpResult 瘦身 + 缓存源码 hash(治 P2-5) | ✅ | — | 已验收 | 2026-07-15 | — | operators/llm/ 删 + hybrid/classic_4advisors 废弃;算子 score 连续不 clamp、signal 降级派生、continuous 满仓锚点 score_full 参数化、OpResult 13→10 字段;指纹含 source hash。实盘 AI 4 顾问不动。属行为改变类,口径见 BACKTEST.md §8 |
@@ -61,7 +61,7 @@
 **数据/信号/体验**：
 - **数据缺口补全**：行情拆表(G01)+ 回测基准(G02)已完成；PE/PB 历史分位延至 10 年(G04)；连板长期断点续传(G05)。
 - **信号能力**：板块轮动信号——连续 N 日净流入排名 / 板块间资金切换（G06，历史地基已就位）。
-- **体验**：TUI 多屏——个股/板块情绪详情屏（G07）；美股 quote_snapshot 抓取修复（G08）。
+- **体验**：~~TUI 多屏（G07）~~ 已废弃（TUI 移除，看板走 Web）；美股 quote_snapshot 抓取修复（G08）；Web 详情/体验增强。
 - ~~**LLM 回测**~~：G03 已于 G10(2026-07-15)废弃——砍回测 LLM 算子，classic_4advisors/hybrid 删除；实盘 AI 4 顾问保留。
 - **性能**：G09 回测性能优化（已完成，2026-07-15）。
 
@@ -76,4 +76,4 @@
 
 G09 已完成：operator meta 进程级 `lru_cache` + 删 4 冗余单列索引（复合唯一键覆盖热路径）+ WAL/`synchronous=NORMAL`/`busy_timeout` + `--vacuum` 维护工具。回归验证优化前后 metrics + `equity_curve` + `trades` 逐字节一致（防未来函数红线通过）。完整诊断、方案、实施记录与 5 个待确认事项结论见 [G09-backtest-perf.md](./G09-backtest-perf.md)。
 
-G10 同步完成 P2-5（算子指纹纳入源码 hash，治"改算子不 bump version → 旧缓存命中"坑）。下一阶段见 §5：回测演进优先（**阶段2 因子诊断层** / **阶段3 执行层抽象** = `docs/ARCHITECTURE_REVIEW.md` §4 的 P2-1/7/8/4/3/2），以及数据/信号/体验（板块轮动 G06 / TUI 多屏 G07 / 美股 quote G08 / 估值窗口 G04）。
+G10 同步完成 P2-5（算子指纹纳入源码 hash，治"改算子不 bump version → 旧缓存命中"坑）。下一阶段见 §5：回测演进优先（**阶段2 因子诊断层** / **阶段3 执行层抽象** = `docs/ARCHITECTURE_REVIEW.md` §4 的 P2-1/7/8/4/3/2），以及数据/信号/体验（板块轮动 G06 / 美股 quote G08 / 估值窗口 G04 / Web 体验；G07 TUI 已废弃）。

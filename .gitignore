@@ -13,3 +13,9 @@ references/
 /run_*.py
 data/*.log
 data/*.err
+
+# runtime reports / contaminated isolates
+data/reports/
+data/_contaminated_*/
+data/adj_audit_*.json
+data/*.pid
