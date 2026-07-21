@@ -87,6 +87,9 @@ class BaostockProxySession:
     # 当前代理连续失败多少次强制换
     max_fail_streak: int = 2
     sleep_after_rotate: float = 0.3
+    # 单次 fetch（triple 三查）硬超时；坏代理会卡在 baostock 接收重试循环，
+    # socket_timeout 救不了 → 线程级超时兜底，超时即判坏代理换 IP
+    fetch_timeout: float = 60.0
 
     pool: FreeProxyPool = field(default_factory=FreeProxyPool)
     active: bool = False
@@ -112,6 +115,7 @@ class BaostockProxySession:
         """并发确认 baostock 代理 → 再 enable 最快可用 IP 并 login → 才允许拉数。"""
         self.pool.socket_timeout = self.socket_timeout
         self.pool.dead_ttl = float(os.environ.get("BAOSTOCK_DEAD_TTL", "1800"))
+        self.fetch_timeout = float(os.environ.get("BAOSTOCK_FETCH_TIMEOUT", "60"))
         seeds: list[ProxyEndpoint] = []
         if self.seed_local_clash:
             seed = local_clash_socks(self.clash_host, self.clash_port)
@@ -401,6 +405,39 @@ class BaostockProxySession:
                 return True
         return False
 
+    def _call_with_timeout(self, fn: Callable[[], T], label: str) -> T:
+        """守护线程跑 fn；``fetch_timeout`` 秒不返回即判坏代理：关 socket + 抛错 → run() 换 IP。
+
+        baostock 在坏代理上会卡在内部接收重试循环（狂打"接收数据异常"），
+        ``socket_timeout`` 救不了 → 必须线程级硬超时，否则 run() 永远到不了换代理分支。
+        """
+        box: dict[str, Any] = {}
+
+        def _worker() -> None:
+            try:
+                box["val"] = fn()
+            except Exception as e:  # noqa: BLE001
+                box["exc"] = e
+
+        t = threading.Thread(target=_worker, name=f"fetch-{label}"[:40], daemon=True)
+        t0 = time.time()
+        t.start()
+        t.join(self.fetch_timeout)
+        if t.is_alive():
+            # 硬超时：关底层 socket 打断卡住的 recv；标记未登录 → run() 走异常分支换代理
+            _force_close_baostock_socket()
+            from stockfu.data.baostock_source import BaostockSource
+            BaostockSource._logged_in = False
+            print(
+                f"  [fetch TIMEOUT] {label} >{self.fetch_timeout:.0f}s "
+                f"proxy={self.proxy_url} → drop",
+                flush=True,
+            )
+            raise RuntimeError(f"fetch timeout {label} proxy={self.proxy_url}")
+        if "exc" in box:
+            raise box["exc"]
+        return box["val"]  # type: ignore[return-value]
+
     # ----- 带自动切换的调用 -----
     def run(
         self,
@@ -418,7 +455,7 @@ class BaostockProxySession:
         last_val: T | None = None
         for attempt in range(1, self.max_rotate_per_call + 1):
             try:
-                val = fn()
+                val = self._call_with_timeout(fn, label)
                 last_val = val
                 if empty_is_fail and is_empty and is_empty(val):
                     self.fail_streak += 1
