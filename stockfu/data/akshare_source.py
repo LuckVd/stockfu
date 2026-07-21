@@ -210,53 +210,144 @@ def get_sw_index_daily(symbol: str) -> list[dict]:
 
 
 def get_etf_daily(symbol: str, start: str, end: str) -> list[dict]:
-    """ETF 日线(akshare fund_etf_hist_sina,不复权,覆盖上市以来全历史);未装/失败/空 → []。
+    """ETF 日线(**前复权 qfq**);未装/失败/空 → []。
 
-    东财 fund_etf_hist_em(前复权)走 push2his,易被限流;改用新浪(不同主机,稳定)。
-    symbol: ETF 6 位代码(如 "512800");新浪需交易所前缀(5/6/9→sh,其余→sz),内部转换。
-    返回 list[dict],键对齐 IndexQuoteDaily/EtfQuoteDaily(asset_code 用裸 6 位);新浪无涨跌幅列→前后收盘算。
-    start/end 客户端裁剪(新浪接口不接受日期参数)。ETF 分红小,不复权 vs 前复权差异有限(探测可接受)。
+    硬约束：禁止不复权(已移除 fund_etf_hist_sina 路径)；**禁止 baostock**
+    （ETF 历史仅约半年且 adjustflag 实际等于不复权）。
+    主源：东财 `fund_etf_hist_em(adjust="qfq")`（重试）；失败/空 → 腾讯 qfq 兜底。
+    symbol: ETF 6 位代码(如 "512800")。
+    返回 list[dict],键对齐 EtfQuoteDaily(asset_code 用裸 6 位)。
+    start/end: "YYYY-MM-DD"。
     """
-    with direct_connection():
-        try:
-            import akshare as ak
-        except Exception:
-            return []
-        try:
-            sina_sym = ("sh" if symbol[0] in ("5", "6", "9") else "sz") + symbol
-            df = ak.fund_etf_hist_sina(symbol=sina_sym)
-        except Exception:
-            return []
-    if df is None or df.empty:
-        return []
-    df = df.sort_values("date")
-    d0, d1 = start.replace("-", ""), end.replace("-", "")
+    rows = _get_etf_daily_em_qfq(symbol, start, end)
+    if rows:
+        return rows
+    return _get_etf_daily_tencent_qfq(symbol, start, end)
+
+
+def _get_etf_daily_em_qfq(symbol: str, start: str, end: str,
+                          retries: int = 3) -> list[dict]:
+    """东财 fund_etf_hist_em 前复权(带重试；东财易断连)。"""
+    d0 = start.replace("-", "")
+    d1 = end.replace("-", "")
+    last_err = None
+    for attempt in range(max(1, retries)):
+        with direct_connection():
+            try:
+                import akshare as ak
+            except Exception:
+                return []
+            try:
+                df = ak.fund_etf_hist_em(
+                    symbol=symbol, period="daily", adjust="qfq",
+                    start_date=d0, end_date=d1,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                df = None
+        if df is not None and not getattr(df, "empty", True):
+            return _etf_df_to_rows(symbol, df)
+        if attempt + 1 < retries:
+            time.sleep(0.8 * (attempt + 1))
+    return []
+
+
+def _etf_df_to_rows(symbol: str, df: pd.DataFrame) -> list[dict]:
     results: list[dict] = []
-    prev_close = None
     for _, r in df.iterrows():
         try:
-            d = pd.to_datetime(r["date"]).date()
-            ds = d.strftime("%Y%m%d")
-            if ds < d0 or ds > d1:
-                prev_close = float(r["close"])
-                continue
-            close_val = float(r["close"])
-            pct = (round((close_val / prev_close - 1) * 100, 4)
-                   if prev_close and prev_close > 0 else None)
-            prev_close = close_val
+            d = pd.to_datetime(r["日期"]).date()
+            close_val = float(r["收盘"])
             results.append({
                 "asset_code": symbol,
                 "quote_date": d,
-                "open": float(r["open"]) if pd.notna(r.get("open")) else None,
-                "high": float(r["high"]) if pd.notna(r.get("high")) else None,
-                "low": float(r["low"]) if pd.notna(r.get("low")) else None,
+                "open": float(r["开盘"]) if pd.notna(r.get("开盘")) else None,
+                "high": float(r["最高"]) if pd.notna(r.get("最高")) else None,
+                "low": float(r["最低"]) if pd.notna(r.get("最低")) else None,
                 "close": close_val,
-                "pct_chg": pct,
-                "volume": float(r["volume"]) if pd.notna(r.get("volume")) else None,
-                "amount": float(r["amount"]) if pd.notna(r.get("amount")) else None,
+                "pct_chg": float(r["涨跌幅"]) if pd.notna(r.get("涨跌幅")) else None,
+                "volume": float(r["成交量"]) if pd.notna(r.get("成交量")) else None,
+                "amount": float(r["成交额"]) if pd.notna(r.get("成交额")) else None,
             })
         except (KeyError, ValueError, TypeError):
             continue
+    return results
+
+
+def _get_etf_daily_tencent_qfq(symbol: str, start: str, end: str) -> list[dict]:
+    """腾讯 fqkline 前复权兜底(**按日期分段拉取,可覆盖 2021+ 全周期**)。
+
+    注意：
+    - 无 start/end 时单次约 640–800 根;指定 `start,end` 可按窗翻页。
+    - 实测分段 qfq 重叠日 **100% 一致**(同一前复权基准),可安全 merge。
+    - 部分 ETF 只返回 `day` 无 `qfqday` → 用 day(同参 qfq 请求降级)。
+    - 不走 TencentSource(其硬读 qfqday 且无日期翻页)。
+    """
+    import requests
+    from datetime import datetime as _dt, timedelta as _td
+
+    start_d = pd.to_datetime(start).date()
+    end_d = pd.to_datetime(end).date()
+    if start_d > end_d:
+        return []
+
+    sym = ("sh" if symbol[0] in ("6", "9", "5") else "sz") + symbol
+    url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"}
+
+    # 约 2 年一段(≈500 交易日),低于 800 上限;重叠由 merge 去重
+    chunk_days = 730
+    by_date: dict = {}
+    cur = start_d
+    while cur <= end_d:
+        chunk_end = min(cur + _td(days=chunk_days), end_d)
+        param = f"{sym},day,{cur.isoformat()},{chunk_end.isoformat()},800,qfq"
+        try:
+            with direct_connection():
+                r = requests.get(url, params={"param": param},
+                                 headers=headers, timeout=20)
+            data = (r.json().get("data") or {}).get(sym) or {}
+            rows = data.get("qfqday") or data.get("day") or []
+        except Exception:
+            rows = []
+        for row in rows:
+            try:
+                d = _dt.strptime(str(row[0]).split(" ")[0], "%Y-%m-%d").date()
+                o = float(row[1]); c = float(row[2])
+                h = float(row[3]); lo = float(row[4])
+                vol = (float(row[5]) if len(row) > 5 and row[5] not in (None, "")
+                       else None)
+            except (TypeError, ValueError, IndexError):
+                continue
+            if d < start_d or d > end_d:
+                continue
+            by_date[d] = (o, h, lo, c, vol)
+        # 下一段:从本段末日往后(有数据则从最后一天+1,否则跳 chunk)
+        if rows:
+            last_d = max(by_date) if by_date else chunk_end
+            nxt = last_d + _td(days=1)
+            # 防死循环:至少前进
+            cur = max(nxt, cur + _td(days=1))
+        else:
+            cur = chunk_end + _td(days=1)
+        time.sleep(0.15)
+
+    if not by_date:
+        return []
+    results: list[dict] = []
+    prev_close = None
+    for d in sorted(by_date):
+        o, h, lo, c, vol = by_date[d]
+        pct = (round((c / prev_close - 1) * 100, 4)
+               if prev_close and prev_close > 0 else None)
+        if c:
+            prev_close = c
+        results.append({
+            "asset_code": symbol,
+            "quote_date": d,
+            "open": o, "high": h, "low": lo, "close": c,
+            "pct_chg": pct, "volume": vol, "amount": None,
+        })
     return results
 
 
