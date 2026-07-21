@@ -1,7 +1,8 @@
 """StockFu · 资产管理终端 — 统一入口。
 
 用法:
-    python main.py                 # TUI 终端看板
+    python main.py                 # 启动 Web（FastAPI + 前端，默认 127.0.0.1:8787）
+    python main.py --serve         # 同上
     python main.py --init-db       # 初始化 + 种子自选 + 演示持仓
     python main.py --buy CODE N PRICE [--date YYYY-MM-DD]   # 买入
     python main.py --sell CODE N PRICE [--date]             # 卖出
@@ -16,18 +17,16 @@
     python main.py --export-csv [DIR]  # 导出市场数据为 CSV（默认 data/，可入 git）
     python main.py --import-csv [DIR]  # 从 CSV 合并导入回库（换机同步；upsert 不丢数据）
     python main.py --backtest STRATEGY [--start --end --cash --codes --save]  # 回测（见 docs/BACKTEST.md）
+    python main.py --update-backtests [--strategies a,b] [--start --end] [--dry-run] [--list-strategies]
+        # 全周期重跑更新到最新(固化验收口径;不选策略=目录全部)
     python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md §11）
+    python main.py --recommend --strategies a,b [--as-of] [--cash]  # 空仓重建荐股(次日开盘执行参考)
     python main.py --backfill-universe  # 回补 security_master(list_date/board, baostock)
     python main.py --backfill-quote-status  # 补历史状态 + 最新交易日全量(baostock)
-    python main.py --serve         # FastAPI 服务
+    python main.py --backfill-adj-prices [--start] [--end]   # baostock 串行三复权(默认 Clash SOCKS)
+    python main.py --clear-dividend-cache  # 清错误口径 dividend_yield 的 operator_result
 """
 import argparse
-
-
-def run_tui() -> None:
-    from stockfu.tui.app import StockFuApp
-
-    StockFuApp().run()
 
 
 def run_api(host: str, port: int, reload: bool) -> None:
@@ -129,8 +128,24 @@ def run_backfill_sw() -> None:
 def run_backfill_etf_industry() -> None:
     from stockfu.scheduler.jobs import backfill_industry_etf as _run
 
-    print(f"回补行业 ETF 历史日线（akshare fund_etf_hist_em,前复权）…")
+    print(f"回补行业 ETF 历史日线（前复权 qfq：东财→腾讯）…")
     print(f"✓ {_run()}")
+
+
+def run_backfill_etf() -> None:
+    """清空后全量重灌 ETF 前复权日线(INDEX+INDUSTRY+SECTOR+自选 fund_etf)。"""
+    from stockfu.scheduler.jobs import backfill_etf_quotes, clear_etf_data, etf_universe_codes
+
+    codes = etf_universe_codes()
+    print(f"清空 ETF 相关表…")
+    cleared = clear_etf_data()
+    print(f"  cleared: {cleared}")
+    print(f"全量回补 {len(codes)} 只 ETF 前复权日线（东财 qfq→腾讯 qfq）…")
+    summary = backfill_etf_quotes(codes)
+    ok = sum(1 for v in summary.values() if v.get("total", 0) > 0)
+    deep = sum(1 for v in summary.values() if v.get("source_hint") == "em_or_deep")
+    empty = [c for c, v in summary.items() if not v.get("total")]
+    print(f"✓ 成功 {ok}/{len(codes)}  东财深历史≈{deep}  空={empty or '无'}")
 
 def run_backfill_limit(days: int) -> None:
     from stockfu.services import backfill as bf
@@ -239,6 +254,161 @@ def run_backfill_quote_status() -> None:
     print(f"  最新交易日区间: {r.get('latest_date_min')} ~ {r.get('latest_date_max')}")
     print(f"  后: is_st_rate={after.get('is_st_rate')}  "
           f"trade_status_rate={after.get('trade_status_rate')}")
+
+
+def run_backfill_adj_prices(start: str | None = None, end: str | None = None,
+                            no_socks: bool = False) -> None:
+    """baostock **串行** 三复权写入 quote_snapshot.*_qfq/*_raw/*_hfq。
+
+    默认经 Clash SOCKS5(127.0.0.1:7891) 出站(baostock 裸 TCP 不认 HTTP_PROXY)。
+    无并发, 避免再触发黑名单。
+    """
+    from stockfu.db import init_db
+    from stockfu.scheduler.backfill_adj_prices import (
+        adj_price_coverage, backfill_adj_prices, clear_dividend_yield_cache,
+    )
+
+    init_db()
+    before = adj_price_coverage()
+    print(f"回补前覆盖: rows={before['rows']} qfq={before['has_qfq']} "
+          f"raw={before['has_raw']}({before['raw_pct']}%) "
+          f"hfq={before['has_hfq']}({before['hfq_pct']}%)")
+    r = backfill_adj_prices(
+        start=start or "2020-01-01",
+        end=end,
+        use_socks=not no_socks,
+        preserve_qfq=True,
+    )
+    after = adj_price_coverage()
+    print(f"回补后覆盖: rows={after['rows']} qfq={after['has_qfq']} "
+          f"raw={after['has_raw']}({after['raw_pct']}%) "
+          f"hfq={after['has_hfq']}({after['hfq_pct']}%)")
+    if r.get("error_n"):
+        print(f"  失败样例: {r['errors'][:5]}")
+    n = clear_dividend_yield_cache()
+    print(f"✓ 已清 dividend_yield 缓存 {n} 行(新口径 price_basis=raw)")
+
+
+def run_clear_dividend_cache() -> None:
+    from stockfu.db import init_db
+    from stockfu.scheduler.backfill_adj_prices import clear_dividend_yield_cache
+
+    init_db()
+    n = clear_dividend_yield_cache()
+    print(f"✓ 已删除 operator_result dividend_yield {n} 行")
+
+
+def run_backfill_dividend() -> None:
+    """回补全市场 A 股分红历史 → dividend_event 表。
+
+    baostock query_dividend_data 主源(财年口径,近 10 年),akshare 兜底。
+    resolve_base_codes('all') 取 quote_snapshot 全池(~800 票);按 ex_date 去重,
+    幂等可重跑。baostock socket 轻量单线程,预计 10-20 分钟,建议后台跑。
+    """
+    from stockfu.db import init_db, session_scope
+    from sqlalchemy import text
+    from stockfu.services.universe import resolve_base_codes
+    from stockfu.services import dividend as div_svc
+
+    init_db()
+    codes = resolve_base_codes("all")
+    with session_scope() as s:
+        before = s.exec(text("SELECT COUNT(*) FROM dividend_event")).all()[0][0]
+    print(f"回补 {len(codes)} 只 A 股分红历史(baostock 主源 / akshare 兜底;前:{before} 行)…")
+    new = errors = 0
+    for i, c in enumerate(codes, 1):
+        try:
+            new += div_svc.persist_dividends(c)
+        except Exception as e:  # noqa: BLE001
+            errors += 1
+            if errors <= 5:
+                print(f"  ⚠ {c} 失败: {e}")
+        if i % 50 == 0 or i == len(codes):
+            print(f"  [{i}/{len(codes)}] 累计新增 {new} 条 (失败 {errors})")
+    with session_scope() as s:
+        after = s.exec(text("SELECT COUNT(*) FROM dividend_event")).all()[0][0]
+    print(f"✓ 完成:新增 {new} 条,失败 {errors} 只;dividend_event {before} → {after} 行")
+
+
+def run_update_backtests(
+    strategies: str | None,
+    start: str | None,
+    end: str | None,
+    cash: float,
+    dry_run: bool,
+    list_only: bool,
+) -> None:
+    """全周期策略回测更新到最新:见 stockfu.backtest.full_cycle_update。
+
+    strategies: 逗号分隔 strategy_id;None/空 = 目录全部。
+    """
+    from stockfu.backtest.full_cycle_update import (
+        print_catalog,
+        update_backtests,
+    )
+
+    if list_only:
+        print_catalog()
+        return
+    ids = None
+    if strategies and strategies.strip():
+        ids = [x.strip() for x in strategies.split(",") if x.strip()]
+    try:
+        update_backtests(
+            ids,
+            start=start,
+            end=end,
+            cash=cash,
+            dry_run=dry_run,
+            save_summary=True,
+        )
+    except ValueError as e:
+        print(f"✗ {e}")
+        raise SystemExit(2) from e
+
+
+def run_recommend(
+    strategies: str | None,
+    as_of: str | None,
+    cash: float,
+    slip_bps: float,
+    band_pct: float,
+    max_gross: float | None,
+    min_amount: float | None,
+    with_sentiment: bool,
+    write_cache: bool,
+) -> None:
+    """空仓重建荐股:策略+回测 meta → as_of 信号日 → 次日执行参考价/估值中枢。"""
+    from stockfu.db import init_db
+    from stockfu.services.recommend import (
+        available_strategies,
+        print_report,
+        run_recommend as _run,
+    )
+
+    init_db()
+    if not strategies or not str(strategies).strip():
+        print("✗ --recommend 必须指定 --strategies a,b")
+        print(f"  可选: {', '.join(available_strategies())}")
+        raise SystemExit(2)
+    ids = [x.strip() for x in str(strategies).split(",") if x.strip()]
+    try:
+        report = _run(
+            ids,
+            as_of=as_of,
+            cash=cash,
+            slip_bps=slip_bps,
+            band_pct=band_pct,
+            max_gross=max_gross,
+            min_amount=min_amount,
+            with_sentiment=with_sentiment,
+            write_cache=write_cache,
+            save=True,
+        )
+    except ValueError as e:
+        print(f"✗ {e}")
+        raise SystemExit(2) from e
+    print_report(report)
 
 
 def run_backtest(strategy: str, start: str | None, end: str | None,
@@ -438,7 +608,8 @@ def run_import_csv(in_dir: str, tables: list[str] | None, all_tables: bool) -> N
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="stockfu", description="StockFu·资产管理终端")
-    p.add_argument("--serve", action="store_true", help="以 FastAPI 服务模式运行")
+    p.add_argument("--serve", action="store_true",
+                   help="启动 Web（FastAPI+前端；无其它子命令时默认即此模式）")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8787)
     p.add_argument("--reload", action="store_true")
@@ -459,11 +630,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backfill-sw", action="store_true",
                    help="回补 31 个申万一级行业指数历史日线(akshare index_hist_sw;行业情绪/轮动前置)")
     p.add_argument("--backfill-etf-industry", action="store_true",
-                   help="回补行业 ETF 历史日线(akshare fund_etf_hist_em,前复权;可交易轮动前置)")
+                   help="回补行业 ETF 历史日线(前复权 qfq：东财→腾讯;可交易轮动前置)")
+    p.add_argument("--backfill-etf", action="store_true",
+                   help="清空 ETF 表后全量重灌前复权日线(INDEX+行业+SECTOR+自选;东财qfq→腾讯qfq)")
     p.add_argument("--backfill-universe", action="store_true",
                    help="回补 security_master(list_date/board, baostock;时点宇宙前置)")
     p.add_argument("--backfill-quote-status", action="store_true",
                    help="补历史 is_st/trade_status + 每只票最新交易日全量数据(baostock)")
+    p.add_argument("--backfill-dividend", action="store_true",
+                   help="回补全市场分红历史→dividend_event(baostock query_dividend_data 主源/akshare兜底;红利因子前置,10-20分钟)")
+    p.add_argument("--backfill-adj-prices", action="store_true",
+                   help="baostock 串行拉齐前复权/不复权/后复权→quote_snapshot "
+                        "(*_qfq/*_raw/*_hfq);默认 Clash SOCKS;完成后清 dividend_yield 缓存")
+    p.add_argument("--no-socks", action="store_true",
+                   help="--backfill-adj-prices 直连 baostock(默认走 127.0.0.1:7891 SOCKS)")
+    p.add_argument("--clear-dividend-cache", action="store_true",
+                   help="仅清 operator_result 中 dividend_yield 错误缓存")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
     p.add_argument("--vacuum", action="store_true",
@@ -472,10 +654,39 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
     p.add_argument("--backtest", metavar="STRATEGY", default=None,
                    help="回测策略ID（如 macd_cross / bollinger_reversion）；详见 docs/BACKTEST.md")
+    p.add_argument("--update-backtests", action="store_true",
+                   help="全周期重跑更新到最新(固化验收口径;配合 --strategies 可选子集,省略=全部)")
+    p.add_argument("--strategies", default=None, metavar="IDS",
+                   help="逗号分隔 strategy_id。"
+                        "--update-backtests:省略=目录全部;"
+                        "--recommend:必填。"
+                        "例: cross_section_factor,dividend_cross_section")
+    p.add_argument("--list-strategies", action="store_true",
+                   help="列出 --update-backtests 可更新的策略目录后退出")
+    p.add_argument("--dry-run", action="store_true",
+                   help="配合 --update-backtests:只打印计划不实际跑回测")
     p.add_argument("--factor-diag", metavar="OPERATOR", default=None,
                    help="因子诊断算子ID（如 momentum / macd_cross）；单算子 IC/分位收益/换手/衰减，见 docs/BACKTEST.md §11")
-    p.add_argument("--start", default=None, help="回测/诊断起始日 YYYY-MM-DD（默认1年前）")
-    p.add_argument("--end", default=None, help="回测/诊断结束日 YYYY-MM-DD（默认今天）")
+    p.add_argument("--recommend", action="store_true",
+                   help="空仓重建荐股(必填 --strategies;可选 --as-of/--cash)")
+    p.add_argument("--as-of", default=None, metavar="YYYY-MM-DD",
+                   help="信号日(荐股默认库内行情末日;严格 <=as_of 取数)")
+    p.add_argument("--slip-bps", type=float, default=10.0,
+                   help="荐股建议限价滑点(bps,默认10,与回测一致)")
+    p.add_argument("--band-pct", type=float, default=1.0,
+                   help="荐股执行可接受区间%%(默认±1)")
+    p.add_argument("--max-gross", type=float, default=None,
+                   help="荐股覆盖 rebalancer max_gross(默认用 catalog 参数)")
+    p.add_argument("--with-sentiment", action="store_true",
+                   help="荐股附加个股 fear/greed/heat(较慢)")
+    p.add_argument("--write-cache", action="store_true",
+                   help="荐股算子 miss 时写 operator_result(默认不写,防锁)")
+    p.add_argument("--start", default=None,
+                   help="回测/诊断/全周期更新起始日 YYYY-MM-DD"
+                        "（--backtest 默认1年前;--update-backtests 默认 2021-01-01）")
+    p.add_argument("--end", default=None,
+                   help="回测/诊断/全周期更新结束日 YYYY-MM-DD"
+                        "（--backtest 默认今天;--update-backtests 默认库内行情末日）")
     p.add_argument("--cash", type=float, default=1_000_000.0, help="回测初始资金（默认100万）")
     p.add_argument("--codes", default=None,
                    help="标的池:省略=自选; all/pool=大盘候选(~800); 或逗号代码列表")
@@ -523,6 +734,14 @@ def main() -> None:
         run_fetch()
     elif args.backfill is not None:
         run_backfill(args.backfill)
+    elif args.backfill_adj_prices:
+        run_backfill_adj_prices(
+            start=args.start,
+            end=args.end,
+            no_socks=args.no_socks,
+        )
+    elif args.clear_dividend_cache:
+        run_clear_dividend_cache()
     elif args.backfill_factors:
         run_backfill_factors()
     elif args.backfill_limit is not None:
@@ -533,10 +752,14 @@ def main() -> None:
         run_backfill_sw()
     elif args.backfill_etf_industry:
         run_backfill_etf_industry()
+    elif args.backfill_etf:
+        run_backfill_etf()
     elif args.backfill_universe:
         run_backfill_universe()
     elif args.backfill_quote_status:
         run_backfill_quote_status()
+    elif args.backfill_dividend:
+        run_backfill_dividend()
     elif args.schedule:
         run_schedule()
     elif args.clean_quotes:
@@ -547,6 +770,20 @@ def main() -> None:
         run_test_mail()
     elif args.config:
         run_config()
+    elif args.list_strategies:
+        run_update_backtests(None, None, None, args.cash, False, list_only=True)
+    elif args.update_backtests:
+        run_update_backtests(
+            args.strategies, args.start, args.end, args.cash,
+            dry_run=args.dry_run, list_only=False,
+        )
+    elif args.recommend:
+        run_recommend(
+            args.strategies, args.as_of, args.cash,
+            slip_bps=args.slip_bps, band_pct=args.band_pct,
+            max_gross=args.max_gross, min_amount=args.min_amount,
+            with_sentiment=args.with_sentiment, write_cache=args.write_cache,
+        )
     elif args.backtest:
         run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save,
                      strict=args.strict, min_amount=args.min_amount)
@@ -558,10 +795,9 @@ def main() -> None:
         run_export_csv(args.export_csv, _parse_tables(args.tables), args.all)
     elif args.import_csv is not None:
         run_import_csv(args.import_csv, _parse_tables(args.tables), args.all)
-    elif args.serve:
-        run_api(args.host, args.port, args.reload)
     else:
-        run_tui()
+        # 无子命令时默认启动 Web（看板能力由前端承担；TUI 已移除）
+        run_api(args.host, args.port, args.reload)
 
 
 if __name__ == "__main__":

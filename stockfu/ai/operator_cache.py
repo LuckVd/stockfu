@@ -121,6 +121,153 @@ def get_operator_results_batch(
     return out
 
 
+# ---- 紧凑区间预载(E):回测启动一次 SQL,日循环内存 hit,省每日 prefetch 扫库 ----
+# pack = (signal, score, confidence, value, veto); unpack 成 OpResult 语义与 _row_to_opresult 一致。
+
+def pack_opresult(r: OpResult) -> tuple:
+    """OpResult → 定长 tuple(省 dict/对象头;区间预载百万级用)。"""
+    return (
+        r.signal or "hold",
+        float(r.score) if r.score is not None else 0.0,
+        float(r.confidence) if r.confidence is not None else 0.5,
+        r.value,
+        bool(r.veto),
+    )
+
+
+def unpack_opresult(operator_id: str, op_type: str, packed: tuple) -> OpResult:
+    """pack_opresult 逆操作;字段默认与 _row_to_opresult / math 行一致。"""
+    signal, score, confidence, value, veto = packed
+    return OpResult(
+        operator=operator_id,
+        type=op_type or "math",
+        signal=signal or "hold",
+        score=score if score is not None else 0.0,
+        confidence=confidence if confidence is not None else 0.5,
+        value=value,
+        veto=bool(veto),
+    )
+
+
+def load_operator_results_range(
+    codes: list[str], start, end, op_fps: list[tuple[str, str]],
+    op_types: dict[str, str] | None = None,
+) -> dict:
+    """区间批量预载算子缓存 → 紧凑结构 {as_of: {op_id: {code: pack_tuple}}}。
+
+    **raw SQL + 仅必要列 + 流式 fetchmany**,不经 ORM(全量 ORM 在 3.6G 机可顶到 3GB+)。
+    pack=(signal, score, confidence, value, veto)。op_types 仅 begin_run 侧保留供 unpack。
+    """
+    from datetime import date as _date
+
+    from sqlalchemy import text
+
+    from stockfu.db import engine as db_engine
+
+    codes = list(codes or [])
+    op_fps = list(op_fps or [])
+    if not codes or not op_fps or start is None or end is None:
+        return {}
+    op_ids = list({oid for oid, _ in op_fps})
+    fps = list({fp for _, fp in op_fps})
+    valid_pairs = set(op_fps)
+    # 嵌套 dict 比 (code,op_id) 元组键更省小对象
+    out: dict = {}  # date -> {op_id: {code: pack}}
+
+    # 分块 IN,避免超长 SQL;每块 raw 流式读
+    def _chunks(xs, n=400):
+        for i in range(0, len(xs), n):
+            yield xs[i:i + n]
+
+    start_s = start.isoformat() if hasattr(start, "isoformat") else str(start)
+    end_s = end.isoformat() if hasattr(end, "isoformat") else str(end)
+    op_ph = ", ".join(f":op{i}" for i in range(len(op_ids)))
+    fp_ph = ", ".join(f":fp{i}" for i in range(len(fps)))
+    base_params = {f"op{i}": v for i, v in enumerate(op_ids)}
+    base_params.update({f"fp{i}": v for i, v in enumerate(fps)})
+    base_params["start"] = start_s
+    base_params["end"] = end_s
+
+    with db_engine.connect() as conn:
+        for code_chunk in _chunks(codes, 400):
+            c_ph = ", ".join(f":c{i}" for i in range(len(code_chunk)))
+            params = dict(base_params)
+            params.update({f"c{i}": v for i, v in enumerate(code_chunk)})
+            sql = text(
+                f"SELECT asset_code, as_of, operator_id, fingerprint, "
+                f"signal, score, confidence, value, veto "
+                f"FROM operator_result "
+                f"WHERE as_of >= :start AND as_of <= :end "
+                f"AND operator_id IN ({op_ph}) "
+                f"AND fingerprint IN ({fp_ph}) "
+                f"AND asset_code IN ({c_ph})"
+            )
+            result = conn.execute(sql, params)
+            while True:
+                rows = result.fetchmany(5000)
+                if not rows:
+                    break
+                for asset_code, as_of, operator_id, fingerprint, signal, score, confidence, value, veto in rows:
+                    if (operator_id, fingerprint) not in valid_pairs:
+                        continue
+                    if isinstance(as_of, str):
+                        as_of = _date.fromisoformat(as_of[:10])
+                    packed = (
+                        signal or "hold",
+                        float(score) if score is not None else 0.0,
+                        float(confidence) if confidence is not None else 0.5,
+                        float(value) if value is not None else None,
+                        bool(veto),
+                    )
+                    by_op = out.get(as_of)
+                    if by_op is None:
+                        by_op = {}
+                        out[as_of] = by_op
+                    by_code = by_op.get(operator_id)
+                    if by_code is None:
+                        by_code = {}
+                        by_op[operator_id] = by_code
+                    by_code[asset_code] = packed
+    return out
+
+
+def prefill_from_run_cache(
+    run_cache: dict, as_of, codes: list[str], op_fps: list[tuple[str, str]],
+    op_types: dict[str, str],
+) -> dict[tuple[str, str], OpResult]:
+    """从紧凑区间缓存拆出单日 prefill {(code, op_id): OpResult}。
+
+    run_cache 结构: {as_of: {op_id: {code: pack}}}。
+    """
+    day = (run_cache or {}).get(as_of) or {}
+    if not day:
+        return {}
+    out: dict[tuple[str, str], OpResult] = {}
+    for op_id, _fp in op_fps:
+        by_code = day.get(op_id) or {}
+        if not by_code:
+            continue
+        otype = op_types.get(op_id, "math")
+        for c in codes:
+            packed = by_code.get(c)
+            if packed is None:
+                continue
+            out[(c, op_id)] = unpack_opresult(op_id, otype, packed)
+    return out
+
+
+def put_run_cache_day(
+    run_cache: dict, as_of, code_results: dict, op_id: str,
+) -> None:
+    """把新算的 {code: OpResult} 写回紧凑区间缓存(与 DB batch save 同步)。"""
+    if not code_results:
+        return
+    day = run_cache.setdefault(as_of, {})
+    by_code = day.setdefault(op_id, {})
+    for c, r in code_results.items():
+        by_code[c] = pack_opresult(r)
+
+
 def save_operator_result(code: str, as_of, operator_id: str, fingerprint: str,
                          result: OpResult, op_type: str) -> bool:
     """upsert 一条算子缓存。失败结果不落库(返回 False),重跑时重试。
@@ -162,31 +309,61 @@ def save_operator_results_day(code_results: dict, as_of, operator_id: str,
     800 次 commit → 1 次)。指纹/字段映射与 save_operator_result 逐字一致 → 缓存互通。
     返回实际落库行数(失败结果 _is_failure 跳过)。
     """
-    valid = {c: r for c, r in code_results.items() if not _is_failure(r)}
+    entries = [
+        (c, operator_id, fingerprint, op_type, r)
+        for c, r in code_results.items()
+    ]
+    return save_operator_results_batch(as_of, entries)
+
+
+def save_operator_results_batch(as_of, entries: list) -> int:
+    """单日多算子批量 upsert:一次 session、一次 commit。
+
+    entries: [(code, operator_id, fingerprint, op_type, OpResult), ...]
+    回测冷启动把当日全部 miss 算子攒齐后调用(800 票 × 3 算子 → 1 次 commit,
+    取代逐 (code,as_of,算子) 的 save_operator_result)。字段映射与
+    save_operator_result / save_operator_results_day 逐字一致。
+    返回实际落库行数(失败结果 _is_failure 跳过)。
+    """
+    valid: list[tuple] = []
+    for item in entries or []:
+        code, operator_id, fingerprint, op_type, result = item
+        if _is_failure(result):
+            continue
+        valid.append((code, operator_id, fingerprint, op_type, result))
     if not valid:
         return 0
+    codes = list({e[0] for e in valid})
+    op_ids = list({e[1] for e in valid})
+    fps = list({e[2] for e in valid})
     with session_scope() as s:
-        existing = {r.asset_code: r for r in s.exec(select(OperatorResult).where(
-            OperatorResult.as_of == as_of,
-            OperatorResult.operator_id == operator_id,
-            OperatorResult.fingerprint == fingerprint,
-            OperatorResult.asset_code.in_(list(valid.keys())),
-        )).all()}
+        existing = {
+            (r.asset_code, r.operator_id, r.fingerprint): r
+            for r in s.exec(select(OperatorResult).where(
+                OperatorResult.as_of == as_of,
+                OperatorResult.asset_code.in_(codes),
+                OperatorResult.operator_id.in_(op_ids),
+                OperatorResult.fingerprint.in_(fps),
+            )).all()
+        }
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        for c, r in valid.items():
-            row = existing.get(c) or OperatorResult(asset_code=c, as_of=as_of,
-                                                    operator_id=operator_id,
-                                                    fingerprint=fingerprint)
+        for code, operator_id, fingerprint, op_type, result in valid:
+            key = (code, operator_id, fingerprint)
+            row = existing.get(key) or OperatorResult(
+                asset_code=code, as_of=as_of,
+                operator_id=operator_id, fingerprint=fingerprint,
+            )
             row.operator_type = op_type
-            row.signal = r.signal
-            row.score = r.score
-            row.confidence = r.confidence
-            row.veto = r.veto
-            row.target_weight = r.target_weight
-            row.value = r.value
+            row.signal = result.signal
+            row.score = result.score
+            row.confidence = result.confidence
+            row.veto = result.veto
+            row.target_weight = result.target_weight
+            row.value = result.value
             row.detail = None
             row.updated_at = stamp
             if row.id is None:
                 s.add(row)
+                existing[key] = row  # 防 entries 内同 key 重复 add
         s.commit()
     return len(valid)

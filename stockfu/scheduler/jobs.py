@@ -98,7 +98,9 @@ def _upsert_quote(code: str, timeout: float = 35) -> bool:
             prev = bars[-2].close if len(bars) >= 2 else None
             _apply_bar_full(snap, bars[-1], prev)
         else:
+            # 实时 quote 兜底:按前复权语义写入遗留列 + *_qfq
             snap.open, snap.high, snap.low, snap.close = o, h, l, c
+            snap.open_qfq, snap.high_qfq, snap.low_qfq, snap.close_qfq = o, h, l, c
             snap.pct_chg, snap.volume, snap.amount = pct, vol, amt
         if q:
             if q.pe is not None:
@@ -163,15 +165,48 @@ def _bar_pct(b, prev_close: float | None) -> float | None:
     return None
 
 
-def _apply_bar_full(snap: QuoteSnapshot, b, prev_close: float | None = None) -> None:
-    """把一根 K 线完整写入 snapshot(OHLCV + 状态 + 估值 + 换手)。
+def _apply_bar_full(snap: QuoteSnapshot, b, prev_close: float | None = None,
+                    adj: str = "qfq") -> None:
+    """把一根 K 线写入 snapshot。
 
-    用于「最新交易日全量补全」:有值就覆盖,None 不抹掉已有非空字段。
+    adj=qfq(默认):写遗留 open/high/low/close **与** open_qfq/…/close_qfq,并写
+    volume/amount/状态/估值(与复权无关的字段只在 qfq 路径更新,避免 raw/hfq 覆盖)。
+    adj=raw|hfq:只写对应 *_raw / *_hfq OHLC。
     """
-    snap.open = b.open
-    snap.high = b.high
-    snap.low = b.low
-    snap.close = b.close
+    adj_n = (adj or "qfq").lower()
+    o = float(b.open) if b.open is not None else None
+    h = float(b.high) if b.high is not None else None
+    l = float(b.low) if b.low is not None else None
+    c = float(b.close) if b.close is not None else None
+    if adj_n == "raw":
+        if o is not None:
+            snap.open_raw = o
+        if h is not None:
+            snap.high_raw = h
+        if l is not None:
+            snap.low_raw = l
+        if c is not None:
+            snap.close_raw = c
+        return
+    if adj_n == "hfq":
+        if o is not None:
+            snap.open_hfq = o
+        if h is not None:
+            snap.high_hfq = h
+        if l is not None:
+            snap.low_hfq = l
+        if c is not None:
+            snap.close_hfq = c
+        return
+    # qfq + 遗留别名同步
+    snap.open = o
+    snap.high = h
+    snap.low = l
+    snap.close = c if c is not None else (snap.close or 0.0)
+    snap.open_qfq = o
+    snap.high_qfq = h
+    snap.low_qfq = l
+    snap.close_qfq = c
     if b.volume is not None:
         snap.volume = b.volume
     if b.amount is not None:
@@ -204,12 +239,22 @@ def _patch_status_only(snap: QuoteSnapshot, b) -> bool:
 
 
 def backfill_kline(code: str, days: int = 90) -> int:
-    """拉历史日K灌入 quote_snapshot（首次/补数据）。返回新增+补丁条数。
+    """拉历史日K灌入行情表（首次/补数据）。返回新增+补丁条数。
 
-    - 缺失日:全字段插入
-    - 已有历史日:仅补空状态列
-    - **最新一根 bar**:始终全量覆盖(OHLCV+状态+估值),保证最新交易日数据完整
+    - **ETF**(15/5x 开头):走 get_etf_daily **前复权** → etf_quote_daily
+      (禁止 baostock/个股链,避免不复权污染)
+    - 个股:manager.get_kline → quote_snapshot
+      - 缺失日:全字段插入
+      - 已有历史日:仅补空状态列
+      - **最新一根 bar**:始终全量覆盖(OHLCV+状态+估值)
     """
+    from stockfu.services.factors import quote_model_for
+    if quote_model_for(code) is EtfQuoteDaily:
+        from stockfu.data.akshare_source import get_etf_daily
+        start = (date.today() - timedelta(days=days + 40)).isoformat()
+        rows = get_etf_daily(code, start, date.today().isoformat())
+        return _upsert_etf_rows(code, rows)
+
     from stockfu.data.manager import get_manager
     bars = sorted(get_manager().get_kline(code, days), key=lambda b: b.date)
     if not bars:
@@ -359,9 +404,9 @@ def update_index_benchmark(code: str = "sh000001") -> int:
 def update_etf_benchmark(code: str) -> int:
     """ETF 日线增量更新:查 etf_quote_daily 最新日期 → 拉 gap → 幂等 upsert。
 
-    akshare fund_etf_hist_em(前复权)走国内直连。板块情绪 compute_sector 依赖代表 ETF
-    的 K 线分位,行情拆表后 ETF 历史在 etf_quote_daily(非 quote_snapshot)。返回新增行数。
-    范式同 update_index_benchmark。
+    get_etf_daily(**前复权 qfq**：东财 fund_etf_hist_em → 腾讯 qfq 兜底)。
+    板块情绪 compute_sector 依赖代表 ETF 的 K 线分位;行情拆表后 ETF 历史在
+    etf_quote_daily(非 quote_snapshot)。返回新增+覆盖行数。
     """
     from stockfu.data.akshare_source import get_etf_daily
     with session_scope() as s:
@@ -372,23 +417,15 @@ def update_etf_benchmark(code: str) -> int:
     today = date.today()
     if last_date and last_date >= today:
         return 0
-    start = (last_date + timedelta(days=1)).isoformat() if last_date else "2010-01-01"
+    # 有历史时从最近若干交易日重拉,覆盖最新日(前复权基准随分红/拆分会变)
+    if last_date:
+        start = (last_date - timedelta(days=14)).isoformat()
+    else:
+        start = "2010-01-01"
     rows = get_etf_daily(code, start, today.isoformat())
     if not rows:
         return 0
-    n = 0
-    with session_scope() as s:
-        for r in rows:
-            existing = s.exec(select(EtfQuoteDaily).where(
-                EtfQuoteDaily.asset_code == code,
-                EtfQuoteDaily.quote_date == r["quote_date"],
-            )).first()
-            if existing:
-                continue
-            s.add(EtfQuoteDaily(**r))
-            n += 1
-        s.commit()
-    return n
+    return _upsert_etf_rows(code, rows)
 
 
 def run_backfill_benchmark(code: str = "sh000001") -> dict:
@@ -464,31 +501,125 @@ INDUSTRY_ETFS = {
     "159996": "家用电器", "512070": "非银金融", "512580": "环保",
 }
 
+# 动量/红利等策略池中、不在 INDEX/INDUSTRY 的补充 ETF(与历史 27 只池对齐)。
+EXTRA_ETFS = ["512710", "515450", "515650", "588870"]
+
+
+def etf_universe_codes() -> list[str]:
+    """全量 ETF 池:INDEX + INDUSTRY + SECTOR_MAP + EXTRA + asset.fund_etf。"""
+    from stockfu.services.composite import SECTOR_MAP
+    codes: list[str] = (
+        list(INDEX_ETFS) + list(INDUSTRY_ETFS)
+        + list(SECTOR_MAP.values()) + list(EXTRA_ETFS)
+    )
+    with session_scope() as s:
+        for a in s.exec(select(Asset).where(Asset.asset_type == "fund_etf")).all():
+            if a.code:
+                codes.append(a.code)
+    # 去重保序
+    return list(dict.fromkeys(codes))
+
+
+def clear_etf_data() -> dict:
+    """清空全部 ETF 相关行情/份额表(不复权污染后重灌前置)。
+
+    表: etf_quote_daily / fundflow_snapshot / etf_fundflow。
+    不删 asset 自选、不碰个股 quote_snapshot。
+    """
+    from sqlalchemy import text
+    from stockfu.db import engine
+
+    out: dict[str, int] = {}
+    with engine.begin() as conn:
+        for table in ("etf_quote_daily", "fundflow_snapshot", "etf_fundflow"):
+            try:
+                cnt = int(conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0)
+            except Exception:  # noqa: BLE001
+                out[table] = -1  # type: ignore[assignment]
+                continue
+            try:
+                conn.execute(text(f"DELETE FROM {table}"))
+                out[table] = cnt
+            except Exception as exc:  # noqa: BLE001
+                out[table] = f"err:{exc}"  # type: ignore[assignment]
+    return out
+
+
+def _upsert_etf_rows(code: str, rows: list[dict]) -> int:
+    """将 get_etf_daily 行 upsert 进 etf_quote_daily(有则覆盖 OHLC,无则插入)。
+
+    前复权序列在分红/拆分后历史价会整体平移,覆盖保证库内口径一致。
+    返回写入(新增+更新)行数。
+    """
+    if not rows:
+        return 0
+    n = 0
+    with session_scope() as s:
+        existing = {
+            r.quote_date: r for r in s.exec(
+                select(EtfQuoteDaily).where(EtfQuoteDaily.asset_code == code)
+            ).all()
+        }
+        for r in rows:
+            d = r["quote_date"]
+            row = existing.get(d)
+            if row is None:
+                s.add(EtfQuoteDaily(**r))
+                n += 1
+            else:
+                for k in ("open", "high", "low", "close", "pct_chg", "volume", "amount"):
+                    if r.get(k) is not None:
+                        setattr(row, k, r[k])
+                n += 1
+        s.commit()
+    return n
+
+
+def backfill_etf_quotes(
+    codes: list[str] | None = None,
+    start: str = "2010-01-01",
+    sleep_s: float = 0.6,
+) -> dict:
+    """全量回补 ETF 日线(**前复权**)→ etf_quote_daily。
+
+    主源东财 qfq(重试)→ 腾讯 qfq 兜底。对已有日期覆盖 OHLC(非仅补缺),
+    避免不复权残片与前复权历史拼成断档。
+    codes 默认 etf_universe_codes()。
+    返回 {code: {total, written, min, max, source_hint}}。
+    """
+    import time as _t
+    from stockfu.data.akshare_source import get_etf_daily
+
+    today = date.today()
+    pool = codes if codes is not None else etf_universe_codes()
+    summary: dict[str, dict] = {}
+    for i, code in enumerate(pool):
+        rows = get_etf_daily(code, start, today.isoformat())
+        written = _upsert_etf_rows(code, rows)
+        hint = "empty"
+        if rows:
+            # 东财通时通常 >900 根;腾讯兜底约 ≤801
+            hint = "em_or_deep" if len(rows) > 900 else "likely_tencent_shallow"
+        summary[code] = {
+            "total": len(rows),
+            "written": written,
+            "min": str(rows[0]["quote_date"]) if rows else None,
+            "max": str(rows[-1]["quote_date"]) if rows else None,
+            "source_hint": hint,
+        }
+        print(f"  [{i+1}/{len(pool)}] {code}: n={len(rows)} written={written} "
+              f"{summary[code]['min']}→{summary[code]['max']} ({hint})")
+        if i + 1 < len(pool) and sleep_s > 0:
+            _t.sleep(sleep_s)
+    return summary
+
 
 def backfill_industry_etf() -> dict:
-    """一次性回补行业 ETF 历史日线(akshare fund_etf_hist_em,前复权)→ etf_quote_daily。
+    """一次性回补行业 ETF 历史日线(**前复权**)→ etf_quote_daily。
 
-    范式同 backfill_sw_index;ETF 取数带 start/end(从 2010 至今,覆盖上市以来)。返回 {code: {total,new,have_before}}。
+    走 backfill_etf_quotes(仅 INDUSTRY_ETFS);全池请用 backfill_etf_quotes()。
     """
-    from stockfu.data.akshare_source import get_etf_daily
-    today = date.today()
-    summary: dict[str, dict] = {}
-    for code in INDUSTRY_ETFS:
-        with session_scope() as s:
-            existing = s.exec(select(EtfQuoteDaily).where(
-                EtfQuoteDaily.asset_code == code)).all()
-            have_dates = {r.quote_date for r in existing}
-        rows = get_etf_daily(code, "2010-01-01", today.isoformat())
-        new_rows = [r for r in rows if r["quote_date"] not in have_dates]
-        if new_rows:
-            with session_scope() as s:
-                for r in new_rows:
-                    s.add(EtfQuoteDaily(**r))
-                s.commit()
-        summary[code] = {"industry": INDUSTRY_ETFS[code],
-                         "total": len(rows), "new": len(new_rows),
-                         "have_before": len(have_dates)}
-    return summary
+    return backfill_etf_quotes(list(INDUSTRY_ETFS))
 
 
 def run_backfill(days: int) -> dict:
@@ -527,7 +658,7 @@ def run_backfill(days: int) -> dict:
 def ensure_stock_data_and_index(code: str, days: int = 1825) -> dict:
     """单只个股：历史不足则补 K 线 + 抓今日行情 + 算个股三层情绪指数落库。
 
-    供 TUI「加个股即算」与将来 CLI 复用；返回摘要 dict。
+    供 Web「加个股即算」与 CLI 复用；返回摘要 dict。
     """
     from stockfu.services.composite import compute_stock, save
 
