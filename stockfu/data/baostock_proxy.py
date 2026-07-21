@@ -95,6 +95,10 @@ class BaostockProxySession:
     rotates: int = 0
     dropped: int = 0
     logins: int = 0
+    # re-bootstrap / 常驻健康刷新状态
+    _bs_params: dict = field(default_factory=dict)
+    last_bootstrap_ts: float = 0.0
+    bootstrap_count: int = 0
 
     def __enter__(self) -> "BaostockProxySession":
         self.start()
@@ -107,6 +111,7 @@ class BaostockProxySession:
     def start(self) -> str:
         """并发确认 baostock 代理 → 再 enable 最快可用 IP 并 login → 才允许拉数。"""
         self.pool.socket_timeout = self.socket_timeout
+        self.pool.dead_ttl = float(os.environ.get("BAOSTOCK_DEAD_TTL", "1800"))
         seeds: list[ProxyEndpoint] = []
         if self.seed_local_clash:
             seed = local_clash_socks(self.clash_host, self.clash_port)
@@ -115,7 +120,7 @@ class BaostockProxySession:
                 print(f"  [proxy] seed local clash {seed}", flush=True)
 
         if self.use_free_pool:
-            n = self.pool.bootstrap(
+            bs_kwargs = dict(
                 max_per_kind=self.max_per_kind,
                 probe_limit=self.probe_limit,
                 workers=self.probe_workers,
@@ -127,6 +132,10 @@ class BaostockProxySession:
                 login_probe_limit=self.login_probe_limit,
                 login_need=self.login_need,
             )
+            self._bs_params = bs_kwargs
+            n = self.pool.bootstrap(**bs_kwargs)
+            self.last_bootstrap_ts = time.time()
+            self.bootstrap_count = 1
             if n == 0 and seeds:
                 # 并发校验全挂：退回种子再串行 login 试一次
                 print("  [proxy] concurrent login none; fallback seed serial", flush=True)
@@ -202,6 +211,9 @@ class BaostockProxySession:
                 return False
             ep = self.pool.pop()
             if ep is None:
+                # 池空：冷却内重拉一轮（长回补不再因池薄中途夭折）
+                if self._maybe_rebootstrap_if_allowed(reason=reason or "pool_empty"):
+                    continue
                 self.proxy_url = "none"
                 return False
             try:
@@ -227,6 +239,66 @@ class BaostockProxySession:
             _force_close_baostock_socket()
             if self.sleep_after_rotate > 0:
                 time.sleep(self.sleep_after_rotate)
+
+    # ----- 池自愈：耗尽重拉 / 常驻健康刷新 -----
+    def _rebootstrap(self) -> int:
+        """用记录的参数重新拉+探测+校验一轮代理。返回新确认可用数。
+
+        保持当前 login 与已 enable 的代理不动，只补 bench（login 校验在子进程
+        独立进行，不打扰主进程 socket 注入）。先清过期 dead，让重拉能捡回
+        瞬时抖动掉的 IP。
+        """
+        if not self._bs_params:
+            return 0
+        self.pool._prune_dead()
+        self.bootstrap_count += 1
+        self.last_bootstrap_ts = time.time()
+        n = self.pool.bootstrap(**self._bs_params)
+        print(
+            f"  [rebootstrap #{self.bootstrap_count}] verified={n} "
+            f"pool_left={self.pool.remaining()} dead={len(self.pool.dead)}",
+            flush=True,
+        )
+        return n
+
+    def _maybe_rebootstrap_if_allowed(self, reason: str = "") -> bool:
+        """冷却 + 上限内才重拉，避免空池时无限 hammer。"""
+        min_interval = float(os.environ.get("BAOSTOCK_REBOOTSTRAP_MIN_INTERVAL", "60"))
+        max_count = int(os.environ.get("BAOSTOCK_REBOOTSTRAP_MAX", "8"))
+        if self.bootstrap_count >= max_count:
+            print(
+                f"  [rebootstrap] max={max_count} reached, give up ({reason})",
+                flush=True,
+            )
+            return False
+        if time.time() - self.last_bootstrap_ts < min_interval:
+            print(
+                f"  [rebootstrap] cooldown {min_interval:.0f}s, give up ({reason})",
+                flush=True,
+            )
+            return False
+        return self._rebootstrap() > 0
+
+    def maybe_refresh(self, *, force: bool = False) -> bool:
+        """常驻通道健康检查：池过薄或老化则补拉（保持当前 login）。
+
+        覆盖 web / `--schedule` 长进程：原实现启动后池只缩不补。
+        env BAOSTOCK_MIN_ALIVE(默认 2) / BAOSTOCK_MAX_AGE(默认 1800s)。
+        """
+        if not self.active or not self._bs_params:
+            return False
+        min_alive = int(os.environ.get("BAOSTOCK_MIN_ALIVE", "2"))
+        max_age = float(os.environ.get("BAOSTOCK_MAX_AGE", "1800"))
+        thin = self.pool.remaining() < min_alive
+        stale = (time.time() - self.last_bootstrap_ts) > max_age
+        if not (force or thin or stale):
+            return False
+        print(
+            f"  [proxy] refresh (thin={thin} stale={stale} "
+            f"alive={self.pool.remaining()})",
+            flush=True,
+        )
+        return self._rebootstrap() > 0
 
     def _login(self) -> bool:
         """强制 logout+login；``login_timeout`` 秒硬超时（子线程 join）。
@@ -524,6 +596,7 @@ def ensure_baostock_login(force: bool = False) -> bool:
 
         sess = _global_session
         if BaostockSource._logged_in and not force:
+            sess.maybe_refresh()  # 常驻通道：池薄/老化则补拉（不动当前 login）
             return True
 
         # 重登当前代理

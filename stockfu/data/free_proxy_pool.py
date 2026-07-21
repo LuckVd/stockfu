@@ -11,12 +11,15 @@ HTTP 代理经 PySocks ``socks.HTTP``（CONNECT 隧道）可承载该 TCP。
 """
 from __future__ import annotations
 
+import json
+import os
 import random
 import socket
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable, Literal
 from urllib.request import Request, urlopen
 
@@ -43,6 +46,46 @@ _DEFAULT_SOURCES: dict[ProxyKind, list[str]] = {
         "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt",
     ],
 }
+
+# 外部源（可选）：data/proxy_sources.json，与默认合并去重；放私有/付费镜像
+_PROXY_SOURCES_PATH = Path(__file__).resolve().parents[2] / "data" / "proxy_sources.json"
+
+
+def _load_sources() -> dict[str, list[str]]:
+    """代理源列表：内置默认 + 可选 data/proxy_sources.json 合并去重。
+
+    json 格式：{"http": ["url", ...], "socks5": [...], "socks4": [...]}
+    """
+    merged: dict[str, list[str]] = {k: list(v) for k, v in _DEFAULT_SOURCES.items()}
+    try:
+        if _PROXY_SOURCES_PATH.exists():
+            data = json.loads(_PROXY_SOURCES_PATH.read_text("utf-8")) or {}
+            for kind, urls in data.items():
+                if kind not in merged or not isinstance(urls, list):
+                    continue
+                for u in urls:
+                    if isinstance(u, str) and u not in merged[kind]:
+                        merged[kind].append(u)
+            print(f"  [proxy-fetch] merged external {_PROXY_SOURCES_PATH.name}",
+                  flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [proxy-fetch] sources json read fail: {e}", flush=True)
+    return merged
+
+
+def _source_proxy() -> str | None:
+    """拉源列表的出站代理（仅 opener 级，不劫持全局 socket）。
+
+    env BAOSTOCK_SOURCE_PROXY: auto(默认，本机 7890 在听则用) / http://... / none。
+    国内直连拉不到 GitHub 列表时经 clash 走海外出口。
+    """
+    raw = (os.environ.get("BAOSTOCK_SOURCE_PROXY") or "auto").strip().lower()
+    if raw in ("", "none", "off", "direct"):
+        return None
+    if raw == "auto":
+        return local_clash_http()
+    return raw
+
 
 # 仅补丁 baostock 建连（禁止全局 socket.socket 劫持，否则东财/腾讯也走免费代理）
 _orig_bs_connect = None
@@ -72,7 +115,9 @@ class FreeProxyPool:
 
     candidates: list[ProxyEndpoint] = field(default_factory=list)
     alive: list[ProxyEndpoint] = field(default_factory=list)
-    dead: set[str] = field(default_factory=set)  # url 集合
+    # url → 标记死亡的时刻；超 dead_ttl 自动复活（瞬时抖动不再永久拉黑）
+    dead: dict[str, float] = field(default_factory=dict)
+    dead_ttl: float = 1800.0
     current: ProxyEndpoint | None = None
     socket_timeout: float = 12.0
 
@@ -86,13 +131,17 @@ class FreeProxyPool:
     ) -> int:
         seen: set[tuple[str, str, int]] = set()
         out: list[ProxyEndpoint] = []
+        sources = _load_sources()
+        via = _source_proxy()
+        if via:
+            print(f"  [proxy-fetch] sources via {via}", flush=True)
         for kind in kinds:
             n_kind = 0
-            for url in _DEFAULT_SOURCES.get(kind, []):
+            for url in sources.get(kind, []):
                 if n_kind >= max_per_kind:
                     break
                 try:
-                    body = _http_get(url, timeout=per_source_timeout)
+                    body = _http_get(url, timeout=per_source_timeout, via_proxy=via)
                 except Exception as e:  # noqa: BLE001
                     print(
                         f"  [proxy-fetch fail] {kind} {url[:56]}… "
@@ -102,7 +151,7 @@ class FreeProxyPool:
                     continue
                 for line in body.splitlines():
                     ep = _parse_line(line, kind)
-                    if not ep or ep.url in self.dead:
+                    if not ep or self._is_dead(ep.url):
                         continue
                     key = (ep.kind, ep.host, ep.port)
                     if key in seen:
@@ -112,7 +161,8 @@ class FreeProxyPool:
                     n_kind += 1
                     if n_kind >= max_per_kind:
                         break
-            print(f"  [proxy-fetch] {kind}: +{n_kind}", flush=True)
+            tag = f" via {via}" if via else ""
+            print(f"  [proxy-fetch]{tag} {kind}: +{n_kind}", flush=True)
         random.shuffle(out)
         self.candidates = out
         return len(out)
@@ -120,7 +170,7 @@ class FreeProxyPool:
     def add_seed(self, *endpoints: ProxyEndpoint) -> None:
         """预置种子（如本机 Clash SOCKS），插到候选最前。"""
         for ep in reversed(endpoints):
-            if ep.url in self.dead:
+            if self._is_dead(ep.url):
                 continue
             self.candidates = [ep] + [c for c in self.candidates if c.url != ep.url]
 
@@ -135,7 +185,7 @@ class FreeProxyPool:
         target_port: int = BAOSTOCK_PORT,
         progress_every: int = 40,
     ) -> int:
-        pool = [c for c in self.candidates if c.url not in self.dead]
+        pool = [c for c in self.candidates if not self._is_dead(c.url)]
         if limit is not None:
             pool = pool[:limit]
         if not pool:
@@ -193,7 +243,7 @@ class FreeProxyPool:
         只有 login 成功的才进入 self.alive（按耗时升序，快的优先）。
         need: 凑够这么多个已确认即可提前结束等待剩余任务（仍会收已完成的）。
         """
-        pool = [c for c in self.alive if c.url not in self.dead]
+        pool = [c for c in self.alive if not self._is_dead(c.url)]
         if limit is not None:
             pool = pool[:limit]
         if not pool:
@@ -234,7 +284,7 @@ class FreeProxyPool:
                         flush=True,
                     )
                 else:
-                    self.dead.add(ep.url)
+                    self._mark_dead(ep.url)
                     if done <= 8 or done % 10 == 0:
                         print(
                             f"  ✗ LOGIN {ep}  {ms:.0f}ms  {err}",
@@ -311,7 +361,7 @@ class FreeProxyPool:
         """取下一个可用代理（不自动 enable）。"""
         while self.alive:
             ep = self.alive.pop(0)
-            if ep.url in self.dead:
+            if self._is_dead(ep.url):
                 continue
             self.current = ep
             return ep
@@ -322,7 +372,7 @@ class FreeProxyPool:
         """立即剔除不可用 IP。"""
         if ep is None:
             return
-        self.dead.add(ep.url)
+        self._mark_dead(ep.url)
         self.alive = [a for a in self.alive if a.url != ep.url]
         if self.current and self.current.url == ep.url:
             self.current = None
@@ -334,6 +384,24 @@ class FreeProxyPool:
 
     def remaining(self) -> int:
         return len(self.alive)
+
+    # ----- dead 集 TTL（超时自动复活，避免瞬时抖动被永久拉黑）-----
+    def _mark_dead(self, url: str) -> None:
+        self.dead[url] = time.time()
+
+    def _is_dead(self, url: str) -> bool:
+        ts = self.dead.get(url)
+        if ts is None:
+            return False
+        if time.time() - ts > self.dead_ttl:
+            self.dead.pop(url, None)  # 复活：允许重新探测入池
+            return False
+        return True
+
+    def _prune_dead(self) -> None:
+        now = time.time()
+        for url in [u for u, ts in self.dead.items() if now - ts > self.dead_ttl]:
+            self.dead.pop(url, None)
 
     # ----- 仅 baostock 走代理 -----
     def enable(self, ep: ProxyEndpoint) -> str:
@@ -365,8 +433,27 @@ def local_clash_socks(
         return None
 
 
-def _http_get(url: str, timeout: float = 12.0) -> str:
+def local_clash_http(host: str = "127.0.0.1", port: int = 7890) -> str | None:
+    """本机 clash HTTP 口在听则返回 'http://host:port'，用于下载代理源列表。"""
+    try:
+        s = socket.create_connection((host, port), timeout=0.5)
+        s.close()
+        return f"http://{host}:{port}"
+    except OSError:
+        return None
+
+
+def _http_get(url: str, timeout: float = 12.0,
+              via_proxy: str | None = None) -> str:
     req = Request(url, headers={"User-Agent": "stockfu-proxy-pool/1.1"})
+    if via_proxy:
+        import urllib.request as ur
+
+        opener = ur.build_opener(
+            ur.ProxyHandler({"http": via_proxy, "https": via_proxy})
+        )
+        with opener.open(req, timeout=timeout) as resp:  # noqa: S310
+            return resp.read().decode("utf-8", errors="ignore")
     with urlopen(req, timeout=timeout) as resp:  # noqa: S310
         return resp.read().decode("utf-8", errors="ignore")
 

@@ -19,3 +19,5 @@ data/reports/
 data/_contaminated_*/
 data/adj_audit_*.json
 data/*.pid
+# 免费代理池外部源（用户私有/付费镜像，勿入库）
+data/proxy_sources.json
