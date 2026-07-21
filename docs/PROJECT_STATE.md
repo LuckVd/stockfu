@@ -8,16 +8,66 @@
 
 > **【2026-07-21 口径修正】** 此前全周期总表/选股/荐股数字跑在**混复权**行情上，**全部作废**。行情已统一前复权；股息率分母改为 **不复权 `close_raw`**（名义现金 ÷ 全样本 qfq 会虚高并引入前视）。干净全周期结果待 `close_raw` 回补完成 + `--update-backtests` 重跑后重写。
 
-## 0. 进行中任务 / 冷启动接棒（2026-07-21）
+## 0. 进行中任务 / 冷启动接棒（2026-07-21 晚）
 
-### 0.1 正在跑
+> **关会话不影响回补**：进程已 **double-fork / PPID=1** 后台跑。
 
-| 任务 | 状态 |
-|------|------|
-| 三复权回补 | `python3 main.py --backfill-adj-prices`：**baostock 串行**，默认 Clash SOCKS5 `127.0.0.1:7891`；写 `*_qfq/*_raw/*_hfq`；日志 `data/backfill_adj_prices_baostock_serial.log` |
-| 干净全周期回测 | 等 raw 覆盖就绪后：`python3 main.py --update-backtests --start 2021-01-01 --end 2026-07-20` |
+### 0.1 正在跑 — 三复权 baostock 串行回补
 
-### 0.1b 荐股（CLI 已固化）
+| 项 | 值 |
+|----|-----|
+| 命令 | `python3 main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20` |
+| 源/模式 | **仅 baostock** 串行；SOCKS5 `127.0.0.1:7891`（Clash）；`preserve_qfq=True`（只补 raw/hfq） |
+| PID 文件 | `data/backfill_adj_prices.pid` |
+| 日志 | `data/backfill_adj_prices_baostock_serial.log`（追加） |
+| 查进度 | `tail -f data/backfill_adj_prices_baostock_serial.log` |
+| 覆盖率 | `python3 -c "from stockfu.scheduler.backfill_adj_prices import adj_price_coverage; print(adj_price_coverage())"` |
+| 是否活着 | `ps -p $(cat data/backfill_adj_prices.pid) -o pid,etime,cmd` |
+| 完成标志 | 日志出现 `=== 完成 ok=…`；`raw_pct`/`hfq_pct` 接近 100% |
+| 粗估 | ~0.05 只/s × 801 只 ≈ **4–5 小时**（幂等，中断可重跑同一命令） |
+
+若进程挂了（关会话后应仍在；若 `ps` 无进程）：
+
+```bash
+cd /opt/pro/stockfu
+python3 - <<'PY'
+import os, sys
+from pathlib import Path
+os.chdir('/opt/pro/stockfu')
+if os.fork()>0: sys.exit(0)
+os.setsid()
+if os.fork()>0: sys.exit(0)
+Path('data/backfill_adj_prices.pid').write_text(str(os.getpid())+'\n')
+so=open('data/backfill_adj_prices_baostock_serial.log','ab')
+os.dup2(open('/dev/null','rb').fileno(),0); os.dup2(so.fileno(),1); os.dup2(so.fileno(),2)
+os.execvp('python3',['python3','-u','main.py','--backfill-adj-prices','--start','2020-01-01','--end','2026-07-20'])
+PY
+```
+
+### 0.2 下一步（回补完成后做）
+
+1. **确认覆盖**  
+   `adj_price_coverage()` → `has_raw` 与全表行数接近；抽检  
+   `601919@2023-06-30`：`close_raw≈9.4`，`close_qfq` 仍为前复权。
+2. **清股息缓存（回补 CLI 结束时会自动清；若中途重跑可手动）**  
+   `python3 main.py --clear-dividend-cache`
+3. **干净全周期回测**（优先红利两只，再全目录）  
+   ```bash
+   nohup python3 -u main.py --update-backtests --start 2021-01-01 --end 2026-07-20 \
+     --strategies dividend_cross_section,dividend_low_vol \
+     > data/update_backtests_dividend_raw.log 2>&1 &
+   # 或全部:
+   nohup python3 -u main.py --update-backtests --start 2021-01-01 --end 2026-07-20 \
+     > data/update_backtests_clean.log 2>&1 &
+   ```
+4. **重写 §0.3 总表**（旧混复权 / qfq 分母红利数字一律作废；含曾见的 +67% 红利 CS）
+5. 可选：`--recommend` 在干净缓存上重跑选股
+
+### 0.3 代码已推送（2026-07-21）
+
+`origin/main` 含：去 sina/pytdx、全周期/CS 策略族、三复权 schema+串行回补、股息率 raw 分母、冷启动文档清理。
+
+### 0.4 荐股（CLI 已固化）
 
 ```bash
 python3 main.py --recommend --strategies cross_section_factor,reversal_cross_section \
@@ -25,7 +75,7 @@ python3 main.py --recommend --strategies cross_section_factor,reversal_cross_sec
 # 产物 data/reports/recommend/…（runtime，gitignore）
 ```
 
-### 0.2 已完成（代码层，本轮可提交）
+### 0.5 已完成（代码层，已 push）
 
 | 项 | 说明 |
 |----|------|
@@ -38,7 +88,7 @@ python3 main.py --recommend --strategies cross_section_factor,reversal_cross_sec
 | 股息率口径 | `dividend_yield_ttm` 分母 **close_raw**；算子 `price_basis=raw` |
 | 数据源 | 删 sina/pytdx；K 线路径强制前复权 |
 
-### 0.3 全周期结果总表
+### 0.6 全周期结果总表
 
 **待重写。** 勿引用 07-19/07-20 混复权表。干净样本（部分）：
 
@@ -47,11 +97,7 @@ python3 main.py --recommend --strategies cross_section_factor,reversal_cross_sec
 | `reversal_cross_section` | 干净重算约 +5% / 超额 −3%（热缓存全周期 ~3min） |
 | `dividend_cross_section` | 旧 +67% **不可信**（qfq 分母）；待 raw 回补后重跑 |
 
-### 0.4 空仓选股
-
-服务可用；**产物需在干净缓存上重跑**，勿用旧 picks 邮件结论。
-
-### 0.5 关键 CLI
+### 0.7 关键 CLI
 
 ```bash
 python3 main.py --init-db
