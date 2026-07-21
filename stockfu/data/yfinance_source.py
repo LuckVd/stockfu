@@ -53,7 +53,8 @@ class YfinanceSource(DataSource):
         sym = self._yf_symbol(code, market)
         t = yf.Ticker(sym, session=self._proxy_session())
         try:
-            h = t.history(period="5d")
+            # auto_adjust=True：前复权(分红/拆分调整后的 Close)
+            h = t.history(period="5d", auto_adjust=True)
         except Exception:  # noqa: BLE001
             h = None
         if h is None or len(h) == 0:
@@ -129,7 +130,9 @@ class YfinanceSource(DataSource):
         sym = self._yf_symbol(code, market)
         try:
             period = "max" if days >= 365 * 5 else f"{max(1, days // 365 + 1)}y"
-            h = yf.Ticker(sym, session=self._proxy_session()).history(period=period)
+            # auto_adjust=True：前复权，与 A 股 baostock/tencent qfq 口径对齐
+            h = yf.Ticker(sym, session=self._proxy_session()).history(
+                period=period, auto_adjust=True)
         except Exception:  # noqa: BLE001
             return []
         bars: list[KlineBar] = []

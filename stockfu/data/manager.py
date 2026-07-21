@@ -1,7 +1,9 @@
 """数据层门面：按市场在多个数据源间做优先级 fallback。
 
 借鉴 daily_stock_analysis 的 DataFetcherManager：单源失败自动降级，
-上层业务（services / api / tui）只与本门面交互，不直接碰具体数据源。
+上层业务（services / api）只与本门面交互，不直接碰具体数据源。
+
+硬约束：行情/K 线只接入**前复权(qfq)**源；已移除 sina / pytdx 等不复权源。
 """
 from __future__ import annotations
 
@@ -11,8 +13,6 @@ from stockfu.data.base import (DividendMetric, KlineBar, Market, Quote, TTLCache
 from stockfu.data.akshare_source import AkshareSource
 from stockfu.data.baostock_source import BaostockSource
 from stockfu.data.efinance_source import EfinanceSource
-from stockfu.data.pytdx_source import PytdxSource
-from stockfu.data.sina_source import SinaSource
 from stockfu.data.tencent_source import TencentSource
 from stockfu.data.yfinance_source import YfinanceSource
 
@@ -21,18 +21,18 @@ class DataProviderManager:
     def __init__(self) -> None:
         self.efinance = EfinanceSource()
         self.tencent = TencentSource()
-        self.sina = SinaSource()
-        self.pytdx = PytdxSource()
         self.baostock = BaostockSource()
         self.akshare = AkshareSource()
         self.yfinance = YfinanceSource()
         # 分红数据低频（一年几次），缓存 1 小时，避免每次刷新自选都全量联网拉取
         self._dividend_cache = TTLCache(3600)
         self._index_cache = TTLCache(300)
-        # 行情 / K 线优先级：baostock(权威日K EOD)→efinance(PE/PB/name+兜底)→tencent→sina→pytdx→akshare→yfinance
+        # 行情 / K 线优先级（全部前复权）:
+        # baostock(adjustflag=2) → efinance(fqt=1) → tencent(qfq) → akshare(qfq) → yfinance(auto_adjust)
         # baostock 无 get_quote(继承 base 返回 None)→ CN 取实时盘自动降级 efinance；港美股被 supports={CN} 跳过
-        self._quote_order: list = [self.baostock, self.efinance, self.tencent, self.sina, self.pytdx,
-                                   self.akshare, self.yfinance]
+        self._quote_order: list = [
+            self.baostock, self.efinance, self.tencent, self.akshare, self.yfinance,
+        ]
 
     def _ordered_for(self, market: str) -> list:
         return [s for s in self._quote_order if market in s.supports]
@@ -58,8 +58,9 @@ class DataProviderManager:
         if cached is not None:
             return cached if cached.events else None   # 空 marker 命中→None（无分红）
         market = detect_market(code)
-        # A 股分红主力 akshare；港美股主力 yfinance
-        candidates = ([self.akshare, self.yfinance] if market == Market.CN
+        # A 股分红主力 baostock(query_dividend_data 免费稳定,字段结构化)→akshare→yfinance;
+        # 港美股主力 yfinance
+        candidates = ([self.baostock, self.akshare, self.yfinance] if market == Market.CN
                       else [self.yfinance, self.akshare])
         result: Optional[DividendMetric] = None
         for s in candidates:

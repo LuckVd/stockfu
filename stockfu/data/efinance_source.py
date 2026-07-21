@@ -2,6 +2,8 @@
 
 efinance 免费无 token，get_realtime_quotes 支持指定代码批量，是 A 股实时行情首选源。
 列名容错：不同版本列名略有差异，统一用关键词匹配。
+
+日 K 强制前复权：`fqt=1`（0=不复权 / 1=前复权 / 2=后复权）。
 """
 from __future__ import annotations
 
@@ -58,7 +60,7 @@ class EfinanceSource(DataSource):
         try:
             with direct_connection():  # efinance 必须 import+调用都在无代理环境
                 import efinance as ef
-                df = ef.stock.get_quote_history(sym, klt=101, beg=beg)
+                df = ef.stock.get_quote_history(sym, klt=101, fqt=1, beg=beg)
         except Exception:
             return None
         if df is None or getattr(df, "empty", True):
@@ -90,7 +92,8 @@ class EfinanceSource(DataSource):
         try:
             with direct_connection():  # efinance 必须 import+调用都在无代理环境
                 import efinance as ef
-                df = ef.stock.get_quote_history(sym, klt=101, beg=beg)  # 101=日K, beg=起始日
+                # 101=日K; fqt=1 前复权（项目硬约束：禁止不复权 K）
+                df = ef.stock.get_quote_history(sym, klt=101, fqt=1, beg=beg)
         except Exception:
             return []
         if df is None or getattr(df, "empty", True):
