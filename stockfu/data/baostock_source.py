@@ -8,10 +8,12 @@ baostock 免费无 token，提供 A 股日K（含 peTTM/pbMRQ/换手率）——
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional
 
-from stockfu.data.base import DataSource, KlineBar, Market, Quote, currency_of
+from stockfu.data.base import (
+    DataSource, DividendEventDTO, DividendMetric, KlineBar, Market, Quote, currency_of,
+)
 
 
 def _bs_code(code: str) -> str:
@@ -39,6 +41,16 @@ def _i(v) -> Optional[int]:
         return None
     try:
         return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_date(v) -> Optional[date]:
+    """baostock 'YYYY-MM-DD' 字符串 → date;空串/异常 → None。"""
+    if v in (None, ""):
+        return None
+    try:
+        return datetime.strptime(str(v).strip(), "%Y-%m-%d").date()
     except (TypeError, ValueError):
         return None
 
@@ -71,22 +83,54 @@ class BaostockSource(DataSource):
         调此方法 logout+重新 login 即可恢复。"""
         return cls._ensure_login(force=True)
 
-    def _klines(self, code: str, days: int = 800) -> list[KlineBar]:
+    # baostock adjustflag: 1=后复权 hfq, 2=前复权 qfq, 3=不复权 raw
+    ADJ_FLAG = {"hfq": "1", "qfq": "2", "raw": "3"}
+
+    def _klines(self, code: str, days: int = 800,
+                adj: str = "qfq") -> list[KlineBar]:
+        """日K。adj=qfq|raw|hfq → baostock adjustflag 2|3|1。默认前复权。"""
         if not self._ensure_login():
             return []
         import baostock as bs
         from datetime import date as _d, timedelta as _td
 
         start = (_d.today() - _td(days=days + 15)).strftime("%Y-%m-%d")
+        flag = self.ADJ_FLAG.get((adj or "qfq").lower(), "2")
         try:
             # 全字段:状态 + 估值 + 换手,供补全「最新交易日所有数据」
             rs = bs.query_history_k_data_plus(
                 _bs_code(code),
                 "date,open,high,low,close,volume,amount,tradestatus,isST,"
                 "pctChg,peTTM,pbMRQ,turn",
-                start_date=start, frequency="d", adjustflag="2")  # 2=前复权
+                start_date=start, frequency="d", adjustflag=flag)
         except Exception:  # noqa: BLE001
             return []
+        return self._parse_kline_rs(rs)
+
+    def _klines_range(self, code: str, start: str, end: str | None = None,
+                      adj: str = "qfq") -> list[KlineBar]:
+        """按日期区间拉日K(供三复权批量回补)。start/end=YYYY-MM-DD。"""
+        if not self._ensure_login():
+            return []
+        import baostock as bs
+        flag = self.ADJ_FLAG.get((adj or "qfq").lower(), "2")
+        kwargs = dict(
+            start_date=start, frequency="d", adjustflag=flag,
+        )
+        if end:
+            kwargs["end_date"] = end
+        try:
+            rs = bs.query_history_k_data_plus(
+                _bs_code(code),
+                "date,open,high,low,close,volume,amount,tradestatus,isST,"
+                "pctChg,peTTM,pbMRQ,turn",
+                **kwargs)
+        except Exception:  # noqa: BLE001
+            return []
+        return self._parse_kline_rs(rs)
+
+    @staticmethod
+    def _parse_kline_rs(rs) -> list[KlineBar]:
         bars: list[KlineBar] = []
         while getattr(rs, "error_code", "1") == "0" and rs.next():
             row = rs.get_row_data()
@@ -109,6 +153,17 @@ class BaostockSource(DataSource):
             ))
         return bars
 
+    def get_kline_triple(self, code: str, start: str,
+                         end: str | None = None) -> dict[str, list[KlineBar]]:
+        """一次拉齐三套复权 K 线 → {qfq|raw|hfq: bars}。任一失败返回对应空列表。"""
+        out = {}
+        for adj in ("qfq", "raw", "hfq"):
+            try:
+                out[adj] = self._klines_range(code, start, end, adj=adj)
+            except Exception:  # noqa: BLE001
+                out[adj] = []
+        return out
+
     def _fetch_quote(self, code: str) -> Optional[Quote]:
         """现价 = 最近交易日收盘价（天级，无盘中实时）。"""
         bars = self._klines(code, 5)
@@ -125,8 +180,9 @@ class BaostockSource(DataSource):
             updated_at=datetime.now(),
         )
 
-    def get_kline(self, code: str, days: int = 365) -> list[KlineBar]:
-        bars = self._klines(code, max(days, 800))
+    def get_kline(self, code: str, days: int = 365,
+                  adj: str = "qfq") -> list[KlineBar]:
+        bars = self._klines(code, max(days, 800), adj=adj)
         return bars[-days:] if days and len(bars) > days else bars
 
     def get_pe_pb_percentile(self, code: str, years: int = 10) -> tuple[Optional[float], Optional[float]]:
@@ -158,6 +214,76 @@ class BaostockSource(DataSource):
         pe_pct = F.percentile(pes, cur_pe)[0] if pes and cur_pe else None
         pb_pct = F.percentile(pbs, cur_pb)[0] if pbs and cur_pb else None
         return pe_pct, pb_pct
+
+    def get_dividend_metric(self, code: str, latest_price: Optional[float] = None,
+                            years: int = 10) -> Optional[DividendMetric]:
+        """baostock 分红历史(query_dividend_data, 财年口径)→ DividendMetric。
+
+        baostock 按「财年 yearType=report」查分红预案;每股税前现金分红字段
+        dividCashPsBeforeTax 已是每股口径(茅台「10派308.76」→ 30.876),无需再 /10。
+        遍历近 years 年覆盖跨年除权(年报分红常在次年除权)。免费替代 akshare 东财分红接口。
+
+        字段序(实测 query_dividend_data 返回):
+          0code 1preNotice 2agm 3planAnnounce 4planDate 5registDate
+          6operateDate(除权除息日) 7payDate 8stockMktDate
+          9cashPsBeforeTax(每股税前) 10cashPsAfterTax 11stocksPs 12cashStockText 13reserveToStock
+        """
+        if not self._ensure_login():
+            return None
+        import baostock as bs
+        from datetime import timedelta
+
+        this_year = date.today().year
+        events: list[DividendEventDTO] = []
+        empty_year0 = False   # 首年即空 → 可能掉线,触发一次 force_relogin
+        for y in range(this_year - years + 1, this_year + 1):
+            try:
+                rs = bs.query_dividend_data(_bs_code(code), year=y, yearType="report")
+            except Exception:  # noqa: BLE001
+                continue
+            err = getattr(rs, "error_code", "1")
+            if err != "0":
+                # 非"无数据"的真实错误(常为掉线):首年失败时重连一次再试
+                if y == this_year - years + 1 and not empty_year0:
+                    empty_year0 = True
+                    self.force_relogin()
+                    try:
+                        rs = bs.query_dividend_data(_bs_code(code), year=y, yearType="report")
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if getattr(rs, "error_code", "1") != "0":
+                        continue
+                else:
+                    continue
+            had_row = False
+            while rs.next():
+                row = rs.get_row_data()
+                ex = _parse_date(row[6]) if len(row) > 6 else None
+                cash = _f(row[9]) if len(row) > 9 else None
+                if ex is None or not cash or cash <= 0:
+                    continue   # 送转股无现金 / 未实施 / 字段缺失
+                had_row = True
+                events.append(DividendEventDTO(
+                    ex_date=ex, per_share_cash=cash,
+                    record_date=_parse_date(row[5]) if len(row) > 5 else None,
+                    announce_date=_parse_date(row[3]) if len(row) > 3 else None,
+                    currency="CNY",
+                    source=f"baostock:dividend/{y}",
+                ))
+        if not events:
+            return None
+        # TTM 近 365 天每股现金分红(算子层会按 as_of 重算,此处仅展示用)
+        ref = date.today()
+        ttm = sum(e.per_share_cash for e in events if e.ex_date >= ref - timedelta(days=365))
+        ttm_yield = (round(ttm / latest_price * 100, 2)
+                     if latest_price and latest_price > 0 else None)
+        return DividendMetric(
+            code=code, currency="CNY",
+            ttm_cash_per_share=round(ttm, 4),
+            ttm_yield_pct=ttm_yield,
+            events=events,
+            coverage=f"baostock:{this_year - years + 1}-{this_year}({len(events)}次)",
+        )
 
 
 def get_index_daily_baostock(symbol: str, start: str, end: str) -> list[dict]:

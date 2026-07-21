@@ -69,15 +69,39 @@ class DividendEvent(SQLModel, table=True):
 
 
 class QuoteSnapshot(SQLModel, table=True):
-    """行情天级快照（历史落库，支撑历史分析 / 指数 / 因子分位）。"""
+    """个股日行情快照。价格分三套复权口径(baostock adjustflag):
+
+    - *_qfq / 遗留 open·high·low·close: **前复权**(flag=2)。回测成交、动量/低波等价量因子默认用它。
+      遗留四列 ≡ qfq,写入时同步,兼容旧 SQL/ETF 风格调用。
+    - *_raw: **不复权**(flag=3)。股息率等「名义现金/股价」分母必须用它(防 qfq 前视)。
+    - *_hfq: **后复权**(flag=1)。备用(长周期绝对价对比等)。
+
+    volume/amount/pe/pb/状态列与复权无关,共享一行。
+    """
     __tablename__ = "quote_snapshot"
     id: int | None = Field(default=None, primary_key=True)
     asset_code: str = Field(foreign_key="asset.code", index=True)
     quote_date: date = Field(default_factory=date.today, index=True)
+    # ── 前复权(遗留别名,≡ *_qfq) ──
     open: float | None = None
     high: float | None = None
     low: float | None = None
     close: float = 0.0
+    # ── 前复权(显式) ──
+    open_qfq: float | None = None
+    high_qfq: float | None = None
+    low_qfq: float | None = None
+    close_qfq: float | None = None
+    # ── 不复权 ──
+    open_raw: float | None = None
+    high_raw: float | None = None
+    low_raw: float | None = None
+    close_raw: float | None = None
+    # ── 后复权 ──
+    open_hfq: float | None = None
+    high_hfq: float | None = None
+    low_hfq: float | None = None
+    close_hfq: float | None = None
     pct_chg: float | None = None
     volume: float | None = None
     amount: float | None = None
