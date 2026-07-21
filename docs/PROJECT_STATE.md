@@ -21,6 +21,7 @@
 | 其它模式 | `--proxy-mode clash` 仅本机 SOCKS；`--proxy-mode direct` / `--no-socks` 直连 |
 | 池自愈 | 耗尽自动重拉(`BAOSTOCK_REBOOTSTRAP_MIN_INTERVAL`/`_MAX`)；死 IP TTL 复活(`BAOSTOCK_DEAD_TTL`，默认 1800s)；常驻通道 `maybe_refresh`(`BAOSTOCK_MAX_AGE`/`BAOSTOCK_MIN_ALIVE`)——长回补/web/`--schedule` 不再因池薄中断 |
 | 源 | **仅 baostock**；`preserve_qfq=True`（只补 raw/hfq）。源经本机 clash `7890` 拉(`BAOSTOCK_SOURCE_PROXY=auto`，GitHub 列表国内可达)；可选 `data/proxy_sources.json` 外置合并私有/付费镜像 |
+| 断点续传 | **默认开**：跳过 `[start,end]` 内 raw/hfq 已覆盖 qfq 的 code（一条分组聚合判定），只补缺口；`--full` 强制全量重抓。重跑只做未完成的部分，不再全量重抓 |
 | 实现 | `stockfu/data/free_proxy_pool.py` + `baostock_proxy.py`；HTTP CONNECT / SOCKS 隧道 |
 | 日志建议 | `nohup python3 -u main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20 > data/backfill_adj_prices_baostock_serial.log 2>&1 &` |
 | 覆盖率 | `python3 -c "from stockfu.scheduler.backfill_adj_prices import adj_price_coverage; print(adj_price_coverage())"` |

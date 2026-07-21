@@ -258,7 +258,8 @@ def run_backfill_quote_status() -> None:
 
 def run_backfill_adj_prices(start: str | None = None, end: str | None = None,
                             no_socks: bool = False,
-                            proxy_mode: str | None = None) -> None:
+                            proxy_mode: str | None = None,
+                            full: bool = False) -> None:
     """baostock **串行** 三复权写入 quote_snapshot.*_qfq/*_raw/*_hfq。
 
     默认 proxy_mode=free：启动拉免费代理入池 + 本机 Clash 种子；
@@ -283,6 +284,7 @@ def run_backfill_adj_prices(start: str | None = None, end: str | None = None,
         end=end,
         proxy_mode=mode,  # type: ignore[arg-type]
         preserve_qfq=True,
+        resume=not full,
     )
     after = adj_price_coverage()
     print(f"回补后覆盖: rows={after['rows']} qfq={after['has_qfq']} "
@@ -655,6 +657,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "clash=仅本机7891; direct=直连")
     p.add_argument("--no-socks", action="store_true",
                    help="等同 --proxy-mode direct（兼容旧参数）")
+    p.add_argument("--full", action="store_true",
+                   help="--backfill-adj-prices 强制全量重抓(默认断点续传:跳过 raw/hfq 已完成的 code)")
     p.add_argument("--clear-dividend-cache", action="store_true",
                    help="仅清 operator_result 中 dividend_yield 错误缓存")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
@@ -751,6 +755,7 @@ def main() -> None:
             end=args.end,
             no_socks=args.no_socks,
             proxy_mode=getattr(args, "proxy_mode", "free"),
+            full=getattr(args, "full", False),
         )
     elif args.clear_dividend_cache:
         run_clear_dividend_cache()
