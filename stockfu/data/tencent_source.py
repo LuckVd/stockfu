@@ -82,3 +82,71 @@ class TencentSource(DataSource):
     def get_kline(self, code: str, days: int = 365) -> list[KlineBar]:
         bars = self._klines(code, max(days, 640))
         return bars[-days:] if days and len(bars) > days else bars
+
+    def get_kline_range_adj(self, code: str, start: str, end: str,
+                            adj: str = "qfq") -> list[KlineBar]:
+        """按日期窗分段拉某复权口径日K。adj=qfq|raw|hfq。
+
+        腾讯 fqkline: 参数末位空=不复权 day, qfq=qfqday, hfq=hfqday。
+        约 2 年一段,低于单次 800 根上限。
+        """
+        import requests
+        from datetime import datetime as _dt, timedelta as _td
+
+        start_d = _dt.strptime(start[:10], "%Y-%m-%d").date()
+        end_d = _dt.strptime(end[:10], "%Y-%m-%d").date()
+        if start_d > end_d:
+            return []
+        adj_n = (adj or "qfq").lower()
+        # 腾讯: 空后缀→不复权 day; qfq→qfqday; hfq→hfqday
+        if adj_n == "raw":
+            suffix, key = "", "day"
+        elif adj_n == "hfq":
+            suffix, key = "hfq", "hfqday"
+        else:
+            suffix, key = "qfq", "qfqday"
+
+        sym = _tencent_sym(code)
+        by_date: dict = {}
+        cur = start_d
+        chunk_days = 730
+        while cur <= end_d:
+            chunk_end = min(cur + _td(days=chunk_days), end_d)
+            param = f"{sym},day,{cur.isoformat()},{chunk_end.isoformat()},800,{suffix}"
+            try:
+                with direct_connection():
+                    r = requests.get(_URL, params={"param": param},
+                                     headers=_UA, timeout=20)
+                data = (r.json().get("data") or {}).get(sym) or {}
+                rows = data.get(key) or data.get("day") or []
+            except Exception:  # noqa: BLE001
+                rows = []
+            for row in rows:
+                try:
+                    d = _dt.strptime(str(row[0]).split(" ")[0], "%Y-%m-%d").date()
+                    o = _f(row[1]) or 0.0
+                    c = _f(row[2]) or 0.0
+                    h = _f(row[3]) or 0.0
+                    lo = _f(row[4]) or 0.0
+                    vol = _f(row[5]) if len(row) > 5 else None
+                except Exception:  # noqa: BLE001
+                    continue
+                if d < start_d or d > end_d:
+                    continue
+                by_date[d] = KlineBar(
+                    date=d, open=o, high=h, low=lo, close=c, volume=vol,
+                )
+            cur = chunk_end + _td(days=1)
+        return [by_date[d] for d in sorted(by_date)]
+
+    def get_kline_triple(self, code: str, start: str,
+                         end: str | None = None) -> dict[str, list[KlineBar]]:
+        """一次拉齐三套复权 → {qfq|raw|hfq: bars}。主用于全市场三复权回补。"""
+        end = end or datetime.now().strftime("%Y-%m-%d")
+        out = {}
+        for adj in ("qfq", "raw", "hfq"):
+            try:
+                out[adj] = self.get_kline_range_adj(code, start, end, adj=adj)
+            except Exception:  # noqa: BLE001
+                out[adj] = []
+        return out

@@ -6,25 +6,21 @@ fastapi
 uvicorn[standard]
 python-multipart   # 表单/文件上传（CSV 导入）
 
-# 终端界面 (TUI)
-textual
-rich
-
 # ORM / 存储 (SQLite)
 sqlmodel
 sqlalchemy
 
-# ===== 数据源（免费公开，复用 daily_stock_analysis 的多源思想）=====
-akshare        # A股: 行情/分红(stock_fhps_detail_em)/基金/ETF份额/板块/龙虎榜
-efinance       # 东财: A股行情与分红补充（最高优先级源）
-yfinance       # 全球: 港美股行情与 dividends 分红历史
-pytdx          # 通达信TCP: A股日K独立 backup
-baostock       # A股日K backup + PE/PB 历史（免费替代 tushare）
+# ===== 数据源（免费公开；成交用前复权 qfq；股息率用 close_raw 不复权）=====
+akshare        # A股: 行情/分红/ETF(前复权)/板块；港美 qfq
+efinance       # 东财: A股日K fqt=1 前复权
+yfinance       # 全球: 港美股 auto_adjust 前复权 + dividends
+baostock       # 日K adjustflag 1/2/3=后/前/不复权 + PE/PB + 分红
 # tushare      # 可选: 配 TUSHARE_TOKEN 后作为高质量A股源（需注册）
 
 # 健壮性 / 网络
 tenacity       # 数据层重试
 httpx          # 异步 HTTP（新闻/推送）
+PySocks        # baostock 裸 TCP 走 Clash SOCKS(三复权回补防黑名单)
 
 # 配置
 pydantic

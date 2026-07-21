@@ -61,6 +61,27 @@ def _migrate() -> None:
         if "turnover" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE quote_snapshot ADD COLUMN turnover FLOAT"))
+        # 三套复权 OHLC:前复权(qfq)/不复权(raw)/后复权(hfq)。遗留 open/high/low/close ≡ qfq。
+        adj_cols = [
+            "open_qfq", "high_qfq", "low_qfq", "close_qfq",
+            "open_raw", "high_raw", "low_raw", "close_raw",
+            "open_hfq", "high_hfq", "low_hfq", "close_hfq",
+        ]
+        missing_adj = [c for c in adj_cols if c not in cols]
+        if missing_adj:
+            with engine.begin() as conn:
+                for c in missing_adj:
+                    conn.execute(text(f"ALTER TABLE quote_snapshot ADD COLUMN {c} FLOAT"))
+            # 把历史前复权价拷到显式 *_qfq(仅空槽;不覆盖已回补)
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE quote_snapshot SET "
+                    "open_qfq = COALESCE(open_qfq, open), "
+                    "high_qfq = COALESCE(high_qfq, high), "
+                    "low_qfq = COALESCE(low_qfq, low), "
+                    "close_qfq = COALESCE(close_qfq, close) "
+                    "WHERE close IS NOT NULL OR close_qfq IS NOT NULL"
+                ))
     if insp.has_table("operator_result"):
         cols = [c["name"] for c in insp.get_columns("operator_result")]
         # raw_score 列已废弃(G10 后并入 score,全库无代码读写)→ DROP 回收(SQLite≥3.35)。幂等。

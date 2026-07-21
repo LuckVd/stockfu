@@ -2,6 +2,11 @@
 
 percentile() 为通用分位函数(平均秩法,样本<10 返回 None);历史窗口由各调用方
 按因子类别自选(composite 用 WINDOW_MID_DAYS 5 年窗口;valuation 读 PE/PB 序列算分位)。
+
+价格复权口径(quote_series adj):
+  qfq 前复权 — 回测成交/动量/低波/布林等(默认)
+  raw 不复权 — 股息率等名义金额/股价比
+  hfq 后复权 — 备用
 """
 from __future__ import annotations
 
@@ -15,6 +20,42 @@ from stockfu.models import EtfQuoteDaily, IndexQuoteDaily, QuoteSnapshot
 
 # 情绪/量价类因子历史窗口(composite 三层情绪 + sector_rotation 探针对齐复用)
 WINDOW_MID_DAYS = 365 * 5     # ~5 年(覆盖一个 A 股牛熊周期)
+
+# 复权口径(baostock adjustflag: 2=qfq 3=raw 1=hfq)
+ADJ_QFQ = "qfq"   # 前复权
+ADJ_RAW = "raw"   # 不复权
+ADJ_HFQ = "hfq"   # 后复权
+VALID_ADJ = frozenset({ADJ_QFQ, ADJ_RAW, ADJ_HFQ})
+_OHLC = frozenset({"open", "high", "low", "close"})
+
+
+def price_column(field: str, adj: str = ADJ_QFQ) -> str:
+    """逻辑字段(open/high/low/close) + 复权口径 → 物理列名。
+
+    个股 quote_snapshot: close_qfq / close_raw / close_hfq。
+    遗留 close 仅作 qfq 回落(迁移前/未同步时)。
+    ETF/指数表无三套列,调用方对非个股应只用 adj=qfq 且读 open/high/low/close。
+    """
+    f = (field or "close").lower()
+    a = (adj or ADJ_QFQ).lower()
+    if f not in _OHLC:
+        return f  # volume 等非价格字段原样
+    if a not in VALID_ADJ:
+        raise ValueError(f"unknown adj={adj!r}; expect qfq|raw|hfq")
+    return f"{f}_{a}"
+
+
+def _row_price(row, field: str, adj: str = ADJ_QFQ) -> float | None:
+    """从 ORM/行对象取价:显式列优先,qfq 回落遗留 open/high/low/close。"""
+    col = price_column(field, adj)
+    v = getattr(row, col, None)
+    if v is not None:
+        return float(v)
+    if (adj or ADJ_QFQ).lower() == ADJ_QFQ:
+        legacy = getattr(row, field, None)
+        if legacy is not None:
+            return float(legacy)
+    return None
 
 
 def percentile(series: Iterable[float], value: float | None) -> tuple[float | None, int]:
@@ -44,20 +85,49 @@ def quote_model_for(code: str):
     return QuoteSnapshot
 
 
-def quote_series(code: str, field: str, days: int, as_of: date | None = None) -> list[float]:
-    """从 quote_snapshot 读某字段近 days 日的序列。
+# 回测行情供给器：engine 预载全量行情后挂上，让 quote_series 从内存切片(零 DB)。
+# fn(code, field, start, ref_date) -> list[float] | None；返回 None 表示未覆盖 → 回落查库。
+_BT_SERIES_PROVIDER = None
+
+
+def set_backtest_series_provider(fn) -> None:
+    """挂载回测行情供给器(由 backtest.engine 在预载后调)。"""
+    global _BT_SERIES_PROVIDER
+    _BT_SERIES_PROVIDER = fn
+
+
+def clear_backtest_series_provider() -> None:
+    """摘除供给器(live / 回测结束)；摘除后 quote_series 走原 DB 路径。"""
+    global _BT_SERIES_PROVIDER
+    _BT_SERIES_PROVIDER = None
+
+
+def quote_series(code: str, field: str, days: int, as_of: date | None = None,
+                 adj: str = ADJ_QFQ) -> list[float]:
+    """从行情表读某字段近 days 日的序列。
 
     Args:
         code: 股票代码
         field: 字段名 (close/open/high/low)
         days: 回溯天数
         as_of: 基准日期 (默认今天，回测时传入历史日期)
+        adj: 复权口径 qfq|raw|hfq(默认前复权)。仅个股 quote_snapshot 有三套;
+             ETF/指数无 raw/hfq 列时 raw/hfq 会得到空序列(勿用于成交)。
 
     Returns:
-        价格序列列表
+        价格序列列表(窗口 [ref_date-(days+15), ref_date] 内全部交易日该字段，升序，滤 None)
+
+    回测时若挂了供给器且 adj=qfq 能覆盖窗口 → 从预载内存切片(与下方 DB 路径逐值一致)；
+    raw/hfq 不走回测预载(预载仅 qfq 成交价),直接查库。
     """
     ref_date = as_of or date.today()
     start = ref_date - timedelta(days=days + 15)
+    adj_n = (adj or ADJ_QFQ).lower()
+    # 回测内存供给器只缓存前复权成交价
+    if adj_n == ADJ_QFQ and _BT_SERIES_PROVIDER is not None:
+        got = _BT_SERIES_PROVIDER(code, field, start, ref_date)
+        if got is not None:
+            return got
     model = quote_model_for(code)
     with session_scope() as s:
         rows = s.exec(select(model).where(
@@ -65,6 +135,14 @@ def quote_series(code: str, field: str, days: int, as_of: date | None = None) ->
             model.quote_date >= start,
             model.quote_date <= ref_date,  # 关键修复：限制在基准日期之前
         ).order_by(model.quote_date)).all()
+    if model is QuoteSnapshot and field.lower() in _OHLC:
+        out = []
+        for r in rows:
+            v = _row_price(r, field, adj_n)
+            if v is not None:
+                out.append(v)
+        return out
+    # ETF/指数:仅遗留 open/high/low/close(按 qfq 语义)
     return [getattr(r, field) for r in rows if getattr(r, field) is not None]
 
 
