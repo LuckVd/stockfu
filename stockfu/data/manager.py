@@ -51,31 +51,76 @@ class DataProviderManager:
 
     # -------- 分红 / 股息率 --------
     def get_dividend_metric(self, code: str,
-                            latest_price: Optional[float] = None) -> Optional[DividendMetric]:
+                            latest_price: Optional[float] = None,
+                            timeout: float = 10.0,
+                            *,
+                            force_network: bool = False) -> Optional[DividendMetric]:
+        """取分红指标。
+
+        默认 **优先本地 dividend_event 表**（看板/邮件出图零 baostock）；
+        库无事件且未 force_network 时再联网。
+        ``force_network=True``：跳过库优先，用于 persist/回补。
+        """
         # 分红事件低频，按 code 缓存；并对「查不到」做负缓存——ETF/无分红股反复
         # 触发 akshare→yfinance 联网重试是 watchlist 卡顿的主因。
-        cached = self._dividend_cache.get(code)
-        if cached is not None:
+        cache_key = f"{code}|net={int(force_network)}"
+        cached = self._dividend_cache.get(cache_key)
+        if cached is not None and not force_network:
             return cached if cached.events else None   # 空 marker 命中→None（无分红）
+
+        # 1) 读路径默认只读本地库（邮件/自选卡）；库无则空，不联网
+        #    避免每只票 10s×N 打 baostock 拖死 /share 出图
+        if not force_network:
+            try:
+                from stockfu.services.dividend import metric_from_db
+                db_m = metric_from_db(code, latest_price=latest_price)
+            except Exception:  # noqa: BLE001
+                db_m = None
+            if db_m and db_m.events:
+                self._dividend_cache.set(cache_key, db_m)
+                return db_m
+            # 库无事件：负缓存，直接返回（回补请 force_network=True）
+            self._dividend_cache.set(cache_key, DividendMetric(code=code))
+            return None
+
         market = detect_market(code)
         # A 股分红主力 baostock(query_dividend_data 免费稳定,字段结构化)→akshare→yfinance;
         # 港美股主力 yfinance
         candidates = ([self.baostock, self.akshare, self.yfinance] if market == Market.CN
                       else [self.yfinance, self.akshare])
-        result: Optional[DividendMetric] = None
-        for s in candidates:
-            fn = getattr(s, "get_dividend_metric", None)
-            if fn is None:
-                continue
+
+        def _query() -> Optional[DividendMetric]:
+            for s in candidates:
+                fn = getattr(s, "get_dividend_metric", None)
+                if fn is None:
+                    continue
+                try:
+                    m = fn(code, latest_price=latest_price)
+                except Exception:  # noqa: BLE001
+                    m = None
+                if m and m.events:
+                    return m
+            return None
+
+        # baostock 裸 TCP(尤其经 SOCKS5 时)query 可能 hang;后台线程 + join 超时,
+        # 单只卡住不拖垮 build_card/watchlist(超时按查不到处理,负缓存 1h)。
+        import threading
+        box: dict = {}
+
+        def _run():
             try:
-                m = fn(code, latest_price=latest_price)
+                box["r"] = _query()
             except Exception:  # noqa: BLE001
-                m = None
-            if m and m.events:
-                result = m
-                break
+                box["e"] = True
+        th = threading.Thread(target=_run, daemon=True)
+        th.start()
+        th.join(timeout)
+        result = box.get("r")
         # 有 events 缓存 metric；否则负缓存空 marker（1h 内不再重试），对外返回 None
-        self._dividend_cache.set(code, result if result is not None else DividendMetric(code=code))
+        stored = result if result is not None else DividendMetric(code=code)
+        self._dividend_cache.set(cache_key, stored)
+        # 联网结果同步到读路径缓存键，避免紧接着看板再打网
+        self._dividend_cache.set(f"{code}|net=0", stored)
         return result
 
     # -------- K 线 --------

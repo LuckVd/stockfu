@@ -12,19 +12,20 @@
 
 > **关会话不影响回补**：进程已 **double-fork / PPID=1** 后台跑。
 
-### 0.1 正在跑 — 三复权 baostock 串行回补
+### 0.1 三复权 baostock 串行回补（免费代理池保障）
 
 | 项 | 值 |
 |----|-----|
 | 命令 | `python3 main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20` |
-| 源/模式 | **仅 baostock** 串行；SOCKS5 `127.0.0.1:7891`（Clash）；`preserve_qfq=True`（只补 raw/hfq） |
-| PID 文件 | `data/backfill_adj_prices.pid` |
-| 日志 | `data/backfill_adj_prices_baostock_serial.log`（追加） |
-| 查进度 | `tail -f data/backfill_adj_prices_baostock_serial.log` |
+| 代理 | **默认 `--proxy-mode free`**：启动拉公网免费代理入池 + 本机 Clash `7891` 种子；单 IP 串行；失败/黑名单立即剔除并切换 |
+| 其它模式 | `--proxy-mode clash` 仅本机 SOCKS；`--proxy-mode direct` / `--no-socks` 直连 |
+| 源 | **仅 baostock**；`preserve_qfq=True`（只补 raw/hfq） |
+| 实现 | `stockfu/data/free_proxy_pool.py` + `baostock_proxy.py`；HTTP CONNECT / SOCKS 隧道 |
+| 日志建议 | `nohup python3 -u main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20 > data/backfill_adj_prices_baostock_serial.log 2>&1 &` |
 | 覆盖率 | `python3 -c "from stockfu.scheduler.backfill_adj_prices import adj_price_coverage; print(adj_price_coverage())"` |
-| 是否活着 | `ps -p $(cat data/backfill_adj_prices.pid) -o pid,etime,cmd` |
 | 完成标志 | 日志出现 `=== 完成 ok=…`；`raw_pct`/`hfq_pct` 接近 100% |
-| 粗估 | ~0.05 只/s × 801 只 ≈ **4–5 小时**（幂等，中断可重跑同一命令） |
+
+> 此前直连 IP 已被 baostock 黑名单；勿用 `--proxy-mode direct`。进程可 double-fork 后台跑。
 
 若进程挂了（关会话后应仍在；若 `ps` 无进程）：
 

@@ -45,7 +45,10 @@ class TencentSource(DataSource):
         if r.status_code != 200:
             return []
         try:
-            rows = r.json()["data"][sym]["qfqday"]
+            _d = r.json()["data"][sym]
+            # 腾讯对无除权事件的股(如部分科创板新股/次新股)只返 day、不返 qfqday;
+            # 未除权时 day ≡ qfq,故 qfqday 缺失回落 day(与 get_kline_range_adj 一致)。
+            rows = _d.get("qfqday") or _d.get("day") or []
         except Exception:  # noqa: BLE001
             return []
         bars: list[KlineBar] = []

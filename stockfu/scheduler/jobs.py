@@ -680,14 +680,45 @@ def ensure_stock_data_and_index(code: str, days: int = 1825) -> dict:
 
 
 def _batch_fetch_today(codes: list[str]) -> tuple[list[str], list[str]]:
-    """对 codes 逐个 _upsert_quote。返回 (成功, 失败)。"""
+    """对 codes 逐个抓今日行情,按表路由:ETF→update_etf_benchmark(etf_quote_daily),
+    其余→_upsert_quote(quote_snapshot)。否则 ETF 走个股 get_kline 接口会漏抓
+    (今天自选里 562500/588870/515650/515450/512710 五只 ETF 即因此失败)。"""
+    from stockfu.services.factors import quote_model_for
+    from stockfu.models import EtfQuoteDaily
     ok, fail = [], []
     for c in codes:
         try:
-            (ok if _upsert_quote(c) else fail).append(c)
+            if quote_model_for(c) is EtfQuoteDaily:
+                update_etf_benchmark(c)   # 幂等:今日已补返回 0 不报错,不抛异常即成功
+                ok.append(c)
+            else:
+                (ok if _upsert_quote(c) else fail).append(c)
         except Exception:  # noqa: BLE001
             fail.append(c)
     return ok, fail
+
+
+def _call_timeout(fn, timeout: float, label: str = "", default=None):
+    """在守护线程跑 fn，超时返回 default（不杀线程，但主流程不阻塞）。"""
+    import threading
+    box: dict = {}
+
+    def _run():
+        try:
+            box["r"] = fn()
+        except Exception as e:  # noqa: BLE001
+            box["e"] = e
+
+    t = threading.Thread(target=_run, daemon=True, name=f"to-{label or 'job'}"[:40])
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        print(f"  [timeout {timeout:.0f}s] {label}", flush=True)
+        return default
+    if "e" in box:
+        print(f"  [err] {label}: {type(box['e']).__name__}: {box['e']}", flush=True)
+        return default
+    return box.get("r", default)
 
 
 def run_scheduled_fetch() -> dict:
@@ -695,80 +726,139 @@ def run_scheduled_fetch() -> dict:
 
     重试只针对上一轮失败的 code（已落盘的 _upsert_quote 会秒跳过，双重保险）；
     重试耗尽后剩下的不管（读路径会显示最近一条历史快照）。
+
+    后半段（分红/情绪）全部带超时，避免 baostock 坏代理卡死整次 --fetch。
     """
     import time as _t
 
     from stockfu.config import get_fetch_retry_count, get_fetch_retry_interval
 
     init_db()
+    t_all = _t.time()
+    # 预热 baostock 免费代理池（PE/分红/状态等依赖；直连已黑名单）
+    # 行情主路径走东财/腾讯（直连）；baostock 代理延后到分红/情绪，避免全局污染
     with session_scope() as s:
         codes = [a.code for a in s.exec(select(Asset)).all()]
     targets = list(dict.fromkeys(codes + INDEX_ETFS))
 
+    print(f"=== [fetch] 1/6 quotes targets={len(targets)} ===", flush=True)
     ok, fail = _batch_fetch_today(targets)
     retries = get_fetch_retry_count()
-    for _ in range(retries):
+    # 失败重试间隔上限 30s，避免配置成「分钟」拖死
+    retry_sleep = min(30, max(1, int(get_fetch_retry_interval()) * 5))
+    for i in range(retries):
         if not fail:
             break
-        # 只对可能恢复的标的等待重试：港美股断连时直接跳过，不白白等待
+        print(f"  retry {i + 1}/{retries} fail={len(fail)} sleep={retry_sleep}s", flush=True)
         if not all(c.startswith(("HK", "US", "au")) for c in fail):
-            _t.sleep(get_fetch_retry_interval() * 60)
+            _t.sleep(retry_sleep)
         ok2, fail = _batch_fetch_today(fail)
         ok.extend(ok2)
+    print(f"  quotes ok={len(ok)} fail={len(fail)}", flush=True)
 
-    # 三大指数日线落 IndexQuoteDaily（行情拆表后指数在此;读路径 index_quotes_view/share.perf 直读此表）
+    print("=== [fetch] 2/6 index + sector ETF ===", flush=True)
     for _idx in ("sh000001", "sz399006", "sh000688"):
         try:
             update_index_benchmark(_idx)
         except Exception:  # noqa: BLE001
             pass
-    # SECTOR_MAP 代表 ETF 日线增量(板块情绪 compute_sector 依赖;拆表后 ETF 在 etf_quote_daily)
     from stockfu.services.composite import SECTOR_MAP as _SECTOR_ETF_MAP
     for _etf in _SECTOR_ETF_MAP.values():
         try:
             update_etf_benchmark(_etf)
         except Exception:  # noqa: BLE001
             pass
-    # 板块当日主力资金流（即时，每日攒历史；落库后供 compute_sector 用）
+
+    print("=== [fetch] 3/6 sector flow ===", flush=True)
     from stockfu.services import backfill as bf
-    sector_flow = bf.backfill_sector_flow_today()
+    sector_flow = _call_timeout(
+        bf.backfill_sector_flow_today, 45, "sector_flow", default=0,
+    ) or 0
+
     # 后半段：分红 / ETF 份额 / 三层指数
     from stockfu.services import composite, dividend as div_svc
     with session_scope() as s:
         all_codes = [a.code for a in s.exec(select(Asset)).all()]
-    divs = sum(div_svc.persist_dividends(c) for c in all_codes)
-    flows = sum(1 for c in INDEX_ETFS if _upsert_fundflow(c))
-    # 三层情绪指数：整体给 120s 超时（个股外部因子可能挂死），超时则只算市场级
-    import threading as _th
-    _comp_box: dict = {}
-    def _run_comp():
-        try:
-            _comp_box["r"] = composite.compute_all(all_codes)
-        except Exception as _e:
-            _comp_box["e"] = _e
-    _t = _th.Thread(target=_run_comp, daemon=True)
-    _t.start()
-    _t.join(120)
-    if "r" in _comp_box:
-        comp = _comp_box["r"]
-    else:
-        from stockfu.services.snapshot import beijing_today
-        print(f"  compute_all 超时(120s)，降级只算市场+板块情绪")
+
+    print("=== [fetch] 4/6 warm baostock proxy (for div/PE) ===", flush=True)
+    try:
+        from stockfu.data.baostock_proxy import warm_baostock_channel
+        warm_baostock_channel()
+    except Exception as _e:  # noqa: BLE001
+        print(f"  [warn] baostock proxy warm fail: {_e}", flush=True)
+
+    print(f"=== [fetch] 5/6 dividends codes={len(all_codes)} ===", flush=True)
+    # 单票 12s；总预算 90s。baostock 分红按年串行，坏代理时最易卡死
+    divs = 0
+    div_budget = 90.0
+    div_t0 = _t.time()
+    for i, c in enumerate(all_codes):
+        if _t.time() - div_t0 > div_budget:
+            print(
+                f"  dividends budget {div_budget:.0f}s exhausted "
+                f"at {i}/{len(all_codes)}",
+                flush=True,
+            )
+            break
+        n = _call_timeout(
+            lambda code=c: div_svc.persist_dividends(code),
+            12,
+            f"div:{c}",
+            default=0,
+        )
+        divs += int(n or 0)
+        if (i + 1) % 10 == 0:
+            print(f"  dividends {i + 1}/{len(all_codes)} rows+={divs}", flush=True)
+
+    print("=== [fetch] 5b/6 fundflow ETFs ===", flush=True)  # noqa: kept
+    flows = 0
+    for c in INDEX_ETFS:
+        if _call_timeout(lambda code=c: _upsert_fundflow(code), 15, f"flow:{c}", default=False):
+            flows += 1
+
+    print(f"=== [fetch] 6/6 composite stocks={len(all_codes)} ===", flush=True)
+    # 三层情绪：90s 超时后降级市场+板块
+    comp = _call_timeout(
+        lambda: composite.compute_all(all_codes),
+        90,
+        "compute_all",
+        default=None,
+    )
+    if not isinstance(comp, dict):
+        print("  compute_all 超时/失败，降级只算市场+板块情绪", flush=True)
         comp = {}
-        comp["market"] = composite.compute_market()
-        composite.save(comp["market"])
+        try:
+            comp["market"] = composite.compute_market()
+            composite.save(comp["market"])
+        except Exception as e:  # noqa: BLE001
+            print(f"  compute_market err: {e}", flush=True)
         for _name, _etf in composite.SECTOR_MAP.items():
             try:
-                _r = composite.compute_sector(_etf, _name)
-                if _r.get("fear") or _r.get("greed") or _r.get("heat"):
+                _r = _call_timeout(
+                    lambda e=_etf, n=_name: composite.compute_sector(e, n),
+                    20,
+                    f"sector:{_name}",
+                    default=None,
+                )
+                if _r and (_r.get("fear") or _r.get("greed") or _r.get("heat")):
                     comp[f"sector:{_name}"] = _r
                     composite.save(_r)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
-    return {"quotes": len(ok), "retries": retries, "still_failed": len(fail),
-            "still_failed_codes": fail[:20], "dividends": divs,
-            "fundflow_etfs": flows, "sector_flow": sector_flow,
-            "composite_levels": len(comp) if isinstance(comp, dict) else 0}
+
+    summary = {
+        "quotes": len(ok),
+        "retries": retries,
+        "still_failed": len(fail),
+        "still_failed_codes": fail[:20],
+        "dividends": divs,
+        "fundflow_etfs": flows,
+        "sector_flow": sector_flow,
+        "composite_levels": len(comp) if isinstance(comp, dict) else 0,
+        "elapsed_sec": round(_t.time() - t_all, 1),
+    }
+    print(f"=== [fetch] done {summary} ===", flush=True)
+    return summary
 
 
 def start_embedded_server() -> str:

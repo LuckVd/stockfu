@@ -257,11 +257,12 @@ def run_backfill_quote_status() -> None:
 
 
 def run_backfill_adj_prices(start: str | None = None, end: str | None = None,
-                            no_socks: bool = False) -> None:
+                            no_socks: bool = False,
+                            proxy_mode: str | None = None) -> None:
     """baostock **串行** 三复权写入 quote_snapshot.*_qfq/*_raw/*_hfq。
 
-    默认经 Clash SOCKS5(127.0.0.1:7891) 出站(baostock 裸 TCP 不认 HTTP_PROXY)。
-    无并发, 避免再触发黑名单。
+    默认 proxy_mode=free：启动拉免费代理入池 + 本机 Clash 种子；
+    单 IP 串行，失败立即剔除并切换。baostock 裸 TCP 经 CONNECT/SOCKS 隧道。
     """
     from stockfu.db import init_db
     from stockfu.scheduler.backfill_adj_prices import (
@@ -269,20 +270,26 @@ def run_backfill_adj_prices(start: str | None = None, end: str | None = None,
     )
 
     init_db()
+    mode = (proxy_mode or "free").strip().lower()
+    if no_socks:
+        mode = "direct"
     before = adj_price_coverage()
     print(f"回补前覆盖: rows={before['rows']} qfq={before['has_qfq']} "
           f"raw={before['has_raw']}({before['raw_pct']}%) "
           f"hfq={before['has_hfq']}({before['hfq_pct']}%)")
+    print(f"代理模式: {mode}")
     r = backfill_adj_prices(
         start=start or "2020-01-01",
         end=end,
-        use_socks=not no_socks,
+        proxy_mode=mode,  # type: ignore[arg-type]
         preserve_qfq=True,
     )
     after = adj_price_coverage()
     print(f"回补后覆盖: rows={after['rows']} qfq={after['has_qfq']} "
           f"raw={after['has_raw']}({after['raw_pct']}%) "
           f"hfq={after['has_hfq']}({after['hfq_pct']}%)")
+    print(f"  rotates={r.get('rotates')} dropped={r.get('dropped')} "
+          f"proxy={r.get('proxy')}")
     if r.get("error_n"):
         print(f"  失败样例: {r['errors'][:5]}")
     n = clear_dividend_yield_cache()
@@ -641,9 +648,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补全市场分红历史→dividend_event(baostock query_dividend_data 主源/akshare兜底;红利因子前置,10-20分钟)")
     p.add_argument("--backfill-adj-prices", action="store_true",
                    help="baostock 串行拉齐前复权/不复权/后复权→quote_snapshot "
-                        "(*_qfq/*_raw/*_hfq);默认 Clash SOCKS;完成后清 dividend_yield 缓存")
+                        "(*_qfq/*_raw/*_hfq);默认免费代理池;完成后清 dividend_yield 缓存")
+    p.add_argument("--proxy-mode", default="free",
+                   choices=["free", "clash", "direct"],
+                   help="baostock 代理: free=公网免费池+Clash种子(默认); "
+                        "clash=仅本机7891; direct=直连")
     p.add_argument("--no-socks", action="store_true",
-                   help="--backfill-adj-prices 直连 baostock(默认走 127.0.0.1:7891 SOCKS)")
+                   help="等同 --proxy-mode direct（兼容旧参数）")
     p.add_argument("--clear-dividend-cache", action="store_true",
                    help="仅清 operator_result 中 dividend_yield 错误缓存")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
@@ -739,6 +750,7 @@ def main() -> None:
             start=args.start,
             end=args.end,
             no_socks=args.no_socks,
+            proxy_mode=getattr(args, "proxy_mode", "free"),
         )
     elif args.clear_dividend_cache:
         run_clear_dividend_cache()

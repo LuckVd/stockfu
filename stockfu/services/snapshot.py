@@ -149,24 +149,51 @@ def _trade_calendar() -> set[date] | None:
 
 
 def latest_trade_date() -> date:
-    """最近一个交易日（权威日历，自动跳过周末 + 法定节假日）。
+    """最近一个**已有行情**的交易日（权威日历 + 库内校验）。
 
-    用 akshare 交易日历取 ≤ 今天(北京) 的最大交易日；日历不可用时
-    fallback 到「日历回溯跳周末」。
+    1) 用 akshare 交易日历取 ≤ 今天(北京) 的候选交易日；
+    2) 优先返回库内 quote_snapshot / index_quote_daily **已有数据** 的最近日
+       （避免零点后日历已切到「今日」但 A 股尚未开盘/收盘、卡片空窗）；
+    3) 库内全无则退回日历日 / 跳周末。
     """
     today = beijing_today()
     cal = _trade_calendar()
+    candidates: list[date] = []
     if cal:
         d = today
         for _ in range(15):           # 最多回溯 15 天（覆盖春节/国庆长假）
             if d in cal:
-                return d
+                candidates.append(d)
             d -= timedelta(days=1)
-        return today                   # 兜底
-    d = today                          # fallback：无日历，仅跳周末
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d
+    if not candidates:
+        d = today
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
+        candidates = [d]
+
+    # 库内已有行情的最近日
+    try:
+        from sqlalchemy import text as sa_text
+
+        from stockfu.db import engine
+
+        with engine.connect() as conn:
+            for d in candidates:
+                ds = d.isoformat()
+                cq = conn.execute(
+                    sa_text("SELECT COUNT(*) FROM quote_snapshot WHERE quote_date = :d"),
+                    {"d": ds},
+                ).scalar() or 0
+                ci = conn.execute(
+                    sa_text("SELECT COUNT(*) FROM index_quote_daily WHERE quote_date = :d"),
+                    {"d": ds},
+                ).scalar() or 0
+                if int(cq) > 0 or int(ci) > 0:
+                    return d
+    except Exception:  # noqa: BLE001
+        pass
+    return candidates[0]
+
 
 
 def index_quotes_view() -> dict:
@@ -177,7 +204,8 @@ def index_quotes_view() -> dict:
     pct_chg 优先用落盘值；backfill 未存时从最近两条 close 算。
     """
     from stockfu.models import IndexQuoteDaily, IndexSnapshot
-    td = date.today()
+    # 与分享卡片一致：用「库内有行情的最近交易日」，不是 calendar 的「今日」
+    td = latest_trade_date()
     cfg = {"000001": ("sh000001", "上证指数", "market", "MARKET"),
            "399006": ("sz399006", "创业板指", "sector", "创业板"),
            "000688": ("sh000688", "科创50", "sector", "科创50")}
