@@ -125,12 +125,40 @@ def _make_session(
     )
 
 
+def _complete_codes(start: str, end: str) -> set[str]:
+    """断点续传用:返回 [start,end] 内 raw/hfq 已覆盖 qfq 的 code 集合(可跳过)。
+
+    判定:该 code 在区间内有 qfq,且 raw 行数 ≥ qfq 行数、hfq 行数 ≥ qfq 行数
+    (raw/hfq 至少补齐了 qfq 的每一天)。全新无 qfq 的 code 不在集合 → 会被抓。
+    """
+    from sqlalchemy import text
+
+    from stockfu.db import engine
+
+    sql = text(
+        "SELECT asset_code, "
+        "SUM(CASE WHEN close_qfq IS NOT NULL OR close IS NOT NULL THEN 1 ELSE 0 END), "
+        "SUM(CASE WHEN close_raw IS NOT NULL THEN 1 ELSE 0 END), "
+        "SUM(CASE WHEN close_hfq IS NOT NULL THEN 1 ELSE 0 END) "
+        "FROM quote_snapshot WHERE quote_date BETWEEN :s AND :e "
+        "GROUP BY asset_code"
+    )
+    out: set[str] = set()
+    with engine.connect() as conn:
+        for code, q, r, h in conn.execute(sql, {"s": start, "e": end}):
+            q, r, h = int(q or 0), int(r or 0), int(h or 0)
+            if q > 0 and r >= q and h >= q:
+                out.add(code)
+    return out
+
+
 def backfill_adj_prices(
     codes: list[str] | None = None,
     *,
     start: str = "2020-01-01",
     end: str | None = None,
     proxy_mode: ProxyMode = "free",
+    resume: bool = True,
     # 兼容旧参数
     use_socks: bool | None = None,
     socks_host: str | None = None,
@@ -152,6 +180,8 @@ def backfill_adj_prices(
           - clash  仅本机 SOCKS（BAOSTOCK_SOCKS_* / 7891）
           - direct 直连
         preserve_qfq: True 不覆盖已有前复权成交价, 只写 raw/hfq
+        resume: True(默认) 断点续传——跳过 [start,end] 内 raw/hfq 已覆盖 qfq 的
+            code, 只补缺口; False(--full) 强制全量重抓
         sleep_sec: 每只票间隔
     """
     # 旧 CLI：use_socks=False → direct；use_socks=True 且未显式 free 时保持 free
@@ -163,8 +193,27 @@ def backfill_adj_prices(
     codes = list(codes or _default_codes())
     end = end or date.today().isoformat()
     t0 = time.time()
-    ok = fail = rows = 0
+    ok = fail = rows = skip = 0
     errors: list[tuple[str, str]] = []
+
+    # 断点续传(默认开):跳过 [start,end] 内 raw/hfq 已覆盖 qfq 的 code; --full 关
+    if resume:
+        _complete = _complete_codes(start, end)
+        pending = [c for c in codes if c not in _complete]
+        skip = len(codes) - len(pending)
+        print(f"=== resume: {skip}/{len(codes)} 已完成跳过 → {len(pending)} 待补 ===",
+              flush=True)
+        if not pending:
+            print("=== 全部已完成,无需回补(--full 可强制重抓) ===", flush=True)
+            return {
+                "codes": len(codes), "ok": 0, "fail": 0, "rows": 0, "skip": skip,
+                "pending": 0, "elapsed_sec": round(time.time() - t0, 1),
+                "start": start, "end": end, "proxy": "n/a", "proxy_mode": proxy_mode,
+                "rotates": 0, "dropped": 0, "mode": "resume-all-complete",
+                "errors": [], "error_n": 0,
+            }
+    else:
+        pending = list(codes)
 
     sess = _make_session(
         proxy_mode,
@@ -176,14 +225,14 @@ def backfill_adj_prices(
     proxy_info = sess.start()
 
     print(
-        f"=== 三复权回补(baostock 串行+代理池)  codes={len(codes)}  "
-        f"{start}→{end}  proxy_mode={proxy_mode}  proxy={proxy_info}  "
-        f"preserve_qfq={preserve_qfq} ===",
+        f"=== 三复权回补(baostock 串行+代理池)  codes={len(codes)} "
+        f"(pending={len(pending)} resume={resume})  {start}→{end}  "
+        f"proxy_mode={proxy_mode}  proxy={proxy_info}  preserve_qfq={preserve_qfq} ===",
         flush=True,
     )
 
     try:
-        for i, code in enumerate(codes, 1):
+        for i, code in enumerate(pending, 1):
             try:
                 triple = sess.fetch_kline_triple(code, start, end)
                 if not any(triple.values()):
@@ -201,17 +250,17 @@ def backfill_adj_prices(
                     if not sess.mark_bad_and_rotate(f"code_exc:{code}"):
                         print("  [abort] proxy pool exhausted", flush=True)
                         # i 为 1-based；当前 code 已记 fail，补记后续
-                        for j in range(i, len(codes)):
-                            errors.append((codes[j], "proxy_pool_exhausted"))
+                        for j in range(i, len(pending)):
+                            errors.append((pending[j], "proxy_pool_exhausted"))
                             fail += 1
                         break
                 except Exception:  # noqa: BLE001
                     pass
-            if progress_every and (i % progress_every == 0 or i == len(codes)):
+            if progress_every and (i % progress_every == 0 or i == len(pending)):
                 elapsed = time.time() - t0
                 rate = i / elapsed if elapsed > 0 else 0
                 print(
-                    f"  [{i}/{len(codes)}] ok={ok} fail={fail} rows+={rows}  "
+                    f"  [{i}/{len(pending)}] ok={ok} fail={fail} rows+={rows}  "
                     f"{rate:.2f} codes/s  proxy={sess.proxy_url}  "
                     f"pool={sess.pool.remaining()}  rotates={sess.rotates}",
                     flush=True,
@@ -226,6 +275,8 @@ def backfill_adj_prices(
         "ok": ok,
         "fail": fail,
         "rows": rows,
+        "skip": skip,
+        "pending": len(pending),
         "elapsed_sec": round(time.time() - t0, 1),
         "start": start,
         "end": end,
@@ -238,7 +289,7 @@ def backfill_adj_prices(
         "error_n": len(errors),
     }
     print(
-        f"=== 完成 ok={ok} fail={fail} rows={rows} "
+        f"=== 完成 ok={ok} fail={fail} rows={rows} skip={skip} "
         f"elapsed={summary['elapsed_sec']}s proxy_mode={proxy_mode} "
         f"rotates={sess.rotates} dropped={sess.dropped} ===",
         flush=True,

@@ -18,6 +18,7 @@ python3 main.py --fetch            # 每日抓取 + 三层情绪
 python3 main.py --backfill-dividend
 python3 main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20
   # baostock 串行三复权;默认 --proxy-mode free（免费代理池+Clash种子，失败自动切换）
+  # 默认断点续传(跳过 raw/hfq 已完成的 code);--full 强制全量重抓
 python3 main.py --clear-dividend-cache
 python3 main.py --backtest bollinger_monthly --start 2025-06-01 --end 2026-01-01 --codes 600519,000858 --save
 python3 main.py --update-backtests   # 全周期;可 --strategies a,b
