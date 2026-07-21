@@ -5,48 +5,27 @@
   *_raw                             ← 不复权 (flag=3)
   *_hfq                             ← 后复权 (flag=1)
 
-网络:
-  baostock 是裸 TCP(public-api.baostock.com:10030), 不认 HTTP_PROXY。
-  直连若被黑名单, 经 Clash SOCKS5(默认 127.0.0.1:7891) 换出口 IP。
-
-**禁止并发**(用户约束): 单进程单线程顺序拉, 避免再触发 baostock 黑名单。
+网络保障（BaostockProxySession）:
+  1. 启动时拉公网免费代理 → TCP 探测入池（可 seed 本机 Clash SOCKS）
+  2. 单 IP 串行拉取；失败/黑名单/空结果 → 立即剔除并换下一个
+  3. baostock 裸 TCP 经 HTTP CONNECT / SOCKS 隧道（PySocks）
 
 CLI:
-  source /opt/clash/proxy.sh on   # 可选; 本模块自带 SOCKS monkeypatch
   python3 main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20
+  python3 main.py --backfill-adj-prices --proxy-mode free   # 默认
+  python3 main.py --backfill-adj-prices --proxy-mode clash
+  python3 main.py --backfill-adj-prices --proxy-mode direct
 """
 from __future__ import annotations
 
 import os
 import time
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from sqlmodel import select
 
-# Clash 默认 SOCKS(见 /opt/clash/proxy.sh)
-_DEFAULT_SOCKS_HOST = "127.0.0.1"
-_DEFAULT_SOCKS_PORT = 7891
-
-
-def _enable_socks_proxy(host: str | None = None, port: int | None = None) -> str:
-    """把 socket.socket 换成经 SOCKS5 的实现, 使 baostock 裸 TCP 走 Clash。
-
-    Returns: 说明字符串。
-    """
-    host = host or os.environ.get("BAOSTOCK_SOCKS_HOST", _DEFAULT_SOCKS_HOST)
-    port = int(port or os.environ.get("BAOSTOCK_SOCKS_PORT", _DEFAULT_SOCKS_PORT))
-    try:
-        import socks
-        import socket
-    except ImportError as e:
-        raise RuntimeError(
-            "需要 PySocks: pip3 install PySocks -i https://pypi.tuna.tsinghua.edu.cn/simple "
-            "--break-system-packages"
-        ) from e
-    socks.set_default_proxy(socks.SOCKS5, host, port)
-    socket.socket = socks.socksocket  # type: ignore[misc, assignment]
-    return f"socks5://{host}:{port}"
+ProxyMode = Literal["free", "clash", "direct"]
 
 
 def _default_codes() -> list[str]:
@@ -106,21 +85,44 @@ def _apply_and_upsert(code: str, triple: dict[str, list],
     return n
 
 
-def _fetch_triple_baostock(code: str, start: str, end: str | None) -> dict[str, list]:
-    """仅 baostock 拉三套 K。调用前须已 login。"""
-    from stockfu.data.baostock_source import BaostockSource
+def _make_session(
+    proxy_mode: ProxyMode = "free",
+    *,
+    socks_host: str | None = None,
+    socks_port: int | None = None,
+    probe_limit: int | None = None,
+    max_per_kind: int | None = None,
+):
+    from stockfu.data.baostock_proxy import BaostockProxySession
 
-    end = end or date.today().isoformat()
-    src = BaostockSource()
-    if not src._ensure_login():
-        src.force_relogin()
-    if not src._ensure_login():
-        raise RuntimeError("baostock login failed")
-    triple = src.get_kline_triple(code, start, end)
-    if not any(triple.values()):
-        src.force_relogin()
-        triple = src.get_kline_triple(code, start, end)
-    return triple
+    host = socks_host or os.environ.get("BAOSTOCK_SOCKS_HOST", "127.0.0.1")
+    port = int(socks_port or os.environ.get("BAOSTOCK_SOCKS_PORT", "7891"))
+    mode = (proxy_mode or "free").lower()
+    extra: dict = {}
+    if probe_limit is not None:
+        extra["probe_limit"] = probe_limit
+    if max_per_kind is not None:
+        extra["max_per_kind"] = max_per_kind
+    if mode == "direct":
+        return BaostockProxySession(
+            use_free_pool=False, seed_local_clash=False, **extra,
+        )
+    if mode == "clash":
+        return BaostockProxySession(
+            use_free_pool=False,
+            seed_local_clash=True,
+            clash_host=host,
+            clash_port=port,
+            **extra,
+        )
+    # free：免费池 + 本机 clash 种子
+    return BaostockProxySession(
+        use_free_pool=True,
+        seed_local_clash=True,
+        clash_host=host,
+        clash_port=port,
+        **extra,
+    )
 
 
 def backfill_adj_prices(
@@ -128,84 +130,96 @@ def backfill_adj_prices(
     *,
     start: str = "2020-01-01",
     end: str | None = None,
-    use_socks: bool = True,
+    proxy_mode: ProxyMode = "free",
+    # 兼容旧参数
+    use_socks: bool | None = None,
     socks_host: str | None = None,
     socks_port: int | None = None,
     preserve_qfq: bool = True,
     progress_every: int = 5,
     sleep_sec: float = 0.15,
-    # 兼容旧 CLI 参数(忽略)
+    probe_limit: int | None = None,
+    max_per_kind: int | None = None,
     max_workers: int = 1,
     min_workers: int = 1,
     use_processes: bool = False,
 ) -> dict:
-    """**串行** baostock 三复权回补。
+    """**串行** baostock 三复权回补（单代理串行；失败换代理）。
 
     Args:
-        use_socks: True 时经 Clash SOCKS5 出站(换 IP, 躲直连黑名单)
+        proxy_mode:
+          - free   启动拉免费代理入池（默认），失败剔除并切换
+          - clash  仅本机 SOCKS（BAOSTOCK_SOCKS_* / 7891）
+          - direct 直连
         preserve_qfq: True 不覆盖已有前复权成交价, 只写 raw/hfq
-        sleep_sec: 每只票间隔, 降低封禁风险
+        sleep_sec: 每只票间隔
     """
+    # 旧 CLI：use_socks=False → direct；use_socks=True 且未显式 free 时保持 free
+    if use_socks is False:
+        proxy_mode = "direct"
+    elif use_socks is True and proxy_mode == "free":
+        pass  # 默认 free 已含 clash 种子
+
     codes = list(codes or _default_codes())
     end = end or date.today().isoformat()
     t0 = time.time()
     ok = fail = rows = 0
     errors: list[tuple[str, str]] = []
 
-    proxy_info = "direct"
-    if use_socks:
-        proxy_info = _enable_socks_proxy(socks_host, socks_port)
-
-    # 预登录一次
-    from stockfu.data.baostock_source import BaostockSource
-    src = BaostockSource()
-    if not src.force_relogin() and not src._ensure_login():
-        raise RuntimeError(f"baostock login failed (proxy={proxy_info})")
+    sess = _make_session(
+        proxy_mode,
+        socks_host=socks_host,
+        socks_port=socks_port,
+        probe_limit=probe_limit,
+        max_per_kind=max_per_kind,
+    )
+    proxy_info = sess.start()
 
     print(
-        f"=== 三复权回补(baostock 串行)  codes={len(codes)}  "
-        f"{start}→{end}  proxy={proxy_info}  preserve_qfq={preserve_qfq} ===",
+        f"=== 三复权回补(baostock 串行+代理池)  codes={len(codes)}  "
+        f"{start}→{end}  proxy_mode={proxy_mode}  proxy={proxy_info}  "
+        f"preserve_qfq={preserve_qfq} ===",
         flush=True,
     )
 
-    for i, code in enumerate(codes, 1):
-        try:
-            triple = _fetch_triple_baostock(code, start, end)
-            if not any(triple.values()):
-                fail += 1
-                errors.append((code, "empty"))
-            else:
-                n = _apply_and_upsert(code, triple, preserve_qfq=preserve_qfq)
-                ok += 1
-                rows += n
-        except Exception as e:  # noqa: BLE001
-            fail += 1
-            errors.append((code, f"{type(e).__name__}: {e}"))
-            # 登录态可能掉线 → 重登
+    try:
+        for i, code in enumerate(codes, 1):
             try:
-                BaostockSource().force_relogin()
-            except Exception:  # noqa: BLE001
-                pass
-        if progress_every and (i % progress_every == 0 or i == len(codes)):
-            elapsed = time.time() - t0
-            rate = i / elapsed if elapsed > 0 else 0
-            print(
-                f"  [{i}/{len(codes)}] ok={ok} fail={fail} rows+={rows}  "
-                f"{rate:.2f} codes/s",
-                flush=True,
-            )
-        if sleep_sec > 0:
-            time.sleep(sleep_sec)
-
-    try:
-        BaostockSource().force_relogin()  # 实际 logout+login; 收尾 logout 即可
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        import baostock as bs
-        bs.logout()
-    except Exception:  # noqa: BLE001
-        pass
+                triple = sess.fetch_kline_triple(code, start, end)
+                if not any(triple.values()):
+                    fail += 1
+                    errors.append((code, "empty"))
+                else:
+                    n = _apply_and_upsert(code, triple, preserve_qfq=preserve_qfq)
+                    ok += 1
+                    rows += n
+            except Exception as e:  # noqa: BLE001
+                fail += 1
+                errors.append((code, f"{type(e).__name__}: {e}"))
+                # 会话级再尝试换代理，避免整批卡死
+                try:
+                    if not sess.mark_bad_and_rotate(f"code_exc:{code}"):
+                        print("  [abort] proxy pool exhausted", flush=True)
+                        # i 为 1-based；当前 code 已记 fail，补记后续
+                        for j in range(i, len(codes)):
+                            errors.append((codes[j], "proxy_pool_exhausted"))
+                            fail += 1
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+            if progress_every and (i % progress_every == 0 or i == len(codes)):
+                elapsed = time.time() - t0
+                rate = i / elapsed if elapsed > 0 else 0
+                print(
+                    f"  [{i}/{len(codes)}] ok={ok} fail={fail} rows+={rows}  "
+                    f"{rate:.2f} codes/s  proxy={sess.proxy_url}  "
+                    f"pool={sess.pool.remaining()}  rotates={sess.rotates}",
+                    flush=True,
+                )
+            if sleep_sec > 0:
+                time.sleep(sleep_sec)
+    finally:
+        sess.stop()
 
     summary = {
         "codes": len(codes),
@@ -215,14 +229,18 @@ def backfill_adj_prices(
         "elapsed_sec": round(time.time() - t0, 1),
         "start": start,
         "end": end,
-        "proxy": proxy_info,
-        "mode": "serial-baostock",
+        "proxy": sess.proxy_url,
+        "proxy_mode": proxy_mode,
+        "rotates": sess.rotates,
+        "dropped": sess.dropped,
+        "mode": "serial-baostock-proxy-pool",
         "errors": errors[:50],
         "error_n": len(errors),
     }
     print(
         f"=== 完成 ok={ok} fail={fail} rows={rows} "
-        f"elapsed={summary['elapsed_sec']}s proxy={proxy_info} ===",
+        f"elapsed={summary['elapsed_sec']}s proxy_mode={proxy_mode} "
+        f"rotates={sess.rotates} dropped={sess.dropped} ===",
         flush=True,
     )
     return summary

@@ -62,12 +62,36 @@ class BaostockSource(DataSource):
 
     @classmethod
     def _ensure_login(cls, force: bool = False) -> bool:
+        """登录 baostock。
+
+        默认经进程级免费代理池（``ensure_baostock_login``）：
+        拉公网代理 → 隧道到 :10030 → 失败剔除换 IP。
+        直连可用 ``BAOSTOCK_PROXY_MODE=direct`` 关闭。
+
+        代理会话内部 raw login 时不走池，避免递归。
+        """
+        try:
+            import baostock as bs  # noqa: F401
+        except Exception:  # noqa: BLE001
+            return False
+        try:
+            from stockfu.data.baostock_proxy import ensure_baostock_login, in_raw_login
+        except Exception:  # noqa: BLE001
+            return cls._login_raw(force=force)
+
+        if in_raw_login():
+            return cls._login_raw(force=force)
+        return ensure_baostock_login(force=force)
+
+    @classmethod
+    def _login_raw(cls, force: bool = False) -> bool:
+        """裸 login（当前 socket 已由代理池注入，或 direct 模式）。"""
         try:
             import baostock as bs
         except Exception:  # noqa: BLE001
             return False
         if force or not cls._logged_in:
-            if force:  # 重连前先 logout，清掉可能已掉线的旧连接
+            if force:
                 try:
                     bs.logout()
                 except Exception:  # noqa: BLE001
@@ -78,10 +102,20 @@ class BaostockSource(DataSource):
 
     @classmethod
     def force_relogin(cls) -> bool:
-        """强制重新登录。baostock 是进程级全局连接，偶发掉线时 _logged_in 仍 True、
-        _ensure_login 不会重连 → 后续 query 静默失败返回空。调用方拿到空结果后
-        调此方法 logout+重新 login 即可恢复。"""
+        """强制重新登录。失败时由代理池剔除当前 IP 并切换。
+
+        baostock 是进程级全局连接，偶发掉线时 _logged_in 仍 True、
+        不 force 则后续 query 静默失败。"""
         return cls._ensure_login(force=True)
+
+    @classmethod
+    def rotate_proxy(cls, reason: str = "query_fail") -> bool:
+        """查询失败后换代理并重登。"""
+        try:
+            from stockfu.data.baostock_proxy import rotate_baostock_proxy
+            return rotate_baostock_proxy(reason)
+        except Exception:  # noqa: BLE001
+            return cls.force_relogin()
 
     # baostock adjustflag: 1=后复权 hfq, 2=前复权 qfq, 3=不复权 raw
     ADJ_FLAG = {"hfq": "1", "qfq": "2", "raw": "3"}
@@ -109,9 +143,12 @@ class BaostockSource(DataSource):
 
     def _klines_range(self, code: str, start: str, end: str | None = None,
                       adj: str = "qfq") -> list[KlineBar]:
-        """按日期区间拉日K(供三复权批量回补)。start/end=YYYY-MM-DD。"""
+        """按日期区间拉日K(供三复权批量回补)。start/end=YYYY-MM-DD。
+
+        网络类 error_code 抛 RuntimeError（供代理池剔除切换）；无数据返回 []。
+        """
         if not self._ensure_login():
-            return []
+            raise RuntimeError("baostock not logged in")
         import baostock as bs
         flag = self.ADJ_FLAG.get((adj or "qfq").lower(), "2")
         kwargs = dict(
@@ -125,7 +162,16 @@ class BaostockSource(DataSource):
                 "date,open,high,low,close,volume,amount,tradestatus,isST,"
                 "pctChg,peTTM,pbMRQ,turn",
                 **kwargs)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"baostock query exc: {type(e).__name__}: {e}") from e
+        err = str(getattr(rs, "error_code", "1") or "1")
+        if err != "0":
+            msg = getattr(rs, "error_msg", "") or ""
+            # 网络/登录类 → 抛错触发换代理；其它参数类返回空
+            if err.startswith("10002") or err in (
+                "10001001", "10001011", "10001005",
+            ):
+                raise RuntimeError(f"baostock query err {err}: {msg}")
             return []
         return self._parse_kline_rs(rs)
 
@@ -155,13 +201,25 @@ class BaostockSource(DataSource):
 
     def get_kline_triple(self, code: str, start: str,
                          end: str | None = None) -> dict[str, list[KlineBar]]:
-        """一次拉齐三套复权 K 线 → {qfq|raw|hfq: bars}。任一失败返回对应空列表。"""
-        out = {}
+        """一次拉齐三套复权 K 线 → {qfq|raw|hfq: bars}。
+
+        网络/登录错误向上抛（代理池切换）；单口径参数失败记为空列表。
+        """
+        out: dict[str, list[KlineBar]] = {}
+        net_err: Exception | None = None
         for adj in ("qfq", "raw", "hfq"):
             try:
                 out[adj] = self._klines_range(code, start, end, adj=adj)
+            except RuntimeError as e:
+                # 网络类：整次 triple 失败，交给代理池
+                if "baostock" in str(e).lower() or "not logged" in str(e).lower():
+                    net_err = e
+                    break
+                out[adj] = []
             except Exception:  # noqa: BLE001
                 out[adj] = []
+        if net_err is not None:
+            raise net_err
         return out
 
     def _fetch_quote(self, code: str) -> Optional[Quote]:

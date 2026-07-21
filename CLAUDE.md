@@ -17,7 +17,7 @@ python3 main.py --serve
 python3 main.py --fetch            # 每日抓取 + 三层情绪
 python3 main.py --backfill-dividend
 python3 main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20
-  # baostock 串行三复权(*_qfq/*_raw/*_hfq);默认 Clash SOCKS 127.0.0.1:7891
+  # baostock 串行三复权;默认 --proxy-mode free（免费代理池+Clash种子，失败自动切换）
 python3 main.py --clear-dividend-cache
 python3 main.py --backtest bollinger_monthly --start 2025-06-01 --end 2026-01-01 --codes 600519,000858 --save
 python3 main.py --update-backtests   # 全周期;可 --strategies a,b
@@ -29,7 +29,7 @@ nohup python3 main.py --schedule >> data/schedule.log 2>&1 &
 ## 关键约定(踩坑点)
 - **Python 用 `python3`**;系统 Python PEP668,pip 加 `--break-system-packages`
 - **代理**:港美股(yfinance)走 7890(`source /opt/clash/proxy.sh`);国内源(akshare/efinance)no_proxy 直连
-- **baostock** 是裸 TCP(不认 HTTP_PROXY);封禁时三复权回补默认 SOCKS5 `127.0.0.1:7891`(需 `PySocks`)
+- **baostock** 是裸 TCP(不认 HTTP_PROXY);三复权回补默认免费代理池(`--proxy-mode free`，HTTP CONNECT/SOCKS，需 `PySocks`)，失败剔除换 IP
 - **数据**在 `data/stockfu.db`(WAL);回测产物 `data/backtest/`(gitignore)
 - **回测防未来函数**:取数 `<= as_of`
 - **价格口径**(`quote_snapshot`):
