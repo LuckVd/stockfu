@@ -98,6 +98,14 @@ def _migrate() -> None:
                 for name in to_drop:
                     conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
 
+    # asset.note 历史遗留列(早期 model 有,后移除)→ DROP 回收:当前 Asset 模型无此字段,
+    # seed_samples INSERT 不带 note 会触发 NOT NULL 约束失败(干净库不受影响——create_all
+    # 按当前 model 建表无 note;仅升级旧库命中)。SQLite≥3.35,幂等。
+    if insp.has_table("asset"):
+        cols = [c["name"] for c in insp.get_columns("asset")]
+        if "note" in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE asset DROP COLUMN note"))
 
     # source hash 上线(P2-5):指纹纳入算子源码后,旧指纹全失效成孤儿占空间。
     # 一次性清空 operator_result(math 重算廉价,首次回测慢一次);幂等:标记设后不再清。
