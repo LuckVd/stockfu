@@ -3,6 +3,7 @@
 本地优先的综合资产 + 市场情绪终端:A股/港股/美股/ETF 持仓管理、TTM 股息率/网格、三层(市场/板块/个股)fear-greed-heat 情绪指数、历史回补、AI 4 顾问、天级回测(算子→策略→选股→执行 四层架构)。技术栈:Python + SQLModel/SQLite + FastAPI + Vue3 前端（看板走 Web；TUI 已移除）。
 
 ## 冷启动(新会话先读)
+- **`.local/WORKSTATE.md`** — 当前 worktree 的短交接状态（不存在则按 `docs/WORKSTATE_TEMPLATE.md` 创建）；先确认 `pwd` / 分支 / 未提交改动。跨工具通用规则见 `AGENTS.md`。
 - **`docs/PROJECT_STATE.md`** — 工作日志/冷启动手册。**先读 §0**（进行中任务），再读 §1。
 - `docs/ROADMAP.md` — 项目路线图
 - `docs/BACKTEST.md` — 回测引擎(四层架构 + scheduler + 算子缓存 + metrics)
@@ -43,4 +44,4 @@ nohup python3 main.py --schedule >> data/schedule.log 2>&1 &
 
 ## 状态
 🚧 MVP。代码:数据层(qfq 硬化)+回测四层+横截面策略族+全周期 CLI+荐股+三复权字段。  
-**raw/hfq 回补完成；回测重跑中——红利 2 个已完成（§0.6），9 个 qfq 策略后台补跑中**（旧混复权表已作废删除）。
+**干净回测 12/16 已完成**（§0.6 全表，带回撤/卡玛）；剩 4 策略重启跑中。本会话修了两处性能坑：bollinger 算子 N+1（改预载，提速~20-27x）、value 指纹分裂（params 对齐）——排查见 `docs/PROJECT_STATE.md` §0.8。旧混复权表已作废删除。
