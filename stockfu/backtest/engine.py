@@ -210,7 +210,9 @@ def _backtest_series_ctx(market_cache: dict):
     两者都返回库内最早日起的部分序列,行为相同)。code/字段不在预载 → 返回 None 回落查库
     (保正确)。结束自动摘除 → live 路径与未预载调用方不受影响。
     """
-    from stockfu.services.factors import (clear_backtest_series_provider,
+    from stockfu.services.factors import (clear_backtest_bars_provider,
+                                          clear_backtest_series_provider,
+                                          set_backtest_bars_provider,
                                           set_backtest_series_provider)
     if not market_cache:
         yield
@@ -241,11 +243,33 @@ def _backtest_series_ctx(market_cache: dict):
                 out.append(v)
         return out
 
+    def provide_bars(code, field, start, ref_date):
+        """同 provide 但同时返回日期(供 monthly/weekly_bollinger 按日聚合;零额外查库)。"""
+        entry = index.get(code)
+        if entry is None:
+            return None
+        idx = _QS_FIELD_IDX.get(field)
+        if idx is None:
+            return None
+        lst, dates = entry
+        lo = bisect_left(dates, start)
+        hi = bisect_right(dates, ref_date)
+        d_out: list = []
+        v_out: list = []
+        for i in range(lo, hi):
+            v = lst[i][1][idx]
+            if v is not None:
+                d_out.append(lst[i][0])
+                v_out.append(v)
+        return d_out, v_out
+
     set_backtest_series_provider(provide)
+    set_backtest_bars_provider(provide_bars)
     try:
         yield
     finally:
         clear_backtest_series_provider()
+        clear_backtest_bars_provider()
 
 
 def _pack_bar_row(r) -> tuple:

@@ -12,36 +12,25 @@
   - 周线布林带: 20周≈5个月,适合中周期择时,反应更快
 """
 
-from datetime import date, timedelta
+from datetime import date
 import math
-
-from sqlmodel import select
 
 from stockfu.ai.operators.base import BaseOperator, OpResult
 from stockfu.ai.operators.registry import register
-from stockfu.db import session_scope
-from stockfu.services.factors import quote_model_for
+from stockfu.services.factors import quote_series_dates
 
 
-def _weekly_series_from_rows(rows):
-    """从日线查询结果中提取: 日线收盘价序列 + 周线收盘价序列。
+def _weekly_series_from_pairs(pairs) -> list[float]:
+    """(date, close) 升序对 → 周度收盘价序列(每周最后交易日 close,后覆盖前)。
 
-    周聚合: 按 ISO 周,取每周最后一个交易日收盘价。
-    返回 (daily_closes, weekly_closes)。
+    周聚合与原 rows 版逐值一致:按 ISO 周,同周后写覆盖前写 → 取该周最后交易日。
     """
-    daily_closes: list[float] = []
-    weekly: dict[tuple[int, int], float] = {}  # (year, week) -> close
-
-    for r in rows:
-        d = getattr(r, "quote_date", None) or getattr(r, "snap_date")
-        close = getattr(r, "close", None)
-        if close is not None and float(close) > 0:
-            daily_closes.append(float(close))
+    weekly: dict[tuple[int, int], float] = {}  # (iso_year, iso_week) -> close
+    for d, c in pairs:
+        if c > 0:
             iso = d.isocalendar()
-            weekly[(iso[0], iso[1])] = float(close)  # 后面的覆盖前面的 -> 每周最后一天
-
-    weekly_closes = [weekly[k] for k in sorted(weekly.keys())]
-    return daily_closes, weekly_closes
+            weekly[(iso[0], iso[1])] = c
+    return [weekly[k] for k in sorted(weekly.keys())]
 
 
 def _calc_bollinger(series: list[float], window: int, k: float):
@@ -123,30 +112,23 @@ class WeeklyBollingerOperator(BaseOperator):
         k = float(params.get("std_dev", 2.0))
         buy_max = float(params.get("buy_max", 0.3))
         sell_min = float(params.get("sell_min", 0.7))
-        ref = ctx.as_of or date.today()
-
-        # 需要约 window*7 + 60 个交易日才能凑够 window 周的日线
+        # 需约 window*7 + 60 个交易日才能凑够 window 周的日线;
+        # 走 quote_series_dates → 回测时从预载内存切片(零 DB),不再逐 (code,as_of) 开 session
         lookback_days = window * 7 + 60
-        start = ref - timedelta(days=lookback_days)
-        model = quote_model_for(ctx.code)
 
-        with session_scope() as s:
-            rows = s.exec(
-                select(model).where(
-                    model.asset_code == ctx.code,
-                    model.quote_date >= start,
-                    model.quote_date <= ref,
-                ).order_by(model.quote_date)
-            ).all()
+        dates, closes = quote_series_dates(
+            ctx.code, "close", lookback_days, as_of=ctx.as_of)
+        pairs = [(d, c) for d, c in zip(dates, closes) if c > 0]
 
-        if not rows:
+        if not pairs:
             return OpResult(
                 operator=self.operator_id, type="math", value=None,
                 signal="hold", score=0.0, confidence=0.0,
                 reasoning=f"{ctx.code} 无日线数据",
             )
 
-        daily_closes, weekly_closes = _weekly_series_from_rows(rows)
+        daily_closes = [c for _, c in pairs]
+        weekly_closes = _weekly_series_from_pairs(pairs)
 
         if len(daily_closes) < 5:
             return OpResult(

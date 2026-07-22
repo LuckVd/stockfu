@@ -10,8 +10,10 @@
 
 ## 0. 进行中任务 / 冷启动接棒（2026-07-22）
 
-> **三复权 raw/hfq 回补已完成**（coverage 100%）；**红利 2 策略干净重跑已完成**（2026-07-22 04:03，raw 分母，结果见 §0.6）；5 个 qfq 策略有 07-21 干净结果；**剩余 9 个 qfq 策略后台补跑中**（脱离会话，PID `data/update_backtests_rest.pid`、日志 `data/update_backtests_rest.log`）。
-> **下次会话**：判 9 策略补跑是否完成 → 写满 §0.6 全表（16 策略）。
+> **干净回测 12/16 已落盘**（§0.6 全表，带回撤/卡玛）：红利 2（07-22 04:03）+ qfq 5（07-21）+ 本次提速重启 5（macd_cross / momentum_breakout×2 / reversal_strategy / cn_momentum_rotation）。
+> **【2026-07-22 · 两处性能修复（代码改了，尚未 commit）】** ① **bollinger N+1**：`monthly/weekly_bollinger` 算子曾违反"算子不直接取库"契约，`run()` 内逐 (code,as_of) 开 session 查 DB（全周期 ~109 万次 SELECT，单策略 ~8h）；改走 `quote_series_dates` 预载（`factors.py` + `engine._backtest_series_ctx` 挂 `provide_bars`），口径逐值不变，实测提速 **macd_cross 4253s→157s（27x）、monthly 冷补 ~20x**（详 memory `bollinger-operator-n-plus-1`）。② **value 指纹分裂**：`pure_factor.yaml` 的 value params 写 `{}`（而非 `{years:5}`），`compute_fingerprint` 不填默认值 → 指纹不一致 → 查不到其他策略 98 万行 value 缓存、独立 N+1 冷补（pure_factor 卡 57min 才补 13%）；已对齐 params + 清错指纹。
+> **剩余 4 策略尚未完成**：此前以 `nohup` 启动的批处理未保活（PID 已消失、日志无 Python 异常），需在可持久化的宿主进程中按串行方式重启：`pure_factor`/`dual_bollinger`/`bollinger_reversion`/`bollinger_reversion_cross_section`。
+> **下次会话**：在可持久化后台重启这 4 策略 → 补满 §0.6 全 16 表；确认后 commit 上述性能修复代码。
 
 ### 0.1 三复权 baostock 串行回补（✅ 已完成，留存复跑参考）
 
@@ -53,14 +55,14 @@ PY
 
 ### 0.2 下一步
 
-> ✅ 红利 2 策略已完成（§0.6）；✅ 5 个 qfq 策略有 07-21 干净结果；🔄 **9 个 qfq 策略后台补跑中**（PID `data/update_backtests_rest.pid`、日志 `data/update_backtests_rest.log`）。
+> ✅ 12/16 干净结果已落盘（§0.6）；⏸️ **剩余 4 策略未完成**（此前后台任务未保活）。
 
-1. **判 9 策略补跑是否完成**：  
+1. **在可持久化后台串行重启 4 策略**：  
    ```bash
    ps -p $(cat data/update_backtests_rest.pid) -o etime= 2>/dev/null || echo DONE
    tail -20 data/update_backtests_rest.log
    ```
-2. **写满 §0.6 全表**：补跑完成后，从各 `upd-*-2026-07-20.json.gz` / 最新 `update_summary-*.json` 取这 9 个数字填入 §0.6，凑齐 16 策略干净总表。
+2. **补满 §0.6 全表**：完成后从 `upd-*-2026-07-20.json.gz` 取这 4 个数字填入 §0.6。
 3. 可选：`--recommend` 在干净缓存上重跑选股。
 
 ### 0.3 代码已推送（2026-07-21）
@@ -89,16 +91,28 @@ python3 main.py --recommend --strategies cross_section_factor,reversal_cross_sec
 | 数据源 | 删 sina/pytdx；K 线路径强制前复权 |
 | baostock 直连兜底 + fetch 统一 | 代理池+rebootstrap 耗尽→直连(`BAOSTOCK_DIRECT_FALLBACK` 默认 on);A 股 `--fetch` 走 baostock 三复权(全字段+当日 `close_raw`),失败不降级;ETF→akshare、港美股→yfinance。**✅ 已端到端验证(2026-07-22)**:人为清空代理池+禁自愈,兜底 ON→直连接住、三复权 qfq/raw/hfq 拉满(`proxy=direct`);OFF→旧行为抛异常中止 |
 
-### 0.6 全周期结果总表（2026-07-22 干净重跑）
+### 0.6 全周期结果总表（2026-07-22 干净重跑，12/16）
 
-> 区间 2021-01-01 → 2026-07-20，universe=all（815 票），基准上证 +8.37%。来源 `data/backtest/update_summary-20260722-040326.json`。**勿引用 07-19/07-20 混复权 / qfq 分母旧表。**
+> 区间 2021-01-01 → 2026-07-20，universe=all（815 票），基准上证 +8.37%。按总收益降序。**勿引用 07-19/07-20 混复权 / qfq 分母旧表。**
 
-| 策略 | rebalancer | 总收益 | 年化 | 回撤 | 夏普 | 超额 | 换手/年 | 读法 |
-|------|-----------|------:|-----:|-----:|-----:|-----:|-------:|------|
-| `dividend_cross_section`（高股息+低波+价值） | cap_and_rank | **+50.6%** | +7.99% | 14.2% | 0.63 | **+42.2%** | 1.16 | ✅ 有效；旧 +67% 系 qfq 分母虚高，干净仍强 |
-| `dividend_low_vol`（高股息+低波+低估值） | top_n_picker(8) | −8.9% | −1.73% | 34.4% | −0.1 | −17.2% | 9.56 | ❌ 跑输；换手过高、回撤大 |
-| 5 个 qfq 策略（`cross_section_factor`/`reversal_cross_section`/`cn_momentum_cross_section`/`etf_momentum_cross_section`/`etf_momentum_rotation`） | — | — | — | — | — | — | — | ✅ 07-21 干净结果（见各自 `upd-*-2026-07-20.json.gz`） |
-| 9 个 qfq 策略（`macd_cross`/`bollinger_*`/`momentum_breakout*`/`reversal_strategy`/`cn_momentum_rotation`/`pure_factor`/`dual_bollinger`） | — | — | — | — | — | — | — | 🔄 后台补跑中（`data/update_backtests_rest.log`，§0.2） |
+| 策略 | 总收益 | 年化 | 回撤 | 夏普 | 卡玛 | 超额 | 换手/年 | 读法 |
+|------|------:|-----:|-----:|-----:|-----:|-----:|-------:|------|
+| `momentum_breakout` | **+106.3%** | 14.6% | 33.6% | 0.58 | 0.43 | +97.9% | 6.8 | 动量追涨；2025 一年 +70% 撑起，卫星 |
+| `momentum_breakout_cross_section` | +90.2% | 12.8% | 38.5% | 0.58 | 0.33 | +81.8% | 8.8 | 同上横截面版，回撤更大 |
+| **`dividend_cross_section`** | +50.6% | 8.0% | **14.2%** | **0.63** | **0.56** | +42.2% | **1.2** | ✅ 核心候选；回撤最低/卡玛最高/换手极低 |
+| `cn_momentum_cross_section` | +27.9% | 4.7% | 43.4% | 0.31 | 0.11 | +19.5% | 7.1 | 回撤大、卡玛低 |
+| `etf_momentum_cross_section` | +20.9% | 3.6% | 19.1% | 0.37 | 0.19 | +12.6% | 11.2 | 回撤尚可但收益薄 |
+| `etf_momentum_rotation` | +15.0% | 2.6% | 21.6% | 0.31 | 0.12 | +6.6% | 10.9 | 平 |
+| `cn_momentum_rotation` | +12.4% | 2.2% | 45.6% | 0.21 | 0.05 | +4.0% | 7.1 | ❌ 回撤 45% 全场最高 |
+| `reversal_strategy` | +8.6% | 1.6% | 36.7% | 0.18 | 0.04 | +0.2% | 8.7 | 贴基准、回撤大 |
+| `cross_section_factor` | +6.3% | 1.1% | 37.8% | 0.15 | 0.03 | −2.1% | 6.4 | 同上 |
+| `reversal_cross_section` | +5.0% | 0.9% | 37.6% | 0.15 | 0.02 | −3.3% | 6.9 | 同上 |
+| `dividend_low_vol` | −8.9% | −1.7% | 34.4% | −0.10 | −0.05 | −17.2% | 9.6 | ❌ 同因子 top_n 锁仓版跑输 |
+| `macd_cross` | −14.4% | −2.9% | 38.0% | −0.22 | −0.08 | −22.8% | 9.2 | ❌ 证伪 |
+
+> **风险调整看卡玛**：`dividend_cross_section`（0.56）远胜动量双雄（0.33–0.43）——收益高且回撤仅 14%，适合核心仓位；动量双雄收益高但回撤 34–38%、+70% 集中在 2025 顺风年，宜作卫星。`momentum_breakout` 分年：2022 −14% / 2024 +10% / **2025 +70%** / 2026 +15%。
+>
+> ⏸️ **剩余 4 个尚未完成**（§0）：`pure_factor` / `dual_bollinger` / `bollinger_reversion` / `bollinger_reversion_cross_section`，需重启后补入本表凑齐 16。
 
 ### 0.7 关键 CLI
 
@@ -113,6 +127,14 @@ python3 main.py --recommend --strategies cross_section_factor --as-of 2026-07-17
 ```
 
 **踩坑**：① 并行回测易 `database is locked`；② baostock 裸 TCP 不认 HTTP_PROXY，封禁时走 SOCKS；③ 官方行情 backfill **串行**；④ `--fetch` 只刷自选。
+
+### 0.8 回测慢/卡排查（2026-07-22 踩坑）
+
+某策略 `--update-backtests` 卡住（单策略 >10min、标 warm 却不动）时，几乎都是算子**重复冷补**：
+
+1. **算子 N+1 查库**：算子 `run()` 内 `with session_scope() as s: select(...)`（违反"算子不直接取库"契约）→ 每个 (code,as_of) 一次 DB 查询，全周期 ~百万次。**修法**：改走 `quote_series` / `quote_series_dates` 预载（回测内存供给器，零 DB）。已修 `monthly/weekly_bollinger`；自查 `grep session_scope stockfu/ai/operators/factors/*.py`。
+2. **params 指纹分裂**：yaml 里 params 写法不一致（如 `{}` vs `{years:5}`），`compute_fingerprint` 不填默认值 → 指纹不同 → 查不到其他策略缓存、独立 N+1 冷补。**查法**：`sqlite3 data/stockfu.db "SELECT fingerprint,COUNT(*) FROM operator_result WHERE operator_id='X' GROUP BY 1;"`（≥2 指纹即分裂）。**修法**：对齐 yaml params + `DELETE` 错指纹。
+3. **进度定位**：回测不打印 per-日进度；查 `operator_result WHERE operator_id='X'` 的 `MAX(as_of)` 反推冷补到哪（满 1342 交易日）。注意 `immutable=1` 只读模式在回测写 WAL 时会报 `malformed`，用普通模式。
 
 ## 2. 架构（摘要）
 
@@ -138,6 +160,7 @@ stockfu/
 
 ## 8. 待办
 
-1. ✅ `close_raw` 覆盖完成（100%）+ 红利 2 策略干净重跑完成（§0.6 已写）。5 个 qfq 有 07-21 干净结果；剩 9 个 qfq 策略后台补跑中，完成后写满 §0.6 全表。
+1. ✅ `close_raw` 覆盖完成 + **12/16 干净结果**（§0.6）。剩 4 策略尚未完成，重启后补满全表。
 2. ✅ `--fetch` A 股走 baostock 三复权,当日 `close_raw` 自动刷新(无需单独刷)
-3. 小市值因子仍不可用（market_cap 空）
+3. ✅ 回测性能修复（bollinger N+1 + value 指纹，§0.8）
+4. 小市值因子仍不可用（market_cap 空）

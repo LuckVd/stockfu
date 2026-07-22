@@ -102,6 +102,23 @@ def clear_backtest_series_provider() -> None:
     _BT_SERIES_PROVIDER = None
 
 
+# 带日期的回测行情供给器：供 monthly/weekly_bollinger 等需按日聚合的算子用。
+# fn(code, field, start, ref_date) -> (list[date], list[float]) | None；None = 未覆盖回落查库。
+_BT_BARS_PROVIDER = None
+
+
+def set_backtest_bars_provider(fn) -> None:
+    """挂载带日期的回测行情供给器(由 backtest.engine 预载后调;与 series 同源内存)。"""
+    global _BT_BARS_PROVIDER
+    _BT_BARS_PROVIDER = fn
+
+
+def clear_backtest_bars_provider() -> None:
+    """摘除带日期供给器(回测结束)。"""
+    global _BT_BARS_PROVIDER
+    _BT_BARS_PROVIDER = None
+
+
 def quote_series(code: str, field: str, days: int, as_of: date | None = None,
                  adj: str = ADJ_QFQ) -> list[float]:
     """从行情表读某字段近 days 日的序列。
@@ -144,6 +161,46 @@ def quote_series(code: str, field: str, days: int, as_of: date | None = None,
         return out
     # ETF/指数:仅遗留 open/high/low/close(按 qfq 语义)
     return [getattr(r, field) for r in rows if getattr(r, field) is not None]
+
+
+def quote_series_dates(code: str, field: str, days: int,
+                       as_of: date | None = None,
+                       adj: str = ADJ_QFQ) -> tuple[list[date], list[float]]:
+    """带日期的 quote_series:返回 (dates, values)(升序、滤 None、逐值对齐)。
+
+    供 monthly/weekly_bollinger 等需按日聚合(月/周最后值)的算子用,避免每个
+    (code, as_of) 各自开 session 查库的 N+1。回测时走预载 bars 供给器(零 DB,
+    与 quote_series 同源内存);未挂载或非个股非 qfq → 回落单次查库。
+
+    values 与 quote_series(code, field, days, as_of, adj) 逐值一致(同窗口、同过滤、同升序)。
+    """
+    ref_date = as_of or date.today()
+    start = ref_date - timedelta(days=days + 15)
+    adj_n = (adj or ADJ_QFQ).lower()
+    if adj_n == ADJ_QFQ and _BT_BARS_PROVIDER is not None:
+        got = _BT_BARS_PROVIDER(code, field, start, ref_date)
+        if got is not None:
+            return got
+    model = quote_model_for(code)
+    with session_scope() as s:
+        rows = s.exec(select(model).where(
+            model.asset_code == code,
+            model.quote_date >= start,
+            model.quote_date <= ref_date,
+        ).order_by(model.quote_date)).all()
+    dates: list[date] = []
+    values: list[float] = []
+    for r in rows:
+        d = getattr(r, "quote_date", None) or getattr(r, "snap_date", None)
+        if model is QuoteSnapshot and field.lower() in _OHLC:
+            v = _row_price(r, field, adj_n)
+        else:
+            raw = getattr(r, field, None)
+            v = float(raw) if raw is not None else None
+        if v is not None and d is not None:
+            dates.append(d)
+            values.append(v)
+    return dates, values
 
 
 def ma_alignment(code: str, lookback: int = 250, as_of: date | None = None) -> str | None:
