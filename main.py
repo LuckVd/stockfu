@@ -432,8 +432,18 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     """
     from datetime import date, timedelta
 
-    from stockfu.db import init_db, set_app_config
+    from stockfu.db import init_db, set_app_config, session_scope
     init_db()
+    # 校验策略在 DB(含变体 base#key),避免 set_app_config 后被 get_active_strategy
+    # 静默回落 pure_factor——复合 id 拼写错会无声跑错策略。
+    from sqlmodel import select
+    from stockfu.models import Strategy
+    with session_scope() as s:
+        if s.get(Strategy, strategy) is None:
+            avail = sorted(r for r in s.exec(select(Strategy.strategy_id)).all())
+            raise SystemExit(
+                f"策略 '{strategy}' 不在 DB(先 --init-db / seed)。可用: {avail}"
+            )
     set_app_config("active_strategy_id", strategy)
     from stockfu.ai.operators.registry import discover_and_register
     discover_and_register()
@@ -465,6 +475,10 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     wr_str = f" | 胜率 {wr}%" if wr is not None else ""
     excess = m.get("excess")
     excess_str = f" | 超额 {excess}%" if excess is not None else ""
+    _rec = m.get("max_drawdown_recovery_days")
+    rec_str = f" | 回本 {_rec}d" if _rec is not None else " | 回本 未回本"
+    _slc = m.get("stop_loss_count")
+    sl_str = f" | 止损 {_slc}笔" if _slc else ""
     _tov = m.get("avg_daily_turnover")
     tov_str = (f" | 日均换手 {_tov}只/日(年化{m.get('annual_turnover')}遍)"
                if _tov is not None else "")
@@ -475,7 +489,7 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
                    f"[{uni.get('min_size')}~{uni.get('max_size')}] "
                    f"master {uni.get('master_coverage')}/{uni.get('base_size')}")
     print(f"✓ 总收益 {m.get('total_return')}% | 年化 {m.get('annualized')}% | "
-          f"最大回撤 {m.get('max_drawdown')}% | 夏普 {m.get('sharpe')}{wr_str}{bench_str}{excess_str}\n"
+          f"最大回撤 {m.get('max_drawdown')}% | 夏普 {m.get('sharpe')}{wr_str}{bench_str}{excess_str}{rec_str}{sl_str}\n"
           f"  交易 {m.get('trade_count')}笔{tov_str} | 期末权益 {m.get('final_equity')}"
           f" | 涨停拒买 {m.get('limit_reject_buys', 0)} | 跌停拒卖 {m.get('limit_reject_sells', 0)}"
           f"{uni_str}")

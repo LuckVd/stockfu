@@ -88,13 +88,6 @@ def resolve_strategy_specs(strategy_ids: Iterable[str]) -> list[StrategyRunSpec]
     )
 
 
-def _load_yaml(strategy_id: str) -> str:
-    path = STRATEGIES_DIR / f"{strategy_id}.yaml"
-    if not path.is_file():
-        raise FileNotFoundError(f"策略 YAML 不存在: {path}")
-    return path.read_text(encoding="utf-8")
-
-
 def next_trade_date(as_of: date) -> tuple[date | None, str]:
     """下一交易日:优先库内 as_of 之后最早 quote_date;否则跳过周末的日历估计。"""
     with session_scope() as s:
@@ -381,8 +374,18 @@ def pick_strategy(
     discover_and_register()
     discover_rebalancers()
 
-    yaml_text = _load_yaml(spec.strategy_id)
-    cs = compile_strategy(yaml_text)
+    # 策略 config 从 DB 读(非 yaml 文件)——变体 base#key 无独立文件,其 config 由
+    # seed._expand_variants 合成落库;与回测 get_active_strategy 同一真源。
+    from stockfu.models import Strategy
+    with session_scope() as s:
+        row = s.get(Strategy, spec.strategy_id)
+        if row is None:
+            raise ValueError(
+                f"策略 {spec.strategy_id} 不在 DB(先 --init-db / seed);"
+                f"可选: {available_strategies()}"
+            )
+        yaml_text = row.config
+    cs = compile_strategy(yaml_text, strategy_id=spec.strategy_id)
     deb = cs.debounce_params
 
     print(

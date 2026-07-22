@@ -575,11 +575,46 @@ def _metrics(equity_curve: list[dict], benchmark: list[dict],
         if days > 0 and eq[-1] > 0:
             out["annualized"] = round(((eq[-1] / initial) ** (252 / days) - 1) * 100, 2)
         peak, max_dd = eq[0], 0.0
-        for v in eq:
-            peak = max(peak, v)
+        last_peak_idx = 0
+        max_dd_peak_idx = 0
+        max_dd_trough_idx = 0
+        u0 = u10 = u20 = u30 = 0
+        for i, v in enumerate(eq):
+            if v > peak:
+                peak = v
+                last_peak_idx = i
             if peak > 0:
-                max_dd = max(max_dd, (peak - v) / peak)
+                dd = (peak - v) / peak
+                if dd > max_dd:
+                    max_dd = dd
+                    max_dd_peak_idx = last_peak_idx
+                    max_dd_trough_idx = i
+                ddp = dd * 100
+                if ddp > 0:
+                    u0 += 1
+                if ddp >= 10:
+                    u10 += 1
+                if ddp >= 20:
+                    u20 += 1
+                if ddp >= 30:
+                    u30 += 1
         out["max_drawdown"] = round(max_dd * 100, 2)
+        # 回本:最大回撤谷底 → 净值收回回撤前峰值(peak_val)的交易日数;未回本=None。
+        # 水下分布:权益低于运行峰值 0/10/20/30% 的交易日占比(drawdown=(peak-v)/peak)。
+        peak_val = eq[max_dd_peak_idx]
+        rec_idx = next(
+            (j for j in range(max_dd_trough_idx, len(eq)) if eq[j] >= peak_val),
+            None,
+        )
+        out["max_drawdown_recovered"] = rec_idx is not None
+        out["max_drawdown_recovery_days"] = (
+            rec_idx - max_dd_trough_idx if rec_idx is not None else None
+        )
+        _n_eq = len(eq) or 1
+        out["underwater_pct_gt0"] = round(u0 / _n_eq * 100, 1)
+        out["underwater_pct_ge10"] = round(u10 / _n_eq * 100, 1)
+        out["underwater_pct_ge20"] = round(u20 / _n_eq * 100, 1)
+        out["underwater_pct_ge30"] = round(u30 / _n_eq * 100, 1)
         rets = [(eq[i] / eq[i - 1] - 1) for i in range(1, len(eq)) if eq[i - 1] > 0]
         if len(rets) >= 5:
             mean = sum(rets) / len(rets)
@@ -770,6 +805,7 @@ def run_backtest(codes: list[str], start: date, end: date,
     holdings_curve: list[dict] = []          # 每日逐票持仓快照(完整持仓记录,供直观回看)
     trades: list[dict] = []
     pending_target: dict[str, float] = {}  # {code: target_weight} 待次日开盘执行
+    pending_signal: dict[str, str | None] = {}  # 同生命周期:挂单的 signal(止损等),穿透到成交单
     last_close: dict[str, float] = {}       # code → 最近有收盘价交易日的价(停牌日估值用)
     peak_equity: float = float(initial_cash)  # 组合回撤刹车:追踪回测内权益峰值
     cash_constraint_hits: int = 0             # 当日买单触发现金缩放的天数(可观测,对标 backtrader Margin)
@@ -802,14 +838,17 @@ def run_backtest(codes: list[str], start: date, end: date,
         if pending_target:
             open_prices = dict(open_prices_day)  # 当日 open 已与 close/bars 同次查出
             still_pending: dict[str, float] = {}
+            still_signal: dict[str, str | None] = {}          # 顺延挂单的 signal 一起带过夜
             sells: list[tuple[str, float, float, str]] = []   # (code, target_weight, px, source)
             buys: list[tuple[str, float, float, str]] = []
             for code, target_weight in sorted(pending_target.items()):
+                sig = pending_signal.get(code)               # 取该挂单的 signal(止损等),穿透到成交
                 if code not in open_prices and code in close_prices:
                     open_prices[code] = close_prices[code]
                 px, source = _get_trade_price(code, open_prices, close_prices)
                 if px <= 0:
                     still_pending[code] = target_weight       # 停牌顺延,不丢信号
+                    still_signal[code] = sig
                     deferred_orders += 1
                     continue
                 act = resolve_action(acct.weight(code, open_prices), target_weight)
@@ -842,6 +881,7 @@ def run_backtest(codes: list[str], start: date, end: date,
                     })
                     if fill.status == "deferred":
                         still_pending[code] = target_weight
+                        still_signal[code] = sig
                         deferred_orders += 1
                     continue
                 if act in ("sell", "reduce"):
@@ -850,16 +890,19 @@ def run_backtest(codes: list[str], start: date, end: date,
                     buys.append((code, target_weight, fill.price, source))
 
             def _exec(code, tw, px, source, **extra):
+                # signal 从 kwarg 取出(不入 apply_action 的 **extra,避免 kwarg 撞);
+                # 取自挂单穿透的 pending_signal,让止损等 signal 正确落到成交单(原硬写 None 会丢)。
+                sig = extra.pop("signal", None)
                 tr = acct.apply_action(code, resolve_action(acct.weight(code, open_prices), tw),
                                         tw, px, open_prices, as_of=as_of)
                 if tr:
-                    tr.update(date=as_of.isoformat(), signal=None, reason="open_exec",
+                    tr.update(date=as_of.isoformat(), signal=sig, reason="open_exec",
                               price_source=source, status="filled", **extra)
                     trades.append(tr)
 
             # 1a. 先执行所有卖单(按 code 序)——释放现金给买单
             for code, tw, px, source in sells:
-                _exec(code, tw, px, source)
+                _exec(code, tw, px, source, signal=pending_signal.get(code))
             # 1b. 买单等比缩放到可用现金(卖单释放后),再执行(按 code 索引,禁止 zip 错位)
             scaled, safety, constrained = scale_buys_to_cash(
                 acct, [(c, tw, px) for c, tw, px, _ in buys], open_prices,
@@ -871,8 +914,10 @@ def run_backtest(codes: list[str], start: date, end: date,
             for code, _tw, px, source in buys:
                 stw, spx = scaled_by_code.get(code, (_tw, px))
                 _exec(code, stw, spx, source,
+                      signal=pending_signal.get(code),
                       **({"cash_scaled": round(safety, 4)} if constrained else {}))
             pending_target = still_pending
+            pending_signal = still_signal
 
         # ---- Phase 2: 宇宙过滤 + 收盘快照 + 分析 ----
         # 日 flags:有 close 的票 has_row;is_st/trade_status 来自 bar
@@ -1052,6 +1097,7 @@ def run_backtest(codes: list[str], start: date, end: date,
             )
             if should:
                 pending_target[code] = target
+                pending_signal[code] = _sig.get(code)
                 trades.append({
                     "date": as_of.isoformat(),
                     "code": code,
@@ -1104,6 +1150,17 @@ def run_backtest(codes: list[str], start: date, end: date,
                         bench_window=bench_window)
     metrics["trade_count"] = len(filled)
     metrics["win_rate"] = round(len(win) / (len(win) + len(loss)) * 100, 1) if (win or loss) else None
+    # 成交类对比指标(signal 直传精确值,见下方 _exec 信号穿透):
+    # distinct_stocks_bought=去重后曾买入的不同股票数;
+    # stop_loss=signal=="stop_loss" 的已成交单(止损 D+1~D+3 成交),realized_loss=其 pnl 之和。
+    metrics["distinct_stocks_bought"] = len({
+        t["code"] for t in filled if t.get("kind") in ("buy", "add")
+    })
+    _sl_filled = [t for t in filled if t.get("signal") == "stop_loss"]
+    metrics["stop_loss_count"] = len(_sl_filled)
+    metrics["stop_loss_realized_loss"] = round(
+        sum((t.get("pnl") or 0.0) for t in _sl_filled), 2
+    )  # 负数=亏损(元);pnl 符号:盈>0 亏<0(与上方 win/loss 判定一致)
     metrics["total_fee"] = round(acct.fee_paid, 2)
     # 组合层指标(从 holdings_curve 算,对标 zipline ledger gross leverage + 单仓集中度):
     _gross = [sum(p["weight"] for p in d.get("positions", [])) for d in holdings_curve]

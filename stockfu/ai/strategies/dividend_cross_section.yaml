@@ -24,3 +24,11 @@ debounce:
   risk_confirm_days: 1
   min_trade_weight: 0.01
   conf_gate: 0.0
+# 策略变体(seed._expand_variants 展开):同一 base 不同参数并存,id=base#key。
+# sl30:个股止损 8%→30%(实证更优:年化 7.99→10.65、夏普 0.63→0.78、止损损失 60.6万→8.4万、回本 356d→9d)。
+variants:
+  - key: sl30
+    name: 红利横截面(止损30%)
+    override:
+      risk:
+        stop_loss: 0.30

@@ -37,7 +37,7 @@ def _write_meta(run_id: str, result: dict, data_path: str) -> str:
     """写轻量摘要 {run_id}.meta.json(几 KB)。list_runs 只读它,避免对大产物全量解析。
     含 codes 全集(788 个字符串仅几 KB),保证 list 返回结构与回退解析路径一致。"""
     meta = {
-        "schema_version": result.get("schema_version", 1),
+        "schema_version": result.get("schema_version", 2),
         "run_id": run_id,
         "strategy_id": result.get("strategy_id"),
         "strategy_name": result.get("strategy_name"),
@@ -151,7 +151,7 @@ def run(codes: list[str], start, end, initial_cash: float = engine.INITIAL_CASH,
     # 落盘副本:标 schema 版本。trades 完整保留(含 pending 调仓意图——信号复盘需要);
     # 体积由 gzip + 摘要旁路(_write_meta)吸收,不再取舍。
     persist = dict(result)
-    persist["schema_version"] = 1
+    persist["schema_version"] = 2
     # 原子写:先写 .tmp 再 os.replace,避免中断/崩溃留下半截损坏文件
     # (list_runs 会静默吞掉损坏 JSON,表现为"回测凭空消失")。gzip 后体积约 1/6~1/10。
     tmp = f"{out}.tmp{os.getpid()}"
