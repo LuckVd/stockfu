@@ -248,10 +248,10 @@ def backfill_adj_prices(
                 # 会话级再尝试换代理，避免整批卡死
                 try:
                     if not sess.mark_bad_and_rotate(f"code_exc:{code}"):
-                        print("  [abort] proxy pool exhausted", flush=True)
+                        print("  [abort] baostock all exhausted (proxy pool + direct fallback)", flush=True)
                         # i 为 1-based；当前 code 已记 fail，补记后续
                         for j in range(i, len(pending)):
-                            errors.append((pending[j], "proxy_pool_exhausted"))
+                            errors.append((pending[j], "baostock_all_exhausted"))
                             fail += 1
                         break
                 except Exception:  # noqa: BLE001

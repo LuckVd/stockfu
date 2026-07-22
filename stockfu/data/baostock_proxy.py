@@ -102,6 +102,12 @@ class BaostockProxySession:
     _bs_params: dict = field(default_factory=dict)
     last_bootstrap_ts: float = 0.0
     bootstrap_count: int = 0
+    # 直连兜底状态:代理池 + rebootstrap 全耗尽后,回落直连 baostock(IP 解封后可用)
+    _direct_fallback_max: int = 3
+    _direct_fallback_cooldown: float = 300.0
+    _direct_tries: int = 0
+    _direct_last_ts: float = 0.0
+    _direct_since_ts: float = 0.0  # >0 表示当前正用直连
 
     def __enter__(self) -> "BaostockProxySession":
         self.start()
@@ -116,6 +122,8 @@ class BaostockProxySession:
         self.pool.socket_timeout = self.socket_timeout
         self.pool.dead_ttl = float(os.environ.get("BAOSTOCK_DEAD_TTL", "1800"))
         self.fetch_timeout = float(os.environ.get("BAOSTOCK_FETCH_TIMEOUT", "60"))
+        self._direct_fallback_max = int(os.environ.get("BAOSTOCK_DIRECT_FALLBACK_MAX", "3"))
+        self._direct_fallback_cooldown = float(os.environ.get("BAOSTOCK_DIRECT_FALLBACK_COOLDOWN", "300"))
         seeds: list[ProxyEndpoint] = []
         if self.seed_local_clash:
             seed = local_clash_socks(self.clash_host, self.clash_port)
@@ -201,6 +209,44 @@ class BaostockProxySession:
             flush=True,
         )
 
+    # ----- 直连兜底:代理池 + rebootstrap 全耗尽后的最后手段 -----
+    def _try_direct_fallback(self, reason: str = "") -> bool:
+        """代理池 + rebootstrap 全耗尽后直连 baostock(IP 解封后可用)。
+
+        成功: proxy_url='direct', 后续 query 直连到 session 结束(长通道由
+              maybe_refresh 在代理池回血后切回代理池)。
+        失败: proxy_url='none', 返回 False(调用方据此中止/放弃该 code)。
+        受 env BAOSTOCK_DIRECT_FALLBACK + 计数/冷却保护,避免 IP 再被封时无限硬撞。
+        """
+        env_on = (os.environ.get("BAOSTOCK_DIRECT_FALLBACK", "1").strip().lower()
+                  not in ("0", "off", "no", "false"))
+        if not env_on:
+            self.proxy_url = "none"
+            return False
+        if self._direct_tries >= self._direct_fallback_max:
+            self.proxy_url = "none"
+            return False
+        now = time.time()
+        if now - self._direct_last_ts < self._direct_fallback_cooldown:
+            self.proxy_url = "none"
+            return False
+        self._direct_tries += 1
+        self._direct_last_ts = now
+        print(f"  [direct-fallback] try direct ({reason}) "
+              f"tries={self._direct_tries}/{self._direct_fallback_max}", flush=True)
+        # 关键:先还原 monkeypatch + 强关残留 SOCKS socket,
+        # 否则 _login 内的 bs.login() 仍走上一条坏代理
+        self.pool.disable()                    # → _restore_baostock_proxy()
+        _force_close_baostock_socket()         # 关 ctx.default_socket
+        self.proxy_url = "direct"
+        if self._login():                      # 复用带 login_timeout 硬超时的 login
+            self._direct_since_ts = now
+            print("  [direct-fallback] direct login ok — stay direct until pool recovers",
+                  flush=True)
+            return True
+        self.proxy_url = "none"
+        return False
+
     # ----- 代理切换 -----
     def _switch_to_next(self, reason: str = "") -> bool:
         """剔除逻辑在调用方 remove 后执行；此处 pop → enable → login。"""
@@ -211,15 +257,13 @@ class BaostockProxySession:
                     f"  [proxy] max_login_tries={self.max_login_tries} exhausted",
                     flush=True,
                 )
-                self.proxy_url = "none"
-                return False
+                return self._try_direct_fallback(reason=f"{reason}:max_login_tries")
             ep = self.pool.pop()
             if ep is None:
                 # 池空：冷却内重拉一轮（长回补不再因池薄中途夭折）
                 if self._maybe_rebootstrap_if_allowed(reason=reason or "pool_empty"):
                     continue
-                self.proxy_url = "none"
-                return False
+                return self._try_direct_fallback(reason=f"{reason}:pool_empty")
             try:
                 self.proxy_url = self.pool.enable(ep)
             except Exception as e:  # noqa: BLE001
@@ -235,6 +279,7 @@ class BaostockProxySession:
             )
             if self._login():
                 self.fail_streak = 0
+                self._direct_tries = 0  # 回到代理池，清空直连计数
                 return True
             # login 失败：剔除当前，继续下一个
             self.pool.remove(ep, reason="login_fail")
@@ -297,6 +342,15 @@ class BaostockProxySession:
         stale = (time.time() - self.last_bootstrap_ts) > max_age
         if not (force or thin or stale):
             return False
+        # 直连兜底期间:代理池回血则尝试切回(直连非长久之计,IP 可能再被封)
+        if (self._direct_since_ts > 0
+                and self.pool.remaining() >= min_alive
+                and (time.time() - self._direct_since_ts) > self._direct_fallback_cooldown):
+            print("  [direct-fallback] pool replenished; switch back to proxy",
+                  flush=True)
+            self._direct_tries = 0
+            if self._switch_to_next(reason="recover-from-direct"):
+                return True
         print(
             f"  [proxy] refresh (thin={thin} stale={stale} "
             f"alive={self.pool.remaining()})",
