@@ -191,21 +191,45 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
     return 0.0, "unavailable"
 
 
-# 紧凑 bar 下标:(open, high, low, close, pct_chg, is_st, trade_status, amount, pe, pb)
-_BI_O, _BI_H, _BI_L, _BI_C, _BI_PCT, _BI_ST, _BI_TS, _BI_AMT, _BI_PE, _BI_PB = range(10)
+# 紧凑 bar 下标:(open, high, low, close_qfq, pct, st, status, amount, close_raw, pe, pb)
+_BI_O, _BI_H, _BI_L, _BI_C, _BI_PCT, _BI_ST, _BI_TS, _BI_AMT, _BI_C_RAW, _BI_PE, _BI_PB = range(11)
 
 # quote_series 字段 → 紧凑 bar 下标(供回测内存供给器切片)
-_QS_FIELD_IDX = {"open": _BI_O, "high": _BI_H, "low": _BI_L, "close": _BI_C}
+_QS_FIELD_IDX = {
+    "open": _BI_O, "high": _BI_H, "low": _BI_L, "close": _BI_C,
+    "close_raw": _BI_C_RAW,
+}
 # 回测预载需覆盖 value 的 5 年估值窗口(约 1840 历日)，并留少量边界余量。
 # 这也覆盖 low_volatility 的 3 年窗口；不足时 value 会回落 DB，重新引入 N+1。
 _PRELOAD_LOOKBACK_DAYS = 1900
 
 
+def _preload_dividend_events(codes: list[str], start: date, end: date) -> dict[str, list[tuple[date, float | None]]]:
+    """一次 SQL 预载回测宇宙的分红事件，供 TTM 股息率按日切片。"""
+    from stockfu.models import DividendEvent
+
+    out: dict[str, list[tuple[date, float | None]]] = {code: [] for code in codes}
+    if not codes:
+        return out
+    with session_scope() as s:
+        rows = s.exec(select(DividendEvent).where(
+            DividendEvent.asset_code.in_(codes),
+            DividendEvent.ex_date >= start,
+            DividendEvent.ex_date <= end,
+        ).order_by(DividendEvent.asset_code, DividendEvent.ex_date)).all()
+    for event in rows:
+        out.setdefault(event.asset_code, []).append((event.ex_date, event.per_share_cash))
+    return out
+
+
 @contextmanager
-def _backtest_series_ctx(market_cache: dict):
+def _backtest_series_ctx(
+    market_cache: dict,
+    dividend_index: dict[str, list[tuple[date, float | None]]] | None = None,
+):
     """挂载 factors.quote_series 的内存供给器:从预载 market_cache 切片,零 DB。
 
-    market_cache = {quote_date: {code: (o,h,l,c,pct,st,ts,amt,pe,pb)}}(紧凑 D)。重排为
+    market_cache = {quote_date: {code: (o,h,l,c,pct,st,ts,amt,c_raw,pe,pb)}}(紧凑 D)。重排为
     {code: ([(date, tuple)], [dates])} 升序,供 bisect 切窗口 [start, ref_date]。
     与 DB quote_series 逐值一致:同一行集、同窗口、同 None 过滤、同升序(窗口左溢出时
     两者都返回库内最早日起的部分序列,行为相同)。code/字段不在预载 → 返回 None 回落查库
@@ -215,6 +239,8 @@ def _backtest_series_ctx(market_cache: dict):
                                           clear_backtest_series_provider,
                                           set_backtest_bars_provider,
                                           set_backtest_series_provider)
+    from stockfu.services.dividend import (clear_backtest_dividend_provider,
+                                           set_backtest_dividend_provider)
     from stockfu.services.valuation import (clear_backtest_valuation_provider,
                                             set_backtest_valuation_provider)
     if not market_cache:
@@ -228,6 +254,8 @@ def _backtest_series_ctx(market_cache: dict):
     for _code, _lst in per_code.items():
         _lst.sort(key=lambda x: x[0])
         index[_code] = (_lst, [_d for _d, _ in _lst])
+
+    dividend_index = dividend_index or {}
 
     def provide(code, field, start, ref_date):
         entry = index.get(code)
@@ -284,15 +312,26 @@ def _backtest_series_ctx(market_cache: dict):
             return None
         return out
 
+    def provide_dividends(code, start, ref_date):
+        events = dividend_index.get(code)
+        if events is None:
+            return None
+        return [
+            (ex_date, cash) for ex_date, cash in events
+            if start <= ex_date <= ref_date
+        ]
+
     set_backtest_series_provider(provide)
     set_backtest_bars_provider(provide_bars)
     set_backtest_valuation_provider(provide_valuation)
+    set_backtest_dividend_provider(provide_dividends)
     try:
         yield
     finally:
         clear_backtest_series_provider()
         clear_backtest_bars_provider()
         clear_backtest_valuation_provider()
+        clear_backtest_dividend_provider()
 
 
 def _pack_bar_row(r) -> tuple:
@@ -317,6 +356,7 @@ def _pack_bar_row(r) -> tuple:
         1 if is_st else 0,
         int(trade_status) if trade_status is not None else 1,
         _f("amount"),
+        _f("close_raw"),
         _f("pe"), _f("pb"),
     )
 
@@ -374,15 +414,15 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
             "asset_code, quote_date, "
             "COALESCE(open_qfq, open), COALESCE(high_qfq, high), "
             "COALESCE(low_qfq, low), COALESCE(close_qfq, close), pct_chg, "
-            "is_st, trade_status, amount, pe, pb"
+            "is_st, trade_status, amount, close_raw, pe, pb"
         ),
         "etf_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
-            "NULL as is_st, 1 as trade_status, amount, NULL as pe, NULL as pb"
+            "NULL as is_st, 1 as trade_status, amount, NULL as close_raw, NULL as pe, NULL as pb"
         ),
         "index_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
-            "NULL as is_st, 1 as trade_status, NULL as amount, NULL as pe, NULL as pb"
+            "NULL as is_st, 1 as trade_status, NULL as amount, NULL as close_raw, NULL as pe, NULL as pb"
         ),
     }
     cache: dict = {}
@@ -416,7 +456,7 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
                         break
                     for row in rows:
                         (asset_code, qdate, o, h, l, c, pct,
-                         is_st, trade_status, amount, pe, pb) = row
+                         is_st, trade_status, amount, close_raw, pe, pb) = row
                         if isinstance(qdate, str):
                             qdate = date.fromisoformat(qdate[:10])
                         packed = (
@@ -428,6 +468,7 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
                             1 if is_st else 0,
                             int(trade_status) if trade_status is not None else 1,
                             float(amount) if amount is not None else None,
+                            float(close_raw) if close_raw is not None else None,
                             float(pe) if pe is not None else None,
                             float(pb) if pb is not None else None,
                         )
@@ -738,11 +779,15 @@ def run_backtest(codes: list[str], start: date, end: date,
     # 使 _backtest_series_ctx 能从内存零查库喂给 quote_series(与 DB 逐值一致)。
     _pre_start = start - timedelta(days=_PRELOAD_LOOKBACK_DAYS)
     market_cache = _preload_market_range(list(codes), _pre_start, end) if days else {}
+    dividend_index = (
+        _preload_dividend_events(list(codes), _pre_start, end)
+        if market_cache else {}
+    )
 
     # 整段回测复用一个线程池(旧:每天 with 创建/销毁;冷 miss 并行在 prefetch 内,
     # analyze 热路径有 prefill 时串行,池仅兜底无 prefill 路径)。
     # _backtest_series_ctx 挂内存行情供给器 → 算子 quote_series 零查库(冷启提速核心)。
-    with _backtest_series_ctx(market_cache), ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+    with _backtest_series_ctx(market_cache, dividend_index), ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
       for as_of in days:
         close_prices, open_prices_day, day_bars = _get_day_market(
             list(codes), as_of, market_cache=market_cache)

@@ -15,9 +15,9 @@ class TestValuationPreload(unittest.TestCase):
         cache = {}
         for i in range(10):
             day = start + timedelta(days=i)
-            # (open, high, low, close, pct, st, trade_status, amount, pe, pb)
+            # (open, high, low, close, pct, st, trade_status, amount, close_raw, pe, pb)
             cache[day] = {code: (10.0, 10.0, 10.0, 10.0, 0.0, 0, 1,
-                                 1_000_000.0, float(i + 1), float(i + 2))}
+                                 1_000_000.0, 10.0, float(i + 1), float(i + 2))}
 
         with _backtest_series_ctx(cache):
             snap = valuation_snapshot(code, start + timedelta(days=9), years=1)
