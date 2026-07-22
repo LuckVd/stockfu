@@ -14,35 +14,24 @@
   - 月线布林带: 平滑但滞后,适合趋势/反转判断(20月≈1.7年周期)
 """
 
-from datetime import date, timedelta
+from datetime import date
 import math
-
-from sqlmodel import select
 
 from stockfu.ai.operators.base import BaseOperator, OpResult
 from stockfu.ai.operators.registry import register
-from stockfu.db import session_scope
-from stockfu.services.factors import quote_model_for
+from stockfu.services.factors import quote_series_dates
 
 
-def _monthly_series_from_rows(rows, ref: date) -> tuple[list[float], list[float]]:
-    """从日线查询结果中提取: 日线收盘价序列 + 月度收盘价序列。
+def _monthly_series_from_pairs(pairs) -> list[float]:
+    """(date, close) 升序对 → 月度收盘价序列(每月最后交易日 close,后覆盖前)。
 
-    月度聚合: 每月取最后一个交易日的收盘价(保留当前不完整月份)。
-    返回 (daily_closes, monthly_closes)。
+    月度聚合与原 rows 版逐值一致:pairs 已按日期升序,同月后写覆盖前写 → 取该月最后交易日。
     """
-    daily_closes: list[float] = []
     monthly: dict[tuple[int, int], float] = {}
-
-    for r in rows:
-        d = getattr(r, "quote_date", None) or getattr(r, "snap_date")
-        close = getattr(r, "close", None)
-        if close is not None and float(close) > 0:
-            daily_closes.append(float(close))
-            monthly[(d.year, d.month)] = float(close)
-
-    monthly_closes = [monthly[k] for k in sorted(monthly.keys())]
-    return daily_closes, monthly_closes
+    for d, c in pairs:
+        if c > 0:
+            monthly[(d.year, d.month)] = c
+    return [monthly[k] for k in sorted(monthly.keys())]
 
 
 def _calc_bollinger(series: list[float], window: int, k: float):
@@ -120,30 +109,23 @@ class MonthlyBollingerOperator(BaseOperator):
     def run(self, ctx, params):
         window = int(params.get("window", 20))
         k = float(params.get("std_dev", 2.0))
-        ref = ctx.as_of or date.today()
-
-        # 需要约 window*31 + 120 个交易日才能凑够 window 个月的日线
+        # 需约 window*31 + 120 个交易日才能凑够 window 个月的日线;
+        # 走 quote_series_dates → 回测时从预载内存切片(零 DB),不再逐 (code,as_of) 开 session
         lookback_days = window * 31 + 120
-        start = ref - timedelta(days=lookback_days)
-        model = quote_model_for(ctx.code)
 
-        with session_scope() as s:
-            rows = s.exec(
-                select(model).where(
-                    model.asset_code == ctx.code,
-                    model.quote_date >= start,
-                    model.quote_date <= ref,
-                ).order_by(model.quote_date)
-            ).all()
+        dates, closes = quote_series_dates(
+            ctx.code, "close", lookback_days, as_of=ctx.as_of)
+        pairs = [(d, c) for d, c in zip(dates, closes) if c > 0]
 
-        if not rows:
+        if not pairs:
             return OpResult(
                 operator=self.operator_id, type="math", value=None,
                 signal="hold", score=0.0, confidence=0.0,
                 reasoning=f"{ctx.code} 无日线数据",
             )
 
-        daily_closes, monthly_closes = _monthly_series_from_rows(rows, ref)
+        daily_closes = [c for _, c in pairs]
+        monthly_closes = _monthly_series_from_pairs(pairs)
 
         if len(daily_closes) < 5:
             return OpResult(

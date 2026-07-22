@@ -5,7 +5,7 @@ operators:
   - {id: momentum, type: math, weight: 1.5, params: {window: 20}}
   - {id: mean_reversion, type: math, weight: 1.0, params: {rsi_period: 14, oversold: 30, overbought: 70}}
   - {id: trend_strength, type: math, weight: 1.0}
-  - {id: value, type: math, weight: 0.8}
+  - {id: value, type: math, weight: 0.8, params: {years: 5}}
 aggregate:
   method: weighted_sum
   thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
