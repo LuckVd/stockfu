@@ -12,8 +12,8 @@
 
 > **干净回测 12/16 已落盘**（§0.6 全表，带回撤/卡玛）：红利 2（07-22 04:03）+ qfq 5（07-21）+ 本次提速重启 5（macd_cross / momentum_breakout×2 / reversal_strategy / cn_momentum_rotation）。
 > **【2026-07-22 · 两处性能修复（代码改了，尚未 commit）】** ① **bollinger N+1**：`monthly/weekly_bollinger` 算子曾违反"算子不直接取库"契约，`run()` 内逐 (code,as_of) 开 session 查 DB（全周期 ~109 万次 SELECT，单策略 ~8h）；改走 `quote_series_dates` 预载（`factors.py` + `engine._backtest_series_ctx` 挂 `provide_bars`），口径逐值不变，实测提速 **macd_cross 4253s→157s（27x）、monthly 冷补 ~20x**（详 memory `bollinger-operator-n-plus-1`）。② **value 指纹分裂**：`pure_factor.yaml` 的 value params 写 `{}`（而非 `{years:5}`），`compute_fingerprint` 不填默认值 → 指纹不一致 → 查不到其他策略 98 万行 value 缓存、独立 N+1 冷补（pure_factor 卡 57min 才补 13%）；已对齐 params + 清错指纹。
-> **剩余 4 策略尚未完成**：此前以 `nohup` 启动的批处理未保活（PID 已消失、日志无 Python 异常），需在可持久化的宿主进程中按串行方式重启：`pure_factor`/`dual_bollinger`/`bollinger_reversion`/`bollinger_reversion_cross_section`。
-> **下次会话**：在可持久化后台重启这 4 策略 → 补满 §0.6 全 16 表；确认后 commit 上述性能修复代码。
+> **剩余 4 策略串行运行中**：PID `2820372`（宿主机可见；隔离 shell 不可见），策略依次为 `pure_factor`/`dual_bollinger`/`bollinger_reversion`/`bollinger_reversion_cross_section`。日志 `data/update_backtests_rest.log`；勿重复启动。
+> **下次会话**：通过宿主机 `ps` 核验该 PID 与产物 → 补满 §0.6 全 16 表。
 
 ### 0.1 三复权 baostock 串行回补（✅ 已完成，留存复跑参考）
 
@@ -55,9 +55,9 @@ PY
 
 ### 0.2 下一步
 
-> ✅ 12/16 干净结果已落盘（§0.6）；⏸️ **剩余 4 策略未完成**（此前后台任务未保活）。
+> ✅ 12/16 干净结果已落盘（§0.6）；🔄 **剩余 4 策略由 PID `2820372` 串行运行中**（隔离 shell 不可见，勿据此误启动第二个任务）。
 
-1. **在可持久化后台串行重启 4 策略**：  
+1. **通过宿主机检查串行批处理状态**：  
    ```bash
    ps -p $(cat data/update_backtests_rest.pid) -o etime= 2>/dev/null || echo DONE
    tail -20 data/update_backtests_rest.log
@@ -112,7 +112,7 @@ python3 main.py --recommend --strategies cross_section_factor,reversal_cross_sec
 
 > **风险调整看卡玛**：`dividend_cross_section`（0.56）远胜动量双雄（0.33–0.43）——收益高且回撤仅 14%，适合核心仓位；动量双雄收益高但回撤 34–38%、+70% 集中在 2025 顺风年，宜作卫星。`momentum_breakout` 分年：2022 −14% / 2024 +10% / **2025 +70%** / 2026 +15%。
 >
-> ⏸️ **剩余 4 个尚未完成**（§0）：`pure_factor` / `dual_bollinger` / `bollinger_reversion` / `bollinger_reversion_cross_section`，需重启后补入本表凑齐 16。
+> 🔄 **剩余 4 个串行运行中**（§0）：`pure_factor` / `dual_bollinger` / `bollinger_reversion` / `bollinger_reversion_cross_section`，完成后补入本表凑齐 16。
 
 ### 0.7 关键 CLI
 
@@ -160,7 +160,7 @@ stockfu/
 
 ## 8. 待办
 
-1. ✅ `close_raw` 覆盖完成 + **12/16 干净结果**（§0.6）。剩 4 策略尚未完成，重启后补满全表。
+1. ✅ `close_raw` 覆盖完成 + **12/16 干净结果**（§0.6）。剩 4 策略串行运行中，完成后补满全表。
 2. ✅ `--fetch` A 股走 baostock 三复权,当日 `close_raw` 自动刷新(无需单独刷)
 3. ✅ 回测性能修复（bollinger N+1 + value 指纹，§0.8）
 4. 小市值因子仍不可用（market_cap 空）
