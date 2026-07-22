@@ -29,8 +29,65 @@ INDEX_ETFS = [
 ]
 
 
+def _is_cn_stock(code: str) -> bool:
+    """是否 A 股个股(走 baostock 三复权路径)。排除指数/ETF/港美股。"""
+    from stockfu.data.base import detect_market, Market
+    if code.startswith(("sh", "sz", "SH", "SZ")):          # 指数(带前缀)
+        return False
+    if code[:2] in {"15", "50", "51", "52", "56", "58"}:   # ETF
+        return False
+    if code.startswith(("HK", "US", "au")):                # 港美股/黄金
+        return False
+    return detect_market(code) == Market.CN
+
+
+def _fetch_today_via_baostock(code: str, days: int = 15) -> bool:
+    """A 股个股当日:全局 baostock session 拉近 N 天三复权 → _apply_and_upsert。
+
+    写 qfq+raw+hfq(顺带刷新当日 close_raw,红利分母用)。baostock 全失败(代理池+
+    直连兜底)→ 返回 False;调用方据此放弃该票当日(**不降级东财/腾讯**,避免残缺
+    OHLCV 冒充完整数据)。
+    """
+    from datetime import date as _d, timedelta as _td
+    from stockfu.data.baostock_proxy import ensure_baostock_login, get_global_session
+    from stockfu.scheduler.backfill_adj_prices import _apply_and_upsert
+
+    if not ensure_baostock_login():       # 首只票 boot 全局 session;后续秒返回
+        return False
+    sess = get_global_session()
+    if sess is None:
+        return False
+    start = (_d.today() - _td(days=days + 5)).isoformat()
+    end = _d.today().isoformat()
+    try:
+        triple = sess.fetch_kline_triple(code, start, end)
+    except Exception:  # noqa: BLE001
+        return False
+    if not any(triple.values()):
+        return False
+    return _apply_and_upsert(code, triple, preserve_qfq=False) > 0
+
+
 def _upsert_quote(code: str, timeout: float = 35) -> bool:
-    """拉最近交易日行情落 quote_snapshot。
+    """拉最近交易日行情落 quote_snapshot(按市场路由)。
+
+    A 股个股 → baostock 三复权(_fetch_today_via_baostock):全字段,顺带 close_raw。
+               baostock 全失败即放弃该票当日,**不降级东财/腾讯**(它们缺 pe/pb/
+               状态,残缺 OHLCV 会冒充完整数据)。
+    指数/港美股 → _upsert_quote_via_manager(多源,baostock 不覆盖/无需三复权)。
+    ETF 已在 _batch_fetch_today 分流到 update_etf_benchmark(akshare),不进此函数。
+    timeout: 单个标的超时秒数。
+    """
+    if _is_cn_stock(code):
+        return _call_timeout(
+            lambda: _fetch_today_via_baostock(code), timeout,
+            f"bs_today:{code}", default=False,
+        )
+    return _upsert_quote_via_manager(code, timeout)
+
+
+def _upsert_quote_via_manager(code: str, timeout: float = 35) -> bool:
+    """多源 manager 路径(指数/港美股):get_kline+get_quote → _apply_bar_full(qfq)。
 
     quote_date 优先取自 K 线最后一条 bar.date（真实交易日，自动跳周末/节假日）；
     K 线不支持的代码（如指数 sh000001）→ fallback 实时报价 + 交易日历推算的最近交易日。
