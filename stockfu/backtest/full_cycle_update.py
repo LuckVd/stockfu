@@ -77,6 +77,12 @@ FULL_CYCLE_CATALOG: list[StrategyRunSpec] = [
         "dividend_cross_section", "cap_and_rank", dict(_CS),
         universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
     ),
+    # 变体:同一 base 不同参数并存(strategy_id=base#key,见 seed._expand_variants)。
+    # sl30 = dividend_cross_section 止损 8%→30%(实证更优),与 base 并列全周期验收。
+    StrategyRunSpec(
+        "dividend_cross_section#sl30", "cap_and_rank", dict(_CS),
+        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
+    ),
     StrategyRunSpec(
         "macd_cross", "top_n_picker", dict(_TOP_N_STD),
         universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
@@ -310,6 +316,13 @@ def run_one(
         "annual_turnover": m.get("annual_turnover"),
         "trade_count": m.get("trade_count"),
         "final_equity": m.get("final_equity"),
+        # 对比指标(引擎原生产出,见 engine _metrics/Stage B);1:1 映射 PROJECT_STATE §0.6 表。
+        "max_drawdown_recovery_days": m.get("max_drawdown_recovery_days"),
+        "max_drawdown_recovered": m.get("max_drawdown_recovered"),
+        "distinct_stocks_bought": m.get("distinct_stocks_bought"),
+        "stop_loss_count": m.get("stop_loss_count"),
+        "stop_loss_realized_loss": m.get("stop_loss_realized_loss"),
+        "underwater_pct_ge20": m.get("underwater_pct_ge20"),
         "elapsed_sec": round(time.time() - t0, 1),
         "saved_to": r.get("saved_to"),
     }
@@ -376,7 +389,7 @@ def update_backtests(
     )
     for i, s in enumerate(specs, 1):
         print(
-            f"  [{i}/{len(specs)}] {s.tier:4} {s.strategy_id:36} "
+            f"  [{i}/{len(specs)}] {s.tier:4} {s.strategy_id:40} "
             f"reb={s.rebalancer_id} uni={s.universe} strict={s.strict}",
             flush=True,
         )
@@ -422,7 +435,7 @@ def update_backtests(
     print(f"\n=== 完成: 成功 {ok_n} / 失败 {fail_n} / 共 {len(results)} ===", flush=True)
 
     out: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "full_cycle_update",
         "start": start_s,
         "end": end_s,
@@ -450,11 +463,11 @@ def update_backtests(
 
 def print_catalog() -> None:
     """打印可更新策略目录。"""
-    print(f"{'tier':4}  {'strategy_id':36}  {'rebalancer':16}  universe  strict")
-    print("-" * 90)
+    print(f"{'tier':4}  {'strategy_id':40}  {'rebalancer':16}  universe  strict")
+    print("-" * 94)
     for s in FULL_CYCLE_CATALOG:
         print(
-            f"{s.tier:4}  {s.strategy_id:36}  {s.rebalancer_id:16}  "
+            f"{s.tier:4}  {s.strategy_id:40}  {s.rebalancer_id:16}  "
             f"{s.universe:10}  {s.strict}"
         )
     print(f"\n共 {len(FULL_CYCLE_CATALOG)} 条 | 默认 start={DEFAULT_START} | "

@@ -324,8 +324,12 @@ def _load_operator_meta(operator_id: str) -> int:
         return row.version if row else 1
 
 
-def compile_strategy(yaml_text: str) -> CompiledStrategy:
-    """YAML 文本 → CompiledStrategy。校验算子 id 与汇总方法存在性。"""
+def compile_strategy(yaml_text: str, *, strategy_id: str = "") -> CompiledStrategy:
+    """YAML 文本 → CompiledStrategy。校验算子 id 与汇总方法存在性。
+
+    strategy_id 可选(keyword-only):传入则写入 CompiledStrategy.strategy_id,让变体(base#key
+    等复合 id)的 metrics/run_id/产物正确归属;不传则留空,get_active_strategy 仍会权威覆盖。
+    """
     if not REGISTRY:
         discover_and_register()
     cfg = yaml.safe_load(yaml_text) or {}
@@ -336,6 +340,7 @@ def compile_strategy(yaml_text: str) -> CompiledStrategy:
     if not get_operator_class(method):
         raise ValueError(f"未知汇总算子 '{method}'")
     return CompiledStrategy(
+        strategy_id=strategy_id,
         name=cfg.get("name", ""),
         operators=cfg.get("operators", []),
         aggregate=cfg.get("aggregate", {}),

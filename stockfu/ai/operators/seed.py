@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from pathlib import Path
@@ -61,6 +62,38 @@ def _load_strategy_yaml(strategy_id: str) -> tuple[str, str]:
     return cfg.get("name", strategy_id), text
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """嵌套 dict 递归深合并;list/标量整体替换。返回新 dict,不改入参。"""
+    out = copy.deepcopy(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+def _expand_variants(base_id: str, text: str) -> list[tuple[str, str, str, bool]]:
+    """展开 base yaml 的 `variants:` 声明为多条并存策略。
+
+    返回 [(strategy_id, name, yaml_text, derived), ...]:首条为 base 原文(derived=False,注释保留);
+    其后每条把 `override:` 深合并进 base cfg、剥掉 `variants` 键后重序列化为变体(derived=True),
+    id 形如 `{base}#{key}`(# 在 SQLite PK / 文件名 / JSON key / bash 词中均安全,自动消歧)。
+    无 `variants:` 时只返回 base 一行。
+    """
+    cfg = yaml.safe_load(text) or {}
+    name = cfg.get("name", base_id)
+    rows: list[tuple[str, str, str, bool]] = [(base_id, name, text, False)]
+    for v in cfg.get("variants") or []:
+        key = v["key"]
+        vcfg = _deep_merge(cfg, v.get("override") or {})
+        vcfg.pop("variants", None)
+        vcfg["name"] = v.get("name", f"{name}#{key}")
+        vtext = yaml.safe_dump(vcfg, allow_unicode=True, sort_keys=False)
+        rows.append((f"{base_id}#{key}", vcfg["name"], vtext, True))
+    return rows
+
+
 def seed_operators_and_strategies() -> int:
     """幂等 upsert 算子库 + 策略,返回处理行数。"""
     from stockfu.db import session_scope
@@ -80,11 +113,13 @@ def seed_operators_and_strategies() -> int:
                 prompt="", constitution_ref="",
             )
             n += 1
-        # 策略(从 strategies/*.yaml 读,name+config 出自文件单一真源)
+        # 策略(从 strategies/*.yaml 读,name+config 出自文件单一真源);
+        # yaml 可声明 variants: 展开成多条并存策略(复合 id base#key),详见 _expand_variants。
         for sid in _STRATEGIES:
-            name, yaml_text = _load_strategy_yaml(sid)
-            _upsert_strategy(s, sid, name, yaml_text)
-            n += 1
+            _, yaml_text = _load_strategy_yaml(sid)
+            for vsid, vname, vtext, derived in _expand_variants(sid, yaml_text):
+                _upsert_strategy(s, vsid, vname, vtext, derived=derived)
+                n += 1
         s.commit()
 
         # 一致性校验:DB operator 表里的 id 若不在注册表 → 残留告警。
@@ -182,11 +217,17 @@ def _upsert_operator(s, *, operator_id, name, type, module, params_schema,
         ))
 
 
-def _upsert_strategy(s, sid, name, yaml_text) -> None:
+def _upsert_strategy(s, sid, name, yaml_text, *, derived: bool = False) -> None:
     """首次从 yaml 写入;已存在则完全保留 DB(config+name),让用户热改/active 指针生效。active 由 app_config 决定。
 
-    改 strategies/*.yaml 想重新同步:删该 strategy 行后重启,或重新 --init-db。
+    **变体行(derived=True)例外**:变体由 yaml `variants:` 合成,不应被 DB 热改——每次 seed 强制
+    重同步 name+config(消除"改 yaml 不 reseed 不生效"的坑)。base 行仍走 insert-if-not-exists。
+    改 base strategies/*.yaml 想重新同步:删该 strategy 行后重启,或重新 --init-db。
     """
-    if s.get(Strategy, sid):
+    existing = s.get(Strategy, sid)
+    if existing:
+        if derived:
+            existing.name = name
+            existing.config = yaml_text
         return
     s.add(Strategy(strategy_id=sid, name=name, config=yaml_text))

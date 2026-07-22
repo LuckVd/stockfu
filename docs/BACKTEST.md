@@ -244,6 +244,12 @@ print(r["equity_curve"][-1])
 | `win_rate` | 盈利交易占比(按调仓动作;按交易回合统计见 P2-8) |
 | `benchmark_return` / `excess` | 上证综指(sh000001,1990起);按交集区间算;无数据→None+reason |
 | `benchmark_window` | 基准实际可用区间 `{start,end}` |
+| `max_drawdown_recovery_days` | 最大回撤谷底→净值收回回撤前峰值的交易日数;未回本=`None`(本轮新增) |
+| `max_drawdown_recovered` | 最大回撤是否在期末前回本(bool;本轮新增) |
+| `underwater_pct_gt0` / `_ge10` / `_ge20` / `_ge30` | 权益低于运行峰值 0/10/20/30% 的交易日占比 %(本轮新增) |
+| `distinct_stocks_bought` | 去重后曾买入的不同股票数(本轮新增) |
+| `stop_loss_count` | `signal=stop_loss` 的已成交止损单数(止损 D+1~D+3 成交;本轮新增) |
+| `stop_loss_realized_loss` | 止损单 pnl 之和(**负数=亏损**,单位元;signal 直传精确值,本轮新增) |
 
 ### 口径变更(2026-07-15:砍回测 LLM 算子 + 铲除 ±20/signal 体系)
 
