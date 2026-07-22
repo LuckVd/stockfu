@@ -12,8 +12,8 @@
 
 > **干净回测 12/16 已落盘**（§0.6 全表，带回撤/卡玛）：红利 2（07-22 04:03）+ qfq 5（07-21）+ 本次提速重启 5（macd_cross / momentum_breakout×2 / reversal_strategy / cn_momentum_rotation）。
 > **【2026-07-22 · 回测性能修复】** ① bollinger 的行情 N+1 已改为日期预载；② value 的多年 PE/PB 分位已改为 5 年内存预载；③ value 参数指纹已对齐，复用其他策略缓存；④ MACD 周线、TTM 分红事件及 `close_raw` 分母均已补入预载，数学算子热路径不再逐 `(code,as_of)` 查询数据库。
-> **剩余 4 策略尚未完成**：修复已合入 `main`，现在需以一个持久化、串行的后台任务重启：`pure_factor`/`dual_bollinger`/`bollinger_reversion`/`bollinger_reversion_cross_section`。
-> **下次会话**：通过宿主机 PID、日志和产物核验完成状态 → 补满 §0.6 全 16 表。
+> **剩余 4 策略串行运行中**：修复后的 `main` 已于本次会话启动 PID `2880236`（PPID=1、独立 SID）：`pure_factor`/`dual_bollinger`/`bollinger_reversion`/`bollinger_reversion_cross_section`。截至 17:04 日志停在 `[1/4] pure_factor`，尚无失败或新增产物；勿重复启动。
+> **下次会话**：用宿主机 `ps`、日志和产物核验 PID `2880236` 的完成状态 → 补满 §0.6 全 16 表。
 
 ### 0.1 三复权 baostock 串行回补（✅ 已完成，留存复跑参考）
 
@@ -55,7 +55,7 @@ PY
 
 ### 0.2 下一步
 
-> ✅ 12/16 干净结果已落盘（§0.6）；🔄 **剩余 4 策略由 PID `2820372` 串行运行中**（隔离 shell 不可见，勿据此误启动第二个任务）。
+> ✅ 12/16 干净结果已落盘（§0.6）；🔄 **剩余 4 策略由 PID `2880236` 串行运行中**（宿主 PPID=1、独立 SID；隔离 shell 可能不可见，勿据此误启动第二个任务）。
 
 1. **通过宿主机检查串行批处理状态**：  
    ```bash
@@ -132,7 +132,7 @@ python3 main.py --recommend --strategies cross_section_factor --as-of 2026-07-17
 
 某策略 `--update-backtests` 卡住（单策略 >10min、标 warm 却不动）时，几乎都是算子**重复冷补**：
 
-1. **算子 N+1 查库**：算子 `run()` 内 `with session_scope() as s: select(...)`（违反"算子不直接取库"契约）→ 每个 (code,as_of) 一次 DB 查询，全周期 ~百万次。**修法**：改走 `quote_series` / `quote_series_dates` 预载（回测内存供给器，零 DB）。已修 `monthly/weekly_bollinger`；自查 `grep session_scope stockfu/ai/operators/factors/*.py`。
+1. **算子 N+1 查库**：算子或其服务层逐 `(code,as_of)` 查行情/估值/分红，会造成百万级 session。**修法已完整落地**：价格与周/月线走 `quote_series` / `quote_series_dates` 预载；value 走 PE/PB 预载；MACD 周线走日期预载；TTM 分红事件与 `close_raw` 分母走预载。`rg 'session_scope|select\\(' stockfu/ai/operators/factors` 应为空；非回测、预载未覆盖或 hfq 保留安全 DB 回退。
 2. **params 指纹分裂**：yaml 里 params 写法不一致（如 `{}` vs `{years:5}`），`compute_fingerprint` 不填默认值 → 指纹不同 → 查不到其他策略缓存、独立 N+1 冷补。**查法**：`sqlite3 data/stockfu.db "SELECT fingerprint,COUNT(*) FROM operator_result WHERE operator_id='X' GROUP BY 1;"`（≥2 指纹即分裂）。**修法**：对齐 yaml params + `DELETE` 错指纹。
 3. **进度定位**：回测不打印 per-日进度；查 `operator_result WHERE operator_id='X'` 的 `MAX(as_of)` 反推冷补到哪（满 1342 交易日）。注意 `immutable=1` 只读模式在回测写 WAL 时会报 `malformed`，用普通模式。
 
