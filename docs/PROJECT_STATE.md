@@ -10,7 +10,7 @@
 
 ## 0. 进行中任务 / 冷启动接棒（2026-07-22）
 
-> 🚧 **【当前任务】策略参数变体（一等）+ 回测指标持久化** —— 方案已定、待执行。详见 **`docs/STRATEGY_VARIANTS_PLAN.md`**（自包含、逐行验证）。工作区：`/opt/pro/stockfu-backtest` 新分支 `feature/strategy-variants`。两块：A) `strategy_id` 编码变体（`base#key`，seed 展开器）；B) 引擎原生产出 回本/买入/止损成交/止损损失/水下分布(0/10/20/30%) 并自动入 `.json.gz`+`.meta.json`。首个用例：`dividend_cross_section`(8%) + `dividend_cross_section#sl30`(30%) 并存。
+> ✅ **【已完成 2026-07-22】策略参数变体（一等）+ 回测指标持久化** —— 按 `docs/STRATEGY_VARIANTS_PLAN.md` 全量实现并提交（main `561a0e6`+`7a87328`；backtest `feature/backtest` `e96f598`+`4c8a295`）。A) `strategy_id` 编码变体（`base#key`，seed `_expand_variants`/`_deep_merge` 展开器；变体行 derived 每次 seed 强制重同步；recommend 改读 DB config；main 校验复合 id 不静默回落）；B) 引擎原生产出 回本/水下分布(0/10/20/30%)/distinct_bought/stop_loss_count/realized_loss（止损 signal 穿透 6 处，原 `_exec` 写 `None` 丢失）+ schema 1→2。单测 72/72；e2e：base 8% stop_loss=11 vs `#sl30` 30% stop_loss=1（B3 穿透实证）。首个用例 `dividend_cross_section`(8%) + `dividend_cross_section#sl30`(30%) 并存。main DB 已 reseed base 8%（修历史 30% 污染）+ 新增 sl30。附带修复 `asset.note` 遗留列（`_migrate` DROP，干净库 `--init-db` 跑通）。
 >
 > **干净回测 16/16 已落盘**（§0.6 全表，带回撤/卡玛/回本/换手/磨损/仓位/止损成交/止损损失/胜率）：12 策略先落盘 + 本次提速重启 4（pure_factor / dual_bollinger / bollinger_reversion / bollinger_reversion_cross_section，07-22 18:11 完成）。
 > **【2026-07-22 · 回测性能修复】** ① bollinger 的行情 N+1 已改为日期预载；② value 的多年 PE/PB 分位已改为 5 年内存预载；③ value 参数指纹已对齐，复用其他策略缓存；④ MACD 周线、TTM 分红事件及 `close_raw` 分母均已补入预载，数学算子热路径不再逐 `(code,as_of)` 查询数据库。
