@@ -140,9 +140,12 @@ def quote_series(code: str, field: str, days: int, as_of: date | None = None,
     ref_date = as_of or date.today()
     start = ref_date - timedelta(days=days + 15)
     adj_n = (adj or ADJ_QFQ).lower()
-    # 回测内存供给器只缓存前复权成交价
-    if adj_n == ADJ_QFQ and _BT_SERIES_PROVIDER is not None:
-        got = _BT_SERIES_PROVIDER(code, field, start, ref_date)
+    # 回测预载默认是 qfq；股息率还需要 close_raw。hfq 未预载则安全回退 DB。
+    provider_field = field
+    if field.lower() in _OHLC and adj_n != ADJ_QFQ:
+        provider_field = f"{field}_{adj_n}"
+    if _BT_SERIES_PROVIDER is not None:
+        got = _BT_SERIES_PROVIDER(code, provider_field, start, ref_date)
         if got is not None:
             return got
     model = quote_model_for(code)
@@ -177,8 +180,11 @@ def quote_series_dates(code: str, field: str, days: int,
     ref_date = as_of or date.today()
     start = ref_date - timedelta(days=days + 15)
     adj_n = (adj or ADJ_QFQ).lower()
-    if adj_n == ADJ_QFQ and _BT_BARS_PROVIDER is not None:
-        got = _BT_BARS_PROVIDER(code, field, start, ref_date)
+    provider_field = field
+    if field.lower() in _OHLC and adj_n != ADJ_QFQ:
+        provider_field = f"{field}_{adj_n}"
+    if _BT_BARS_PROVIDER is not None:
+        got = _BT_BARS_PROVIDER(code, provider_field, start, ref_date)
         if got is not None:
             return got
     model = quote_model_for(code)

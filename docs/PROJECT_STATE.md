@@ -12,7 +12,7 @@
 
 > **干净回测 12/16 已落盘**（§0.6 全表，带回撤/卡玛）：红利 2（07-22 04:03）+ qfq 5（07-21）+ 本次提速重启 5（macd_cross / momentum_breakout×2 / reversal_strategy / cn_momentum_rotation）。
 > **【2026-07-22 · 回测性能修复】** ① bollinger 的行情 N+1 已改为日期预载；② value 的多年 PE/PB 分位已改为 5 年内存预载；③ value 参数指纹已对齐，复用其他策略缓存；④ MACD 周线、TTM 分红事件及 `close_raw` 分母均已补入预载，数学算子热路径不再逐 `(code,as_of)` 查询数据库。
-> **剩余 4 策略尚未完成**：将在本次修复合入 `main` 后，以一个持久化、串行的后台任务重启：`pure_factor`/`dual_bollinger`/`bollinger_reversion`/`bollinger_reversion_cross_section`。
+> **剩余 4 策略尚未完成**：修复已合入 `main`，现在需以一个持久化、串行的后台任务重启：`pure_factor`/`dual_bollinger`/`bollinger_reversion`/`bollinger_reversion_cross_section`。
 > **下次会话**：通过宿主机 PID、日志和产物核验完成状态 → 补满 §0.6 全 16 表。
 
 ### 0.1 三复权 baostock 串行回补（✅ 已完成，留存复跑参考）

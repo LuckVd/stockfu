@@ -16,6 +16,23 @@ from stockfu.db import session_scope
 from stockfu.models import DividendEvent
 
 
+# 回测分红供给器：engine 每次 run 批量预载 dividend_event 后挂载。
+# fn(code, start, ref) -> list[(ex_date, per_share_cash)] | None；None 回退 DB。
+_BT_DIVIDEND_PROVIDER = None
+
+
+def set_backtest_dividend_provider(fn) -> None:
+    """挂载回测 TTM 分红内存供给器。"""
+    global _BT_DIVIDEND_PROVIDER
+    _BT_DIVIDEND_PROVIDER = fn
+
+
+def clear_backtest_dividend_provider() -> None:
+    """摘除回测分红供给器，恢复 live 数据库读取。"""
+    global _BT_DIVIDEND_PROVIDER
+    _BT_DIVIDEND_PROVIDER = None
+
+
 def metric_from_db(
     code: str,
     latest_price: Optional[float] = None,
@@ -113,16 +130,20 @@ def dividend_yield_ttm(code: str, as_of=None) -> tuple[float, float] | None:
 
     ref = as_of or date.today()
     year_ago = ref - timedelta(days=365)
-    with session_scope() as s:
-        rows = s.exec(select(DividendEvent).where(
-            DividendEvent.asset_code == code,
-            DividendEvent.ex_date <= ref,
-            DividendEvent.ex_date >= year_ago,
-        )).all()
+    rows: list[tuple[date, float | None]] | None = None
+    if _BT_DIVIDEND_PROVIDER is not None:
+        rows = _BT_DIVIDEND_PROVIDER(code, year_ago, ref)
+    if rows is None:
+        with session_scope() as s:
+            db_rows = s.exec(select(DividendEvent).where(
+                DividendEvent.asset_code == code,
+                DividendEvent.ex_date <= ref,
+                DividendEvent.ex_date >= year_ago,
+            )).all()
+        rows = [(r.ex_date, r.per_share_cash) for r in db_rows]
     if not rows:
         return None
-    ttm = sum(r.per_share_cash for r in rows
-              if r.per_share_cash and r.per_share_cash > 0)
+    ttm = sum(cash for _ex_date, cash in rows if cash and cash > 0)
     if ttm <= 0:
         return None
     # 不复权收盘;未回补 raw 时不回落 qfq(避免静默污染)

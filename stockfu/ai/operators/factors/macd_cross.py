@@ -3,15 +3,11 @@
 从 quote_snapshot 读日线 close → 算日/周 MACD → 组合评分。
 现有 LLM tool(macd.py) 的 EMA 计算逻辑复用于此。
 """
-from datetime import date, timedelta
-
-from sqlmodel import select
+from datetime import date
 
 from stockfu.ai.operators.base import BaseOperator, OpResult
 from stockfu.ai.operators.registry import register
-from stockfu.db import session_scope
-from stockfu.models import QuoteSnapshot
-from stockfu.services.factors import quote_model_for, quote_series
+from stockfu.services.factors import quote_series, quote_series_dates
 
 
 # ── EMA 计算 ──
@@ -62,24 +58,12 @@ def _check_cross(dif: list[float | None], dea: list[float | None]) -> str:
 
 
 def _weekly_closes(code: str, as_of: date | None, lookback_days: int) -> list[float]:
-    """按周聚合收盘价: 取每周最后一个交易日的 close。"""
-    ref = as_of or date.today()
-    start = ref - timedelta(days=lookback_days)
-    model = quote_model_for(code)
-    with session_scope() as s:
-        rows = s.exec(
-            select(model).where(
-                model.asset_code == code,
-                model.quote_date >= start,
-                model.quote_date <= ref,
-            ).order_by(model.quote_date)
-        ).all()
-    # 按 ISO 周聚合,取每周最后一条
+    """按周聚合收盘价：取每周最后交易日，回测时走预载、零 DB。"""
+    dates, closes = quote_series_dates(code, "close", lookback_days, as_of=as_of)
     weekly: dict[tuple[int, int], float] = {}  # (year, week) -> close
-    for r in rows:
-        d = r.quote_date if hasattr(r, "quote_date") else r.snap_date
+    for d, close in zip(dates, closes):
         iso = d.isocalendar()
-        weekly[(iso[0], iso[1])] = getattr(r, "close", None) or 0.0
+        weekly[(iso[0], iso[1])] = close
     return list(weekly.values())
 
 
