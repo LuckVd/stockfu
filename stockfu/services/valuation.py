@@ -5,6 +5,7 @@ baostock 全字段 backfill 已把 peTTM/pbMRQ 落入 quote_snapshot.pe/pb。
 """
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from datetime import date, timedelta
 from typing import Any
 
@@ -13,6 +14,25 @@ from sqlmodel import select
 from stockfu.db import session_scope
 from stockfu.models import QuoteSnapshot
 from stockfu.services import factors as F
+
+
+# 回测估值供给器：engine 预载行情后挂载，避免 value 算子对每个
+# (code, as_of) 都开一次 session 查询多年 PE/PB 序列。
+# fn(code, start, ref_date) -> list[(date, close, pe, pb)] | None。
+# None 表示不在回测预载范围内，必须回退 DB 以保持 live/边界调用正确。
+_BT_VALUATION_PROVIDER = None
+
+
+def set_backtest_valuation_provider(fn) -> None:
+    """挂载回测估值内存供给器（由 backtest.engine 生命周期管理）。"""
+    global _BT_VALUATION_PROVIDER
+    _BT_VALUATION_PROVIDER = fn
+
+
+def clear_backtest_valuation_provider() -> None:
+    """摘除回测估值供给器，恢复 live 路径的数据库读取。"""
+    global _BT_VALUATION_PROVIDER
+    _BT_VALUATION_PROVIDER = None
 
 
 def _quantile(sorted_vals: list[float], q: float) -> float | None:
@@ -28,6 +48,15 @@ def _quantile(sorted_vals: list[float], q: float) -> float | None:
     hi = min(lo + 1, n - 1)
     frac = pos - lo
     return float(sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac)
+
+
+def _percentile_sorted(sorted_vals: list[float], value: float | None) -> float | None:
+    """已排序数列上的平均秩分位，语义与 factors.percentile 一致但不重复排序。"""
+    if value is None or len(sorted_vals) < 10:
+        return None
+    below = bisect_left(sorted_vals, value)
+    equal = bisect_right(sorted_vals, value) - below
+    return round((below + equal / 2) / len(sorted_vals) * 100, 2)
 
 
 def _zone_from_pcts(pe_pct: float | None, pb_pct: float | None) -> str:
@@ -81,26 +110,34 @@ def valuation_snapshot(
         "value_zone": "unknown", "value_band": None, "close": close,
     }
     start = as_of - timedelta(days=years * 365 + 15)
-    with session_scope() as s:
-        rows = s.exec(select(QuoteSnapshot).where(
-            QuoteSnapshot.asset_code == code,
-            QuoteSnapshot.quote_date >= start,
-            QuoteSnapshot.quote_date <= as_of,
-        ).order_by(QuoteSnapshot.quote_date)).all()
+    rows: list[tuple[date, float | None, float | None, float | None]] | None = None
+    if _BT_VALUATION_PROVIDER is not None:
+        rows = _BT_VALUATION_PROVIDER(code, start, as_of)
+    if rows is None:
+        with session_scope() as s:
+            db_rows = s.exec(select(QuoteSnapshot).where(
+                QuoteSnapshot.asset_code == code,
+                QuoteSnapshot.quote_date >= start,
+                QuoteSnapshot.quote_date <= as_of,
+            ).order_by(QuoteSnapshot.quote_date)).all()
+        rows = [
+            (r.quote_date, r.close, r.pe, r.pb)
+            for r in db_rows
+        ]
     if not rows:
         return empty
 
-    cur = rows[-1]
-    pe = cur.pe if cur.pe and cur.pe > 0 else None
-    pb = cur.pb if cur.pb and cur.pb > 0 else None
+    _d, row_close, row_pe, row_pb = rows[-1]
+    pe = row_pe if row_pe and row_pe > 0 else None
+    pb = row_pb if row_pb and row_pb > 0 else None
     if close is None:
-        close = cur.close if cur.close and cur.close > 0 else None
+        close = row_close if row_close and row_close > 0 else None
 
-    pes = sorted(r.pe for r in rows if r.pe and r.pe > 0)
-    pbs = sorted(r.pb for r in rows if r.pb and r.pb > 0)
+    pes = sorted(row_pe for _d, _close, row_pe, _pb in rows if row_pe and row_pe > 0)
+    pbs = sorted(row_pb for _d, _close, _pe, row_pb in rows if row_pb and row_pb > 0)
 
-    pe_pct = F.percentile(pes, pe)[0] if pe is not None else None
-    pb_pct = F.percentile(pbs, pb)[0] if pb is not None else None
+    pe_pct = _percentile_sorted(pes, pe)
+    pb_pct = _percentile_sorted(pbs, pb)
 
     pe_med = _quantile(pes, 0.50) if len(pes) >= 10 else None
     pe_p25 = _quantile(pes, 0.25) if len(pes) >= 10 else None
