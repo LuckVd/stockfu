@@ -33,6 +33,21 @@ def _weekly_series_from_pairs(pairs) -> list[float]:
     return [weekly[k] for k in sorted(weekly.keys())]
 
 
+def _weekly_series_from_rows(rows) -> tuple[list[float], list[float]]:
+    """兼容行业轮动探针：ORM 行 → 日线与周线收盘价。
+
+    正式算子回测路径应使用 `_weekly_series_from_pairs`，以便从预载行情取数；
+    该纯转换包装保留给探针等已有调用方，不开数据库连接。
+    """
+    pairs = []
+    for r in rows:
+        d = getattr(r, "quote_date", None) or getattr(r, "snap_date", None)
+        close = getattr(r, "close", None)
+        if d is not None and close is not None and float(close) > 0:
+            pairs.append((d, float(close)))
+    return [c for _d, c in pairs], _weekly_series_from_pairs(pairs)
+
+
 def _calc_bollinger(series: list[float], window: int, k: float):
     """计算布林带,返回最新的 (sma, upper, lower, bandwidth)。"""
     if len(series) < window:

@@ -191,20 +191,21 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
     return 0.0, "unavailable"
 
 
-# 紧凑 bar 下标:(open, high, low, close, pct_chg, is_st, trade_status, amount)
-_BI_O, _BI_H, _BI_L, _BI_C, _BI_PCT, _BI_ST, _BI_TS, _BI_AMT = range(8)
+# 紧凑 bar 下标:(open, high, low, close, pct_chg, is_st, trade_status, amount, pe, pb)
+_BI_O, _BI_H, _BI_L, _BI_C, _BI_PCT, _BI_ST, _BI_TS, _BI_AMT, _BI_PE, _BI_PB = range(10)
 
 # quote_series 字段 → 紧凑 bar 下标(供回测内存供给器切片)
 _QS_FIELD_IDX = {"open": _BI_O, "high": _BI_H, "low": _BI_L, "close": _BI_C}
-# 回测预载需提前覆盖算子最大回看(low_volatility hist_years=3 ≈ 1160 历日;留余量到 1300)
-_PRELOAD_LOOKBACK_DAYS = 1300
+# 回测预载需覆盖 value 的 5 年估值窗口(约 1840 历日)，并留少量边界余量。
+# 这也覆盖 low_volatility 的 3 年窗口；不足时 value 会回落 DB，重新引入 N+1。
+_PRELOAD_LOOKBACK_DAYS = 1900
 
 
 @contextmanager
 def _backtest_series_ctx(market_cache: dict):
     """挂载 factors.quote_series 的内存供给器:从预载 market_cache 切片,零 DB。
 
-    market_cache = {quote_date: {code: (o,h,l,c,pct,st,ts,amt)}}(紧凑 D)。重排为
+    market_cache = {quote_date: {code: (o,h,l,c,pct,st,ts,amt,pe,pb)}}(紧凑 D)。重排为
     {code: ([(date, tuple)], [dates])} 升序,供 bisect 切窗口 [start, ref_date]。
     与 DB quote_series 逐值一致:同一行集、同窗口、同 None 过滤、同升序(窗口左溢出时
     两者都返回库内最早日起的部分序列,行为相同)。code/字段不在预载 → 返回 None 回落查库
@@ -214,6 +215,8 @@ def _backtest_series_ctx(market_cache: dict):
                                           clear_backtest_series_provider,
                                           set_backtest_bars_provider,
                                           set_backtest_series_provider)
+    from stockfu.services.valuation import (clear_backtest_valuation_provider,
+                                            set_backtest_valuation_provider)
     if not market_cache:
         yield
         return
@@ -263,13 +266,33 @@ def _backtest_series_ctx(market_cache: dict):
                 v_out.append(v)
         return d_out, v_out
 
+    def provide_valuation(code, start, ref_date):
+        """返回 PE/PB 估值窗口，供 value 算子零 DB 计算历史分位。"""
+        entry = index.get(code)
+        if entry is None:
+            return None
+        lst, dates = entry
+        lo = bisect_left(dates, start)
+        hi = bisect_right(dates, ref_date)
+        out = [
+            (lst[i][0], lst[i][1][_BI_C], lst[i][1][_BI_PE], lst[i][1][_BI_PB])
+            for i in range(lo, hi)
+        ]
+        # ETF/指数预载行没有 PE/PB；valuation_snapshot 原路径只查
+        # QuoteSnapshot，故此处回退 DB，避免把非个股 bar 误当估值样本。
+        if out and not any(pe is not None or pb is not None for _d, _c, pe, pb in out):
+            return None
+        return out
+
     set_backtest_series_provider(provide)
     set_backtest_bars_provider(provide_bars)
+    set_backtest_valuation_provider(provide_valuation)
     try:
         yield
     finally:
         clear_backtest_series_provider()
         clear_backtest_bars_provider()
+        clear_backtest_valuation_provider()
 
 
 def _pack_bar_row(r) -> tuple:
@@ -294,6 +317,7 @@ def _pack_bar_row(r) -> tuple:
         1 if is_st else 0,
         int(trade_status) if trade_status is not None else 1,
         _f("amount"),
+        _f("pe"), _f("pb"),
     )
 
 
@@ -350,15 +374,15 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
             "asset_code, quote_date, "
             "COALESCE(open_qfq, open), COALESCE(high_qfq, high), "
             "COALESCE(low_qfq, low), COALESCE(close_qfq, close), pct_chg, "
-            "is_st, trade_status, amount"
+            "is_st, trade_status, amount, pe, pb"
         ),
         "etf_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
-            "NULL as is_st, 1 as trade_status, amount"
+            "NULL as is_st, 1 as trade_status, amount, NULL as pe, NULL as pb"
         ),
         "index_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
-            "NULL as is_st, 1 as trade_status, NULL as amount"
+            "NULL as is_st, 1 as trade_status, NULL as amount, NULL as pe, NULL as pb"
         ),
     }
     cache: dict = {}
@@ -392,7 +416,7 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
                         break
                     for row in rows:
                         (asset_code, qdate, o, h, l, c, pct,
-                         is_st, trade_status, amount) = row
+                         is_st, trade_status, amount, pe, pb) = row
                         if isinstance(qdate, str):
                             qdate = date.fromisoformat(qdate[:10])
                         packed = (
@@ -404,6 +428,8 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
                             1 if is_st else 0,
                             int(trade_status) if trade_status is not None else 1,
                             float(amount) if amount is not None else None,
+                            float(pe) if pe is not None else None,
+                            float(pb) if pb is not None else None,
                         )
                         bucket = cache.get(qdate)
                         if bucket is None:

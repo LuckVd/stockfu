@@ -11,9 +11,9 @@
 ## 0. 进行中任务 / 冷启动接棒（2026-07-22）
 
 > **干净回测 12/16 已落盘**（§0.6 全表，带回撤/卡玛）：红利 2（07-22 04:03）+ qfq 5（07-21）+ 本次提速重启 5（macd_cross / momentum_breakout×2 / reversal_strategy / cn_momentum_rotation）。
-> **【2026-07-22 · 两处性能修复（代码改了，尚未 commit）】** ① **bollinger N+1**：`monthly/weekly_bollinger` 算子曾违反"算子不直接取库"契约，`run()` 内逐 (code,as_of) 开 session 查 DB（全周期 ~109 万次 SELECT，单策略 ~8h）；改走 `quote_series_dates` 预载（`factors.py` + `engine._backtest_series_ctx` 挂 `provide_bars`），口径逐值不变，实测提速 **macd_cross 4253s→157s（27x）、monthly 冷补 ~20x**（详 memory `bollinger-operator-n-plus-1`）。② **value 指纹分裂**：`pure_factor.yaml` 的 value params 写 `{}`（而非 `{years:5}`），`compute_fingerprint` 不填默认值 → 指纹不一致 → 查不到其他策略 98 万行 value 缓存、独立 N+1 冷补（pure_factor 卡 57min 才补 13%）；已对齐 params + 清错指纹。
-> **剩余 4 策略串行运行中**：PID `2820372`（宿主机可见；隔离 shell 不可见），策略依次为 `pure_factor`/`dual_bollinger`/`bollinger_reversion`/`bollinger_reversion_cross_section`。日志 `data/update_backtests_rest.log`；勿重复启动。
-> **下次会话**：通过宿主机 `ps` 核验该 PID 与产物 → 补满 §0.6 全 16 表。
+> **【2026-07-22 · 回测性能修复】** ① bollinger 的行情 N+1 已改为日期预载；② value 的多年 PE/PB 分位已改为 5 年内存预载；③ value 参数指纹已对齐，复用其他策略缓存；④ MACD 周线、TTM 分红事件及 `close_raw` 分母均已补入预载，数学算子热路径不再逐 `(code,as_of)` 查询数据库。
+> **剩余 4 策略尚未完成**：将在本次修复合入 `main` 后，以一个持久化、串行的后台任务重启：`pure_factor`/`dual_bollinger`/`bollinger_reversion`/`bollinger_reversion_cross_section`。
+> **下次会话**：通过宿主机 PID、日志和产物核验完成状态 → 补满 §0.6 全 16 表。
 
 ### 0.1 三复权 baostock 串行回补（✅ 已完成，留存复跑参考）
 
