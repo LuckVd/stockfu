@@ -30,7 +30,7 @@ nohup python3 main.py --schedule >> data/schedule.log 2>&1 &
 ## 关键约定(踩坑点)
 - **Python 用 `python3`**;系统 Python PEP668,pip 加 `--break-system-packages`
 - **代理**:港美股(yfinance)走 7890(`source /opt/clash/proxy.sh`);国内源(akshare/efinance)no_proxy 直连
-- **baostock** 是裸 TCP(不认 HTTP_PROXY);三复权回补默认免费代理池(`--proxy-mode free`，HTTP CONNECT/SOCKS，需 `PySocks`)，失败剔除换 IP;池自愈(耗尽重拉 `BAOSTOCK_REBOOTSTRAP_*`、死IP TTL `BAOSTOCK_DEAD_TTL`、常驻刷新 `BAOSTOCK_MAX_AGE`/`BAOSTOCK_MIN_ALIVE`);源经 clash 拉、可外置 `data/proxy_sources.json`(`BAOSTOCK_SOURCE_PROXY`)
+- **baostock** 是裸 TCP(不认 HTTP_PROXY);三复权回补默认免费代理池(`--proxy-mode free`，HTTP CONNECT/SOCKS，需 `PySocks`)，失败剔除换 IP;**查询超时也强制换 IP**(`BAOSTOCK_FETCH_TIMEOUT` 默认 60s，防 login 通过却卡在内部接收循环的坏代理);池自愈(耗尽重拉 `BAOSTOCK_REBOOTSTRAP_*`、死IP TTL `BAOSTOCK_DEAD_TTL`、常驻刷新 `BAOSTOCK_MAX_AGE`/`BAOSTOCK_MIN_ALIVE`);**代理池+rebootstrap 耗尽→直连兜底**(`BAOSTOCK_DIRECT_FALLBACK` 默认 on,IP 解封可用;`_MAX`/`_COOLDOWN` 限流,长通道 `maybe_refresh` 池回血后切回);源经 clash 拉、可外置 `data/proxy_sources.json`(`BAOSTOCK_SOURCE_PROXY`)
 - **数据**在 `data/stockfu.db`(WAL);回测产物 `data/backtest/`(gitignore)
 - **回测防未来函数**:取数 `<= as_of`
 - **价格口径**(`quote_snapshot`):
@@ -39,8 +39,8 @@ nohup python3 main.py --schedule >> data/schedule.log 2>&1 &
   - 后复权 `*_hfq` 备用
 - **量化四层**:算子(math 连续 score)+策略 yaml+rebalancer+engine;算子缓存 fingerprint 含源码 hash
 - **行情拆表**:QuoteSnapshot / EtfQuoteDaily / IndexQuoteDaily;`quote_model_for` 路由
-- **官方 K 回补串行** `backfill_kline`;`--fetch` 只刷自选,不全市场
+- **官方 K 回补串行** `backfill_kline`;`--fetch` 只刷自选,不全市场;**A 股个股 `--fetch` 走 baostock 三复权**(全字段 + 当日 `close_raw`,baostock 全失败即放弃、**不降级东财/腾讯**;ETF→akshare、港美股→yfinance、指数→manager)
 
 ## 状态
 🚧 MVP。代码:数据层(qfq 硬化)+回测四层+横截面策略族+全周期 CLI+荐股+三复权字段。  
-**干净全周期数字待 raw 回补与重跑后写入 PROJECT_STATE §0.3**（旧混复权表已作废删除）。
+**raw/hfq 回补完成；回测重跑中——红利 2 个已完成（§0.6），9 个 qfq 策略后台补跑中**（旧混复权表已作废删除）。
