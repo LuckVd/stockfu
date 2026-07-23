@@ -220,17 +220,19 @@ def backfill_market_fund_flow() -> int:
     return n
 
 
-def backfill_sector_flow_today() -> int:
-    """行业板块当日主力资金流即时落库 sector_flow_snapshot（每日 --fetch 攒历史）。
+def backfill_sector_flow(snap_date) -> int:
+    """行业板块主力资金流落库 sector_flow_snapshot（每日 --fetch 攒历史）。
 
+    snap_date: 目标交易日(已校验)，盖章用——不再用 date.today()（凌晨防错标）。
     东财 push2his 历史源限流不稳，故即时快照靠每日累积（首日无分位，越跑越准）。
     仅匹配 SECTOR_THS_NAME 里有映射的板块（精确匹配，避免「医药商业」误中「医药」）。
     返回写入行数。
     """
     from stockfu.data.manager import get_manager
     from stockfu.services.composite import SECTOR_THS_NAME
+    from stockfu.services.quote_writer import _coerce_date
 
-    today = date.today()
+    d = _coerce_date(snap_date)
     flows = get_manager().get_sector_flow_today()
     if not flows:
         return 0
@@ -243,8 +245,8 @@ def backfill_sector_flow_today() -> int:
                 continue
             snap = s.exec(select(SectorFlowSnapshot).where(
                 SectorFlowSnapshot.sector_name == sector,
-                SectorFlowSnapshot.snap_date == today)).first()
-            snap = snap or SectorFlowSnapshot(sector_name=sector, snap_date=today)
+                SectorFlowSnapshot.snap_date == d)).first()
+            snap = snap or SectorFlowSnapshot(sector_name=sector, snap_date=d)
             snap.net_inflow = f.get("net_inflow")
             snap.inflow = f.get("inflow")
             snap.outflow = f.get("outflow")

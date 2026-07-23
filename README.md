@@ -49,7 +49,7 @@ pip install -r requirements.txt
 python3 main.py --init-db     # 初始化 + 种子自选
 python3 main.py               # 启动 Web（默认 127.0.0.1:8787）
 python3 main.py --serve       # 同上
-python3 main.py --fetch       # 日更抓取
+python3 main.py --fetch --date 2026-07-22   # 日更抓取（必带 --date；未来/未收盘/非交易日报错）
 ```
 
 ## 状态

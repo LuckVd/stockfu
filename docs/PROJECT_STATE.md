@@ -8,6 +8,28 @@
 
 > **【2026-07-21 口径修正】** 此前全周期总表/选股/荐股数字跑在**混复权**行情上，**全部作废**。行情已统一前复权；股息率分母改为 **不复权 `close_raw`**（名义现金 ÷ 全样本 qfq 会虚高并引入前视）。`close_raw` 回补已完成（2026-07-22，100%）；红利策略 `--update-backtests` 重跑中，完成后重写 §0.6。
 
+## 当前重点:两大方向与共同底层（2026-07-23）
+
+项目当前聚焦两个方向,共用同一套底层数据基础设施:单库 `data/stockfu.db` + 统一 fetch 链。代码现状:`main` 已与 `origin/main` 同步、工作树干净。
+
+### 方向一 · 回测（off-line 量化研究）
+
+- **四层架构**:算子(math 连续 score)→ 策略 yaml → rebalancer → engine;严格防未来函数(取数 `<= as_of`);算子缓存(fingerprint 含源码 hash,改算子须 +1 version 或删缓存)。
+- **入口**:`--backtest <id>` 单策略、`--update-backtests` 全周期批跑、`--recommend` 荐股、`--list-strategies`、`--factor-diag <op>`。
+- **现状**:16/16 干净结果已落盘(§0.6 全表;2021-01-04→2026-07-20,前复权 + 股息率分母 `close_raw`,基准上证 +8.37%);详见 `docs/BACKTEST.md`。
+
+### 方向二 · 实时生图（当日行情 → 可视化 → 推送）
+
+- **数据流**:`--fetch --date YYYY-MM-DD` 抓截至该交易日 → 落库天级快照(统一收口 `quote_writer`,盖章=目标日) → 三层情绪(市场/板块/个股 fear·greed·heat,读窗 `as_of=目标日`)→ Web 看板与 9:16 分享卡片实时渲染 → playwright 无头截图 → SMTP 邮件。`--date` 必填,非法(未来/未收盘/非交易日)报错;`--schedule` 自动取已收盘最近交易日。
+- **入口**:`--serve`(Web 看板 127.0.0.1:8787)、`--test-mail`(立即生图 + 发测试邮件)、`--schedule`(APScheduler 每日 cron:fetch → mail)。
+- **实现**:`stockfu/services/mail.py`(`render_share_images` playwright 逐页截图 + `send_card_email` SMTP inline 多图);依赖 `playwright install chromium`,且生图时需 `--serve` 在跑。
+- **⚠️ 出图避坑**:主页 `loadAll` 会并发实时算估值、拉起 baostock 代理池 spin 卡死;生图只取 `/share`(纯读库、不等 loadAll),建议配 `BAOSTOCK_PROXY_MODE=direct`。
+
+### 共同底层(两方向都依赖)
+
+- **DB**:单一 `data/stockfu.db`(WAL;SQLModel/SQLite)。路径由 `stockfu/config.py` 的 `BASE_DIR = Path(__file__).resolve().parent.parent` → `DATA_DIR = BASE_DIR/"data"` 解析;可用 `.env` 的 `DB_URL` 覆盖(当前未用)。回测读历史、生图读当日,**共用同一张 `quote_snapshot`**(三复权 `*_qfq`/`*_raw`/`*_hfq`,成交/动量用 qfq、股息率分母用 raw)+ index/etf 拆表。
+- **fetch**:统一抓取链 `--fetch` / `run_scheduled_fetch`(`stockfu/scheduler/jobs.py`),按品种路由——A 股个股 → baostock 三复权(全字段 + 当日 `close_raw`,失败不降级,默认免费代理池 `--proxy-mode free`);ETF → akshare;港美股 → yfinance(本机 clash `7890`);指数 → akshare(`no_proxy` 直连)。**只刷自选**,落库后算三层情绪。历史回补另走 `--backfill-adj-prices`(baostock 串行三复权,断点续传)。
+
 ## 0. 进行中任务 / 冷启动接棒（2026-07-22）
 
 > ✅ **【已完成 2026-07-22】策略参数变体（一等）+ 回测指标持久化** —— 按 `docs/STRATEGY_VARIANTS_PLAN.md` 全量实现并提交（main `561a0e6`+`7a87328`；backtest `feature/backtest` `e96f598`+`4c8a295`）。A) `strategy_id` 编码变体（`base#key`，seed `_expand_variants`/`_deep_merge` 展开器；变体行 derived 每次 seed 强制重同步；recommend 改读 DB config；main 校验复合 id 不静默回落）；B) 引擎原生产出 回本/水下分布(0/10/20/30%)/distinct_bought/stop_loss_count/realized_loss（止损 signal 穿透 6 处，原 `_exec` 写 `None` 丢失）+ schema 1→2。单测 72/72；e2e：base 8% stop_loss=11 vs `#sl30` 30% stop_loss=1（B3 穿透实证）。首个用例 `dividend_cross_section`(8%) + `dividend_cross_section#sl30`(30%) 并存。main DB 已 reseed base 8%（修历史 30% 污染）+ 新增 sl30。附带修复 `asset.note` 遗留列（`_migrate` DROP，干净库 `--init-db` 跑通）。

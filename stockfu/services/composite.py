@@ -61,40 +61,47 @@ def _pct(series, value):
     return F.percentile(series, value)[0]
 
 
-def _ext_pct(level, scope, factor, today_val):
-    """外部因子：从 factor_snapshot 读历史算当日值分位。"""
+def _ext_pct(level, scope, factor, today_val, as_of=None):
+    """外部因子：从 factor_snapshot 读历史(<=as_of)算当日值分位。"""
     if today_val is None:
         return None
     with session_scope() as s:
-        rows = s.exec(select(FactorSnapshot).where(
+        stmt = select(FactorSnapshot).where(
             FactorSnapshot.level == level, FactorSnapshot.scope == scope,
-            FactorSnapshot.factor == factor)).all()
+            FactorSnapshot.factor == factor)
+        if as_of is not None:
+            stmt = stmt.where(FactorSnapshot.snap_date <= as_of)
+        rows = s.exec(stmt).all()
     hist = [r.raw_value for r in rows if r.raw_value is not None]
     return F.percentile(hist, today_val)[0]  # 样本不足返回 None
 
 
-def _sector_series(name: str, model, field: str, days: int) -> list[float]:
-    """读板块 raw 表(sector_snapshot/sector_flow_snapshot) 近 days 日某字段序列。"""
+def _sector_series(name: str, model, field: str, days: int, as_of=None) -> list[float]:
+    """读板块 raw 表(sector_snapshot/sector_flow_snapshot) 近 days 日(<=as_of)某字段序列。"""
     from datetime import date as _d, timedelta as _td
-    start = _d.today() - _td(days=days + 15)
+    ref = as_of or _d.today()
+    start = ref - _td(days=days + 15)
     with session_scope() as s:
         rows = s.exec(select(model).where(
             model.sector_name == name, model.snap_date >= start,
+            model.snap_date <= ref,
         ).order_by(model.snap_date)).all()
     return [getattr(r, field) for r in rows if getattr(r, field) is not None]
 
 
-def _sector_today(name: str, model, field: str):
-    """读板块 raw 表最新一行的 field 值（无则 None）。"""
+def _sector_today(name: str, model, field: str, as_of=None):
+    """读板块 raw 表最新一行(<=as_of)的 field 值（无则 None）。"""
     with session_scope() as s:
-        row = s.exec(select(model).where(
-            model.sector_name == name).order_by(model.snap_date.desc())).first()
+        stmt = select(model).where(model.sector_name == name)
+        if as_of is not None:
+            stmt = stmt.where(model.snap_date <= as_of)
+        row = s.exec(stmt.order_by(model.snap_date.desc())).first()
     return getattr(row, field, None) if row else None
 
 
-def _sector_field_pct(name: str, model, field: str, today=None) -> float | None:
+def _sector_field_pct(name: str, model, field: str, today=None, as_of=None) -> float | None:
     """板块 raw 表某字段当日值的历史分位（样本<10 返回 None）。today 默认取序列末值。"""
-    series = _sector_series(name, model, field, MID)
+    series = _sector_series(name, model, field, MID, as_of=as_of)
     if not series:
         return None
     val = today if today is not None else series[-1]
@@ -123,17 +130,18 @@ def _call_timeout(fn, timeout: float = 20.0):
     return box.get("r")
 
 
-def compute_for(code, level, scope, ext=None, val_pcts=None, ext_pcts=None):
+def compute_for(code, level, scope, ext=None, val_pcts=None, ext_pcts=None, as_of=None):
     """通用三层合成。
 
+    as_of: 信号日；K 线序列与外部因子历史均限制在 <= as_of（防未来函数）。
     ext={factor:(today_value, belong)}，belong∈fear/greed/heat（raw→历史分位，历史攒在 factor_snapshot）。
     val_pcts={name:分位} 已算好的分位，同时进 fear(100-p)+greed(p)（估值语义，如 PE/PB）。
     ext_pcts={name:(分位, belong)} 已算好的分位按指定 belong 进单一桶（成交额→heat 等非估值因子）。
     """
     ext = ext or {}
-    closes = F.quote_series(code, "close", MID)
-    amounts = F.quote_series(code, "amount", MID)
-    volumes = F.quote_series(code, "volume", MID)
+    closes = F.quote_series(code, "close", MID, as_of=as_of)
+    amounts = F.quote_series(code, "amount", MID, as_of=as_of)
+    volumes = F.quote_series(code, "volume", MID, as_of=as_of)
     comps, fp, gp, hp, ext_raws = {}, [], [], [], {}
 
     if len(closes) >= 30:
@@ -155,7 +163,7 @@ def compute_for(code, level, scope, ext=None, val_pcts=None, ext_pcts=None):
 
     for name, (val, belong) in ext.items():
         ext_raws[name] = val
-        p = _ext_pct(level, scope, name, val)
+        p = _ext_pct(level, scope, name, val, as_of=as_of)
         comps[name] = {"raw": val, "pct": p}
         if p is not None:
             {"fear": fp, "greed": gp, "heat": hp}.get(belong, []).append(p)
@@ -195,7 +203,7 @@ def _ensure_bench_kline(min_bars: int = 60) -> None:
         backfill_kline(BENCH, 1825)
 
 
-def compute_market():
+def compute_market(as_of=None):
     from stockfu.data.manager import get_manager
     from stockfu.services import market_data as md
 
@@ -232,10 +240,10 @@ def compute_market():
             ext["breadth_down"] = (mb["down_ratio"], "fear")
     except Exception:  # noqa: BLE001
         pass
-    return compute_for(BENCH, "market", "MARKET", ext)
+    return compute_for(BENCH, "market", "MARKET", ext, as_of=as_of)
 
 
-def compute_stock(code):
+def compute_stock(code, as_of=None):
     from stockfu.data.manager import get_manager
     from stockfu.services import market_data as md
 
@@ -264,10 +272,10 @@ def compute_stock(code):
             val_pcts["pe_pct"] = pe_pct
         if pb_pct is not None:
             val_pcts["pb_pct"] = pb_pct
-    return compute_for(code, "stock", code, ext, val_pcts=val_pcts)
+    return compute_for(code, "stock", code, ext, val_pcts=val_pcts, as_of=as_of)
 
 
-def compute_sector(etf_code, name):
+def compute_sector(etf_code, name, as_of=None):
     """板块层：代表 ETF 的 K 线分位 + 板块自身成交额分位(heat) + 资金流(greed/fear)。
 
     板块自身数据从 sector_snapshot / sector_flow_snapshot 读（表里存业务名 name）；
@@ -279,18 +287,18 @@ def compute_sector(etf_code, name):
     if SECTOR_THS_NAME.get(name):              # 有同花顺行业映射才查板块自身数据
         # 板块成交额历史分位 → heat（sector_snapshot 有 ~4 年历史，立刻有分位）
         try:
-            amt = _sector_today(name, SectorSnapshot, "amount")
+            amt = _sector_today(name, SectorSnapshot, "amount", as_of=as_of)
             if amt is not None:
-                p = _sector_field_pct(name, SectorSnapshot, "amount", today=amt)
+                p = _sector_field_pct(name, SectorSnapshot, "amount", today=amt, as_of=as_of)
                 if p is not None:
                     ext_pcts["sector_amount"] = (p, "heat")
         except Exception:  # noqa: BLE001
             pass
         # 板块净流入：有历史分位用分位(greed)，否则当日方向(ext→落 factor_snapshot 攒)
         try:
-            net = _sector_today(name, SectorFlowSnapshot, "net_inflow")
+            net = _sector_today(name, SectorFlowSnapshot, "net_inflow", as_of=as_of)
             if net is not None:
-                p = _sector_field_pct(name, SectorFlowSnapshot, "net_inflow", today=net)
+                p = _sector_field_pct(name, SectorFlowSnapshot, "net_inflow", today=net, as_of=as_of)
                 if p is not None:
                     ext_pcts["sector_flow"] = (p, "greed")    # 高分位=持续流入
                 else:
@@ -307,13 +315,16 @@ def compute_sector(etf_code, name):
                     break
         except Exception:  # noqa: BLE001
             pass
-    return compute_for(etf_code, "sector", name, ext, ext_pcts=ext_pcts)
+    return compute_for(etf_code, "sector", name, ext, ext_pcts=ext_pcts, as_of=as_of)
 
 
-def save(result) -> None:
-    """存 index_snapshot(fear/greed/heat) + factor_snapshot(外部因子 raw)。"""
+def save(result, snap_date=None) -> None:
+    """存 index_snapshot(fear/greed/heat) + factor_snapshot(外部因子 raw)。
+
+    snap_date: 盖章日(目标交易日)；None→今天(兼容零散调用，ingest 路径必传)。
+    """
     level, scope = result["level"], result["scope"]
-    today = date.today()
+    d = snap_date or date.today()
     comps, ext_raws = result.get("components", {}), result.get("ext_raws", {})
     with session_scope() as s:
         for key in ("fear", "greed", "heat"):
@@ -322,8 +333,8 @@ def save(result) -> None:
                 continue
             ex = s.exec(select(IndexSnapshot).where(
                 IndexSnapshot.index_key == key, IndexSnapshot.level == level,
-                IndexSnapshot.scope == scope, IndexSnapshot.snap_date == today)).first()
-            snap = ex or IndexSnapshot(index_key=key, level=level, scope=scope, snap_date=today)
+                IndexSnapshot.scope == scope, IndexSnapshot.snap_date == d)).first()
+            snap = ex or IndexSnapshot(index_key=key, level=level, scope=scope, snap_date=d)
             snap.value = val
             snap.components = json.dumps(comps, ensure_ascii=False, default=str)[:4000]
             if snap.id is None:
@@ -333,31 +344,34 @@ def save(result) -> None:
                 continue
             ex = s.exec(select(FactorSnapshot).where(
                 FactorSnapshot.level == level, FactorSnapshot.scope == scope,
-                FactorSnapshot.factor == factor, FactorSnapshot.snap_date == today)).first()
-            fs = ex or FactorSnapshot(level=level, scope=scope, factor=factor, snap_date=today)
+                FactorSnapshot.factor == factor, FactorSnapshot.snap_date == d)).first()
+            fs = ex or FactorSnapshot(level=level, scope=scope, factor=factor, snap_date=d)
             fs.raw_value = float(raw)
             if fs.id is None:
                 s.add(fs)
         s.commit()
 
 
-def compute_all(stocks=None) -> dict:
-    """算 市场 + 所有个股 + 所有板块 三层，逐个落库。返回 {key: result} 摘要。"""
+def compute_all(stocks=None, as_of=None) -> dict:
+    """算 市场 + 所有个股 + 所有板块 三层，逐个落库。返回 {key: result} 摘要。
+
+    as_of: 信号日(目标交易日)，传给各 compute_* 与 save 盖章。
+    """
     out: dict[str, dict] = {}
-    out["market"] = compute_market()
-    save(out["market"])
+    out["market"] = compute_market(as_of=as_of)
+    save(out["market"], snap_date=as_of)
     for code in (stocks or []):
         try:
-            r = compute_stock(code)
+            r = compute_stock(code, as_of=as_of)
             out[f"stock:{code}"] = r
-            save(r)
+            save(r, snap_date=as_of)
         except Exception as exc:  # noqa: BLE001
             out[f"stock:{code}"] = {"error": str(exc)}
     for name, etf in SECTOR_MAP.items():
         try:
-            r = compute_sector(etf, name)
+            r = compute_sector(etf, name, as_of=as_of)
             out[f"sector:{name}"] = r
-            save(r)
+            save(r, snap_date=as_of)
         except Exception as exc:  # noqa: BLE001
             out[f"sector:{name}"] = {"error": str(exc)}
     return out

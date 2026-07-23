@@ -15,7 +15,7 @@ cd /opt/pro/stockfu
 python3 main.py --init-db          # 建库 + 种子
 python3 main.py                    # Web 看板(默认 127.0.0.1:8787)
 python3 main.py --serve
-python3 main.py --fetch            # 每日抓取 + 三层情绪
+python3 main.py --fetch --date 2026-07-22   # 抓截至该交易日行情+三层情绪（--date 必填；未来/未收盘/非交易日报错，凌晨防误判）
 python3 main.py --backfill-dividend
 python3 main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20
   # baostock 串行三复权;默认 --proxy-mode free（免费代理池+Clash种子，失败自动切换）
@@ -40,6 +40,7 @@ nohup python3 main.py --schedule >> data/schedule.log 2>&1 &
   - 后复权 `*_hfq` 备用
 - **量化四层**:算子(math 连续 score)+策略 yaml+rebalancer+engine;算子缓存 fingerprint 含源码 hash
 - **行情拆表**:QuoteSnapshot / EtfQuoteDaily / IndexQuoteDaily;`quote_model_for` 路由
+- **入库统一收口 + 日期驱动**(`stockfu/services/quote_writer.py`):三张行情表各 1 个 canonical writer(`upsert_quote_snapshot`/`upsert_etf_daily`/`upsert_index_daily`),**严禁别处 `s.add(QuoteSnapshot...)`**;writer 硬保证 `quote_date <= cap_date`(超 cap 的源 bar 一律丢弃)。`--fetch` **必带 `--date YYYY-MM-DD`**,非法(未来/当日未收盘[北京16:00]/非交易日)→ `validate_ingest_date` 报错退出(凌晨不再误判为未开盘的今天);`--schedule` 自动取已收盘最近交易日。stamp 表(资金流/三层情绪/板块资金流)与读窗(composite/fundflow series)统一 `as_of=target_date`
 - **官方 K 回补串行** `backfill_kline`;`--fetch` 只刷自选,不全市场;**A 股个股 `--fetch` 走 baostock 三复权**(全字段 + 当日 `close_raw`,baostock 全失败即放弃、**不降级东财/腾讯**;ETF→akshare、港美股→yfinance、指数→manager)
 
 ## 状态
