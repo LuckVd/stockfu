@@ -83,6 +83,16 @@ FULL_CYCLE_CATALOG: list[StrategyRunSpec] = [
         "dividend_cross_section#sl30", "cap_and_rank", dict(_CS),
         universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
     ),
+    # sl30w10 = sl30 的单股上限从 5% 提高到 10%，保留为独立对照变体。
+    StrategyRunSpec(
+        "dividend_cross_section#sl30w10", "cap_and_rank", dict(_CS),
+        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
+    ),
+    # sl30w20 = sl30 的单股上限从 5% 提高到 20%，保留为独立对照变体。
+    StrategyRunSpec(
+        "dividend_cross_section#sl30w20", "cap_and_rank", dict(_CS),
+        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
+    ),
     StrategyRunSpec(
         "macd_cross", "top_n_picker", dict(_TOP_N_STD),
         universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
@@ -310,11 +320,18 @@ def run_one(
         "annualized": m.get("annualized"),
         "max_drawdown": m.get("max_drawdown"),
         "sharpe": m.get("sharpe"),
+        "sortino": m.get("sortino"),
+        "calmar": m.get("calmar"),
         "excess": m.get("excess"),
         "benchmark_return": m.get("benchmark_return"),
         "avg_gross_leverage": m.get("avg_gross_leverage"),
+        "max_gross_leverage": m.get("max_gross_leverage"),
+        "max_single_weight": m.get("max_single_weight"),
         "annual_turnover": m.get("annual_turnover"),
+        "avg_daily_turnover": m.get("avg_daily_turnover"),
         "trade_count": m.get("trade_count"),
+        "win_rate": m.get("win_rate"),
+        "total_fee": m.get("total_fee"),
         "final_equity": m.get("final_equity"),
         # 对比指标(引擎原生产出,见 engine _metrics/Stage B);1:1 映射 PROJECT_STATE §0.6 表。
         "max_drawdown_recovery_days": m.get("max_drawdown_recovery_days"),
@@ -322,7 +339,13 @@ def run_one(
         "distinct_stocks_bought": m.get("distinct_stocks_bought"),
         "stop_loss_count": m.get("stop_loss_count"),
         "stop_loss_realized_loss": m.get("stop_loss_realized_loss"),
+        "underwater_basis": m.get("underwater_basis"),
+        "underwater_pct_gt0": m.get("underwater_pct_gt0"),
+        "underwater_pct_ge10": m.get("underwater_pct_ge10"),
         "underwater_pct_ge20": m.get("underwater_pct_ge20"),
+        "underwater_pct_ge30": m.get("underwater_pct_ge30"),
+        # 保留完整原生指标，供后续表格按需展示成交、仓位、拒单等扩展列。
+        "metrics": m,
         "elapsed_sec": round(time.time() - t0, 1),
         "saved_to": r.get("saved_to"),
     }

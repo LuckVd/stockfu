@@ -578,6 +578,8 @@ def _metrics(equity_curve: list[dict], benchmark: list[dict],
         last_peak_idx = 0
         max_dd_peak_idx = 0
         max_dd_trough_idx = 0
+        # 本金水下计数：相对初始资金，而非相对运行中的历史峰值。
+        # 字段名沿用 schema-2，避免破坏下游读取；gt0 为低于本金，geN 为亏损至少 N%。
         u0 = u10 = u20 = u30 = 0
         for i, v in enumerate(eq):
             if v > peak:
@@ -589,18 +591,18 @@ def _metrics(equity_curve: list[dict], benchmark: list[dict],
                     max_dd = dd
                     max_dd_peak_idx = last_peak_idx
                     max_dd_trough_idx = i
-                ddp = dd * 100
-                if ddp > 0:
-                    u0 += 1
-                if ddp >= 10:
-                    u10 += 1
-                if ddp >= 20:
-                    u20 += 1
-                if ddp >= 30:
-                    u30 += 1
+            principal_loss_pct = (initial - v) / initial * 100
+            if principal_loss_pct > 0:
+                u0 += 1
+            if principal_loss_pct >= 10:
+                u10 += 1
+            if principal_loss_pct >= 20:
+                u20 += 1
+            if principal_loss_pct >= 30:
+                u30 += 1
         out["max_drawdown"] = round(max_dd * 100, 2)
         # 回本:最大回撤谷底 → 净值收回回撤前峰值(peak_val)的交易日数;未回本=None。
-        # 水下分布:权益低于运行峰值 0/10/20/30% 的交易日占比(drawdown=(peak-v)/peak)。
+        # 本金水下分布:权益低于初始资金 / 相对初始资金亏损至少 10/20/30% 的交易日占比。
         peak_val = eq[max_dd_peak_idx]
         rec_idx = next(
             (j for j in range(max_dd_trough_idx, len(eq)) if eq[j] >= peak_val),
@@ -611,6 +613,7 @@ def _metrics(equity_curve: list[dict], benchmark: list[dict],
             rec_idx - max_dd_trough_idx if rec_idx is not None else None
         )
         _n_eq = len(eq) or 1
+        out["underwater_basis"] = "initial_principal"
         out["underwater_pct_gt0"] = round(u0 / _n_eq * 100, 1)
         out["underwater_pct_ge10"] = round(u10 / _n_eq * 100, 1)
         out["underwater_pct_ge20"] = round(u20 / _n_eq * 100, 1)
