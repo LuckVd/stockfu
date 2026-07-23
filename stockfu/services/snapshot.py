@@ -29,6 +29,7 @@ class LatestSnapshot:
     code: str
     quote_date: date | None = None       # None = 库里完全没有该 code 任何历史
     close: float = 0.0
+    close_raw: float | None = None       # 不复权收盘（股息率分母用；qfq close 禁止当分母）
     pct_chg: float | None = None
     open: float | None = None
     high: float | None = None
@@ -73,6 +74,7 @@ def _read_latest(code: str) -> LatestSnapshot | None:
         return None
     return LatestSnapshot(
         code=code, quote_date=snap.quote_date, close=snap.close or 0.0,
+        close_raw=snap.close_raw,
         pct_chg=snap.pct_chg, open=snap.open, high=snap.high, low=snap.low,
         volume=snap.volume, amount=snap.amount, pe=snap.pe, pb=snap.pb,
         market_cap=snap.market_cap,
