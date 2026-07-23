@@ -159,7 +159,6 @@ def build_metric_from_df(
         return None
 
     today = date.today()
-    ttm_start = today - timedelta(days=365)
     seen: set[tuple[str, float]] = set()
     events: list[DividendEventDTO] = []
 
@@ -210,7 +209,6 @@ def build_metric_from_history(
     if df is None or df.empty or "派息" not in df.columns:
         return None
     today = date.today()
-    ttm_start = today - timedelta(days=365)
     events: list[DividendEventDTO] = []
     for _, row in df.iterrows():
         if not isinstance(row, pd.Series):

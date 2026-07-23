@@ -14,7 +14,6 @@
   - 月线布林带: 平滑但滞后,适合趋势/反转判断(20月≈1.7年周期)
 """
 
-from datetime import date
 import math
 
 from stockfu.ai.operators.base import BaseOperator, OpResult

@@ -951,7 +951,6 @@ def run_backtest(codes: list[str], start: date, end: date,
             c for c, p in acct.positions.items() if p.shares > 0
         }:
             pos = acct.positions.get(code)
-            px_map = close_prices if code in close_prices else last_close
             snap[code] = {
                 "holding": {"shares": pos.shares, "avg_cost": pos.avg_cost}
                            if pos and pos.shares > 0 else None,

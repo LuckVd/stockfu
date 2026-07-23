@@ -11,7 +11,6 @@
 
 无未来函数:取数走 quote_series(..., as_of=ctx.as_of),严格 <=as_of。
 """
-import math
 
 from stockfu.ai.operators.base import BaseOperator, OpResult
 from stockfu.ai.operators.factors.monthly_bollinger import _calc_bollinger

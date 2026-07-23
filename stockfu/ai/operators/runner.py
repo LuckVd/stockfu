@@ -18,7 +18,6 @@ import inspect
 from dataclasses import dataclass, field
 
 import yaml
-from sqlmodel import select
 
 from stockfu.ai.operators.base import OpContext
 from stockfu.ai.operators.registry import REGISTRY, discover_and_register, get_operator_class

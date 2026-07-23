@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
 _WEIGHT_EPS = 0.005
 

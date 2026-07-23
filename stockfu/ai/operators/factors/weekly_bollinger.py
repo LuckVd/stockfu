@@ -12,7 +12,6 @@
   - 周线布林带: 20周≈5个月,适合中周期择时,反应更快
 """
 
-from datetime import date
 import math
 
 from stockfu.ai.operators.base import BaseOperator, OpResult

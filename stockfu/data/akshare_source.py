@@ -231,7 +231,6 @@ def _get_etf_daily_em_qfq(symbol: str, start: str, end: str,
     """东财 fund_etf_hist_em 前复权(带重试；东财易断连)。"""
     d0 = start.replace("-", "")
     d1 = end.replace("-", "")
-    last_err = None
     for attempt in range(max(1, retries)):
         with direct_connection():
             try:
@@ -243,8 +242,7 @@ def _get_etf_daily_em_qfq(symbol: str, start: str, end: str,
                     symbol=symbol, period="daily", adjust="qfq",
                     start_date=d0, end_date=d1,
                 )
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
+            except Exception:  # noqa: BLE001
                 df = None
         if df is not None and not getattr(df, "empty", True):
             return _etf_df_to_rows(symbol, df)

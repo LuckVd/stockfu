@@ -134,19 +134,19 @@ def run_backfill_factors() -> None:
 def run_backfill_benchmark() -> None:
     from stockfu.scheduler.jobs import run_backfill_benchmark as _run
 
-    print(f"回补回测基准 sh000001 历史日线…")
+    print("回补回测基准 sh000001 历史日线…")
     print(f"✓ {_run()}")
 
 def run_backfill_sw() -> None:
     from stockfu.scheduler.jobs import backfill_sw_index as _run
 
-    print(f"回补 31 个申万一级行业指数历史日线（akshare index_hist_sw）…")
+    print("回补 31 个申万一级行业指数历史日线（akshare index_hist_sw）…")
     print(f"✓ {_run()}")
 
 def run_backfill_etf_industry() -> None:
     from stockfu.scheduler.jobs import backfill_industry_etf as _run
 
-    print(f"回补行业 ETF 历史日线（前复权 qfq：东财→腾讯）…")
+    print("回补行业 ETF 历史日线（前复权 qfq：东财→腾讯）…")
     print(f"✓ {_run()}")
 
 
@@ -155,7 +155,7 @@ def run_backfill_etf() -> None:
     from stockfu.scheduler.jobs import backfill_etf_quotes, clear_etf_data, etf_universe_codes
 
     codes = etf_universe_codes()
-    print(f"清空 ETF 相关表…")
+    print("清空 ETF 相关表…")
     cleared = clear_etf_data()
     print(f"  cleared: {cleared}")
     print(f"全量回补 {len(codes)} 只 ETF 前复权日线（东财 qfq→腾讯 qfq）…")
@@ -536,8 +536,7 @@ def run_factor_diag(operator: str, start: str | None, end: str | None,
 
     from stockfu.ai.operators.registry import discover_and_register, get_operator_class
     from stockfu.backtest.factor_diag import (run_factor_diag as _run,
-                                              DEFAULT_PERIODS, DEFAULT_QUANTILES,
-                                              DEFAULT_PRIMARY_PERIOD)
+                                              DEFAULT_PERIODS)
 
     discover_and_register()
     cls = get_operator_class(operator)
@@ -582,7 +581,7 @@ def run_factor_diag(operator: str, start: str | None, end: str | None,
               f"master {um.get('master_coverage')}/{um.get('base_size')}")
 
     # IC 衰减表
-    print(f"\nIC 衰减（横截面 Spearman，前向收益 vs 因子 score）:")
+    print("\nIC 衰减（横截面 Spearman，前向收益 vs 因子 score）:")
     print(f"  {'周期':<6}{'mean IC':>10}{'IR':>8}{'t-stat':>9}{'正IC%':>8}{'天数':>7}")
     for h in rep["periods"]:
         s = rep["ic"][str(h)]
@@ -609,7 +608,7 @@ def run_factor_diag(operator: str, start: str | None, end: str | None,
     tov = rep["turnover"]
     nq = rep["n_quantiles"]
     lo = tov.get("0"); hi = tov.get(str(nq - 1)); ls = rep["long_short_turnover"]
-    print(f"\n换手（日均成员变动率，0=恒定 1=每日全换）:")
+    print("\n换手（日均成员变动率，0=恒定 1=每日全换）:")
     print(f"  Q1 {lo}   Q{nq} {hi}   多空≈ {ls}"
           if lo is not None else "  （换手样本不足）")
 

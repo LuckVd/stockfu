@@ -105,7 +105,6 @@ def _upsert_quote_via_manager(code: str, target_date=None, timeout: float = 35) 
 
     def _run():
         from stockfu.data.manager import get_manager
-        from stockfu.services.snapshot import latest_trade_date
         try:
             m = get_manager()
             bars = m.get_kline(code, 10)
@@ -128,18 +127,12 @@ def _upsert_quote_via_manager(code: str, target_date=None, timeout: float = 35) 
         pct = round((bar.close / bars[-2].close - 1) * 100, 2) if len(bars) >= 2 and bars[-2].close else None
     elif q:
         from stockfu.services.quote_writer import _coerce_date
+        from stockfu.services.snapshot import latest_trade_date
         tday = _coerce_date(target_date) if target_date else latest_trade_date()
         o, h, l, c, vol, amt = q.open, q.high, q.low, q.price, q.volume, q.amount
         pct = q.pct_chg
     else:
         return False
-    # 日状态从 K 线 bar 取(baostock 有;其它源多为 None)
-    bar_ts = bar_st = None
-    if bars:
-        _b = bars[-1]
-        bar_ts = getattr(_b, "trade_status", None)
-        bar_st = getattr(_b, "is_st", None)
-
     from stockfu.services.quote_writer import (
         QuotePayload, WritePolicy, upsert_quote_snapshot,
     )
@@ -293,8 +286,6 @@ def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> d
         by_d = {b.date: b for b in bars}
         last = bars[-1]
         latest_dates.append(last.date)
-        # 最新 bar 的前收 = 倒数第二根 close
-        prev_close = bars[-2].close if len(bars) >= 2 else None
 
         from stockfu.services.quote_writer import (
             QuotePayload, WritePolicy, upsert_quote_snapshot,
@@ -585,7 +576,7 @@ def run_backfill(days: int) -> dict:
     for code in targets:
         try:
             result[code] = backfill_kline(code, days)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             result[code] = -1
     # 板块自身K线+成交额（同花顺，绕开东财限流；跳过无映射的宽基）+ 大盘资金流历史
     from stockfu.services import backfill as bf
@@ -597,7 +588,7 @@ def run_backfill(days: int) -> dict:
             continue
         try:
             sectors[name] = bf.backfill_sector_kline(name, sec_days)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             sectors[name] = -1
     try:
         market_flow = bf.backfill_market_fund_flow()
@@ -774,7 +765,7 @@ def run_scheduled_fetch(target_date) -> dict:
         if (i + 1) % 10 == 0:
             print(f"  dividends {i + 1}/{len(all_codes)} rows+={divs}", flush=True)
 
-    print("=== [fetch] 5b/6 fundflow ETFs ===", flush=True)  # noqa: kept
+    print("=== [fetch] 5b/6 fundflow ETFs ===", flush=True)
     flows = 0
     for c in INDEX_ETFS:
         if _call_timeout(lambda code=c: _upsert_fundflow(code, td), 15, f"flow:{c}", default=False):
@@ -851,18 +842,16 @@ def run_schedule() -> None:
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
 
-    from stockfu.config import (get_daily_fetch_time, get_mail_days, get_mail_enabled,
-                                get_mail_time, is_mail_ready)
+    from stockfu.config import (get_daily_fetch_time, get_mail_enabled,
+                                is_mail_ready)
 
     init_db()
     sched = BlockingScheduler(timezone="Asia/Shanghai")
 
     # 内嵌 web（mail job 渲染分享卡片时需要本进程的页面）
-    started_web = False
 
     if get_mail_enabled() and is_mail_ready():
         start_embedded_server()
-        started_web = True
         print("✓ 内嵌 web 已启动（供 playwright 渲染分享卡片）")
     else:
         print("· 邮件未启用或未配置完整，跳过内嵌 web（面板配置后重启 --schedule 生效）")
