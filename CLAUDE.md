@@ -26,6 +26,8 @@ python3 main.py --update-backtests   # 全周期;可 --strategies a,b
 python3 main.py --list-strategies
 python3 main.py --recommend --strategies cross_section_factor --as-of 2026-07-17
 nohup python3 main.py --schedule >> data/schedule.log 2>&1 &
+ruff check stockfu/ main.py tests/        # 代码检查(基线 F 类,当前应全绿;详见 pyproject.toml)
+ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 ```
 
 ## 关键约定(踩坑点)
@@ -42,6 +44,7 @@ nohup python3 main.py --schedule >> data/schedule.log 2>&1 &
 - **行情拆表**:QuoteSnapshot / EtfQuoteDaily / IndexQuoteDaily;`quote_model_for` 路由
 - **入库统一收口 + 日期驱动**(`stockfu/services/quote_writer.py`):三张行情表各 1 个 canonical writer(`upsert_quote_snapshot`/`upsert_etf_daily`/`upsert_index_daily`),**严禁别处 `s.add(QuoteSnapshot...)`**;writer 硬保证 `quote_date <= cap_date`(超 cap 的源 bar 一律丢弃)。`--fetch` **必带 `--date YYYY-MM-DD`**,非法(未来/当日未收盘[北京16:00]/非交易日)→ `validate_ingest_date` 报错退出(凌晨不再误判为未开盘的今天);`--schedule` 自动取已收盘最近交易日。stamp 表(资金流/三层情绪/板块资金流)与读窗(composite/fundflow series)统一 `as_of=target_date`
 - **官方 K 回补串行** `backfill_kline`;`--fetch` 只刷自选,不全市场;**A 股个股 `--fetch` 走 baostock 三复权**(全字段 + 当日 `close_raw`,baostock 全失败即放弃、**不降级东财/腾讯**;ETF→akshare、港美股→yfinance、指数→manager)
+- **代码检查**:`pyproject.toml [tool.ruff]` 已配,基线只启用 `F`(未用 import/变量/未定义名/无占位符 f-string),专防 6219e10 那类「重构后名字作用域错位」的 NameError 回归;默认规则集另有 16 个 E 类遗留(E741 模糊变量名 `l` / E702 / E701 / E402,均非 bug),清理后再 `select=["E","F"]`。改完代码顺手 `ruff check`
 
 ## 状态
 🚧 MVP。代码:数据层(qfq 硬化)+回测四层+横截面策略族+全周期 CLI+荐股+三复权字段。  

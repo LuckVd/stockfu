@@ -183,6 +183,7 @@ stockfu/
 - 持仓 / TTM 股息 / 网格；三层情绪；历史回补；Web 看板；AI 4 顾问
 - 回测四层 + 算子缓存 + 因子诊断 + 时点宇宙/可成交 + 基准上证
 - 全周期批跑 CLI；荐股服务；三复权字段与串行 baostock 回补入口
+- 代码检查基线（ruff，`pyproject.toml` 启用 F 类，防 NameError 作用域回归）
 
 ## 8. 待办
 
@@ -190,3 +191,4 @@ stockfu/
 2. ✅ `--fetch` A 股走 baostock 三复权,当日 `close_raw` 自动刷新(无需单独刷)
 3. ✅ 回测性能修复（bollinger N+1 + value 指纹，§0.8）
 4. 小市值因子仍不可用（market_cap 空）
+5. ruff E 类清理（16 个：E741 模糊变量名 `l` / E702 / E701 / E402，均非 bug）后，基线升级 `select=["E","F"]`
