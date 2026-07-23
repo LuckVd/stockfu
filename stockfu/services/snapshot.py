@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from sqlmodel import select
 
 from stockfu.db import session_scope
-from stockfu.models import Asset, QuoteSnapshot
+from stockfu.models import Asset
 
 _BEIJING = ZoneInfo("Asia/Shanghai")
 _FETCH_COOLDOWN: dict[str, float] = {}   # {code: 上次按需请求的 monotonic 时间戳}
@@ -64,20 +64,30 @@ def _is_weekday() -> bool:
 
 
 def _read_latest(code: str) -> LatestSnapshot | None:
-    """纯读：取 quote_snapshot 最新一条 + Asset 的 name/currency。"""
+    """纯读：取该 code 路由表的最新一条 + Asset 的 name/currency。
+
+    行情已拆表(个股 QuoteSnapshot / ETF EtfQuoteDaily / 指数 IndexQuoteDaily),
+    必须按 quote_model_for 路由读——否则 ETF/指数会读到 QuoteSnapshot 里的陈旧
+    孤儿行(曾经发生:ETF 行情改写入 EtfQuoteDaily 后,QuoteSnapshot 停在旧日,
+    build_card 仍读它 → 卡片显示 ETF 旧数据,如 588870 显示 07-21 而非 07-23)。
+    """
+    from stockfu.services.factors import quote_model_for
+
+    Model = quote_model_for(code)
     with session_scope() as s:
-        snap = s.exec(select(QuoteSnapshot).where(
-            QuoteSnapshot.asset_code == code
-        ).order_by(QuoteSnapshot.quote_date.desc()).limit(1)).first()
+        snap = s.exec(select(Model).where(
+            Model.asset_code == code
+        ).order_by(Model.quote_date.desc()).limit(1)).first()
         a = s.get(Asset, code)
     if not snap:
         return None
     return LatestSnapshot(
         code=code, quote_date=snap.quote_date, close=snap.close or 0.0,
-        close_raw=snap.close_raw,
+        close_raw=getattr(snap, "close_raw", None),
         pct_chg=snap.pct_chg, open=snap.open, high=snap.high, low=snap.low,
-        volume=snap.volume, amount=snap.amount, pe=snap.pe, pb=snap.pb,
-        market_cap=snap.market_cap,
+        volume=snap.volume, amount=snap.amount,
+        pe=getattr(snap, "pe", None), pb=getattr(snap, "pb", None),
+        market_cap=getattr(snap, "market_cap", None),
         name=(a.name if a else "") or "",
         currency=(a.currency if a else "CNY"),
     )
