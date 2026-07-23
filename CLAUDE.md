@@ -50,4 +50,4 @@ ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 
 ## 状态
 🚧 MVP。代码:数据层(qfq 硬化)+回测四层+横截面策略族+全周期 CLI+荐股+三复权字段。  
-**干净回测 12/16 已完成**（§0.6 全表，带回撤/卡玛）；剩 4 策略重启跑中。本会话修了两处性能坑：bollinger 算子 N+1（改预载，提速~20-27x）、value 指纹分裂（params 对齐）——排查见 `docs/PROJECT_STATE.md` §0.8。旧混复权表已作废删除。
+**干净回测 19 产物已完成**（§0.6 全表，07-21 口径，带回撤/卡玛/水下分布）。本会话修了两处性能坑：bollinger 算子 N+1（改预载，提速~20-27x）、value 指纹分裂（params 对齐）——排查见 `docs/PROJECT_STATE.md` §0.8。旧混复权表已作废删除。
