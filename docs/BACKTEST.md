@@ -69,7 +69,7 @@ python3 main.py --update-backtests --start 2021-01-01 --end 2026-07-20
 | start | 默认 `2021-01-01` |
 | end | 默认 `QuoteSnapshot`/`EtfQuoteDaily` 的 `max(quote_date)` |
 | rebalancer / 宇宙 | 目录固化(含 cap_and_rank / top_n_picker / etf / universe_788) |
-| 产物 | 每策略 `data/backtest/upd-{id}-{end}.json.gz` + meta;批跑摘要 `update_summary-*.json` |
+| 产物 | 每策略 `data/backtest/upd-{id}-{end}.json.gz` + meta;批跑摘要 `update_summary-*.json`（每策略行含完整 `metrics`，并展开收益/风险/换手/成本/胜率/止损/本金水下四档等常用列，供表格直接使用） |
 | app_config | 批跑结束**恢复**原 active 指针 |
 
 新增策略要进全量更新:在 `full_cycle_update.FULL_CYCLE_CATALOG` 登记 `StrategyRunSpec`。
@@ -246,7 +246,8 @@ print(r["equity_curve"][-1])
 | `benchmark_window` | 基准实际可用区间 `{start,end}` |
 | `max_drawdown_recovery_days` | 最大回撤谷底→净值收回回撤前峰值的交易日数;未回本=`None`(本轮新增) |
 | `max_drawdown_recovered` | 最大回撤是否在期末前回本(bool;本轮新增) |
-| `underwater_pct_gt0` / `_ge10` / `_ge20` / `_ge30` | 权益低于运行峰值 0/10/20/30% 的交易日占比 %(本轮新增) |
+| `underwater_basis` | 水下口径，当前固定为 `initial_principal`（初始本金） |
+| `underwater_pct_gt0` / `_ge10` / `_ge20` / `_ge30` | 权益低于初始本金 / 相对初始本金亏损至少 10/20/30% 的交易日占比 % |
 | `distinct_stocks_bought` | 去重后曾买入的不同股票数(本轮新增) |
 | `stop_loss_count` | `signal=stop_loss` 的已成交止损单数(止损 D+1~D+3 成交;本轮新增) |
 | `stop_loss_realized_loss` | 止损单 pnl 之和(**负数=亏损**,单位元;signal 直传精确值,本轮新增) |

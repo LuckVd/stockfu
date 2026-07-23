@@ -32,3 +32,17 @@ variants:
     override:
       risk:
         stop_loss: 0.30
+  - key: sl30w10
+    name: 红利横截面(止损30%,单股10%)
+    override:
+      position:
+        max_w: 0.10
+      risk:
+        stop_loss: 0.30
+  - key: sl30w20
+    name: 红利横截面(止损30%,单股20%)
+    override:
+      position:
+        max_w: 0.20
+      risk:
+        stop_loss: 0.30
