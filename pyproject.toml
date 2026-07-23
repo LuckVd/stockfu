@@ -1,0 +1,14 @@
+# StockFu · 项目配置
+# 包管理走裸 pip + requirements.txt;本文件目前仅用于 ruff(代码检查)。
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120          # 容纳中文注释;F 类不查行长,留给将来 E 类
+
+[tool.ruff.lint]
+# 基线:只启用 F(pyflakes)——未用 import / 未用变量 / 未定义名 / 无占位符 f-string。
+# 低噪声、高价值,专防「重构后名字作用域错位」类的 NameError 回归(如 6219e10)。
+#
+# 默认规则集(E4,E7,E9,F)当前另有 16 个 E 类遗留(E741 模糊变量名 l / E702 / E701 /
+# E402),均为风格问题、非 bug。清理后再 select = ["E", "F"]。
+select = ["F"]
