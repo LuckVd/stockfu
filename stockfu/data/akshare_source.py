@@ -91,7 +91,8 @@ def _get_index_daily_akshare(symbol: str, start: str, end: str) -> list[dict]:
             return []
     if df is None or df.empty:
         return []
-    asset_code = f"sh{symbol}"  # 000001 → sh000001
+    # 399xxx = 深证(创业板指 399006 等)→ sz；其余(上证 000001/科创 000688 等)→ sh
+    asset_code = ("sz" if symbol.startswith("399") else "sh") + symbol
     results: list[dict] = []
     for _, r in df.iterrows():
         try:
