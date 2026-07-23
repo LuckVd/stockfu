@@ -1,6 +1,5 @@
 """volatility: 波动率状态分析(ATR + 分位)"""
 from stockfu.services.factors import quote_series, percentile
-import math
 
 SCHEMA = {
     "type": "function",

@@ -204,7 +204,6 @@ def _ensure_bench_kline(min_bars: int = 60) -> None:
 
 
 def compute_market(as_of=None):
-    from stockfu.data.manager import get_manager
     from stockfu.services import market_data as md
 
     _ensure_bench_kline()

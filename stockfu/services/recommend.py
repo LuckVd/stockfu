@@ -610,7 +610,7 @@ def run_recommend(
             flush=True,
         )
         if len(codes) < 5:
-            print(f"  WARN: 宇宙过小,检查 as_of 是否有行情", flush=True)
+            print("  WARN: 宇宙过小,检查 as_of 是否有行情", flush=True)
         rep = pick_strategy(
             spec, codes, as_of_d,
             max_gross_override=max_gross,

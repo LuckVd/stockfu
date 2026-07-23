@@ -474,7 +474,6 @@ class BaostockProxySession:
                 box["exc"] = e
 
         t = threading.Thread(target=_worker, name=f"fetch-{label}"[:40], daemon=True)
-        t0 = time.time()
         t.start()
         t.join(self.fetch_timeout)
         if t.is_alive():

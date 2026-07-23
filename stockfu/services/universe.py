@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Iterable
 
 from sqlmodel import select

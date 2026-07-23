@@ -325,14 +325,12 @@ class BaostockSource(DataSource):
                         continue
                 else:
                     continue
-            had_row = False
             while rs.next():
                 row = rs.get_row_data()
                 ex = _parse_date(row[6]) if len(row) > 6 else None
                 cash = _f(row[9]) if len(row) > 9 else None
                 if ex is None or not cash or cash <= 0:
                     continue   # 送转股无现金 / 未实施 / 字段缺失
-                had_row = True
                 events.append(DividendEventDTO(
                     ex_date=ex, per_share_cash=cash,
                     record_date=_parse_date(row[5]) if len(row) > 5 else None,

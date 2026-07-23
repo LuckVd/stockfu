@@ -13,7 +13,6 @@ from sqlmodel import select
 
 from stockfu.db import session_scope
 from stockfu.models import QuoteSnapshot
-from stockfu.services import factors as F
 
 
 # 回测估值供给器：engine 预载行情后挂载，避免 value 算子对每个

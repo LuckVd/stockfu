@@ -424,7 +424,6 @@ async def csv_import_scope(scope: str, file: UploadFile):
     import csv
     import io
 
-    from stockfu.models import Asset
     from stockfu.services import trading
     from stockfu.services.io_csv import (COLUMN_CN, REQUIRED_COL, TEMPLATE_COLS,
                                          alias_headers, fill_transaction_amount,

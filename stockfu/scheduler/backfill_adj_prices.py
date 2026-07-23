@@ -23,7 +23,6 @@ import time
 from datetime import date
 from typing import Any, Literal
 
-from sqlmodel import select
 
 ProxyMode = Literal["free", "clash", "direct"]
 
@@ -146,9 +145,6 @@ def backfill_adj_prices(
     sleep_sec: float = 0.15,
     probe_limit: int | None = None,
     max_per_kind: int | None = None,
-    max_workers: int = 1,
-    min_workers: int = 1,
-    use_processes: bool = False,
 ) -> dict:
     """**串行** baostock 三复权回补（单代理串行；失败换代理）。
 
