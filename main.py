@@ -11,7 +11,7 @@
     python main.py --backfill [N]  # 回填 K 线 N 日（默认90；情绪因子建议1825=5年）
     python main.py --backfill-factors    # 回补 两融总量历史 + 个股两融近10天 + 股息率历史序列
     python main.py --backfill-limit [N]  # 回补 连板/涨停历史（默认365天，限速1次/秒+断点续传，慢，建议后台跑）
-    python main.py --fetch         # 每日抓取行情/分红/ETF + 算三层情绪指数
+    python main.py --fetch --date YYYY-MM-DD  # 抓取截至该交易日行情/分红/情绪(必带--date;凌晨防误判)
     python main.py --vacuum        # VACUUM 重建主库(回收空闲页,先备份;停 daemon/回测时跑)
     python main.py --schedule      # 每日定时调度
     python main.py --export-csv [DIR]  # 导出市场数据为 CSV（默认 data/，可入 git）
@@ -85,10 +85,28 @@ def run_holdings() -> None:
               f"{r['total_cost']:>12.2f} {str(r['first_buy'] or ''):12}")
 
 
-def run_fetch() -> None:
+def run_fetch(date_str: str | None) -> None:
+    """--fetch: 抓取截至 date_str 的行情/分红/情绪，落库统一用该交易日盖章。
+
+    date_str 必填(YYYY-MM-DD)。非法(未传/未来日/当日未收盘/非交易日)→ 报错退出，
+    绝不按裸 date.today() 入库（凌晨跑会被错标为未开盘的今天）。
+    """
+    import sys
+
+    if not date_str:
+        print("✗ --fetch 必须带 --date YYYY-MM-DD（如 --date 2026-07-22）。"
+              "不接受裸'今天'：凌晨跑会误判为未开盘日。", file=sys.stderr)
+        sys.exit(2)
+    from stockfu.services.quote_writer import validate_ingest_date
+
+    try:
+        td = validate_ingest_date(date_str)
+    except ValueError as e:
+        print(f"✗ 拒绝入库：{e}", file=sys.stderr)
+        sys.exit(2)
     from stockfu.scheduler.jobs import run_scheduled_fetch
 
-    print(f"✓ 抓取完成（今日行情+分红+指数）: {run_scheduled_fetch()}")
+    print(f"✓ 抓取完成（目标交易日 {td}）: {run_scheduled_fetch(td)}")
 
 
 def run_backfill(days: int) -> None:
@@ -642,7 +660,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--date", default=None, help="交易日期 YYYY-MM-DD（默认今天）")
     p.add_argument("--holdings", action="store_true", help="查看当前持仓")
     p.add_argument("--reset", action="store_true", help="清空所有持仓和交易记录")
-    p.add_argument("--fetch", action="store_true", help="每日抓取并算三层情绪指数")
+    p.add_argument("--fetch", action="store_true",
+                   help="抓取截至 --date 的行情/分红/情绪（必带 --date YYYY-MM-DD；"
+                        "非法日期报错，凌晨不再误判为未开盘日）")
     p.add_argument("--backfill", type=int, nargs="?", const=90, help="回填 K线 N 日（默认90；情绪因子建议1825）")
     p.add_argument("--backfill-factors", action="store_true",
                    help="回补 两融总量历史 + 个股两融近10天 + 股息率历史序列")
@@ -760,7 +780,7 @@ def main() -> None:
     elif args.init_db:
         run_init_db()
     elif args.fetch:
-        run_fetch()
+        run_fetch(args.date)
     elif args.backfill is not None:
         run_backfill(args.backfill)
     elif args.backfill_adj_prices:

@@ -34,11 +34,15 @@ def _default_codes() -> list[str]:
 
 
 def _apply_and_upsert(code: str, triple: dict[str, list],
-                      preserve_qfq: bool = True) -> int:
-    """合并写入。preserve_qfq=True: 已有前复权则不覆盖, 只补 raw/hfq。"""
+                      preserve_qfq: bool = True, *, cap_date=None) -> int:
+    """合并写入(三复权)——经 quote_writer 收口。preserve_qfq=True: 已有前复权则不覆盖, 只补 raw/hfq。
+
+    cap_date 未传时取 bar 最大日；三复权回补默认带 --end，由 funnel 做 quote_date<=cap 保证。
+    """
     from stockfu.db import session_scope
-    from stockfu.models import QuoteSnapshot
-    from stockfu.scheduler.jobs import _apply_bar_full
+    from stockfu.services.quote_writer import (
+        QuotePayload, WritePolicy, upsert_quote_snapshot,
+    )
 
     by_date: dict[date, dict[str, Any]] = {}
     for adj, bars in triple.items():
@@ -46,41 +50,15 @@ def _apply_and_upsert(code: str, triple: dict[str, list],
             by_date.setdefault(b.date, {})[adj] = b
     if not by_date:
         return 0
-    n = 0
+    cap = cap_date or max(by_date.keys())
+    payload = {
+        d: QuotePayload(qfq=pack.get("qfq"), raw=pack.get("raw"), hfq=pack.get("hfq"))
+        for d, pack in by_date.items()
+    }
     with session_scope() as s:
-        existing = {
-            q.quote_date: q
-            for q in s.exec(
-                select(QuoteSnapshot).where(QuoteSnapshot.asset_code == code)
-            ).all()
-        }
-        dates = sorted(by_date.keys())
-        prev_qfq_close = None
-        for d in dates:
-            pack = by_date[d]
-            snap = existing.get(d) or QuoteSnapshot(asset_code=code, quote_date=d)
-            is_new = d not in existing
-            has_qfq = (snap.close_qfq is not None) or (
-                snap.close is not None and float(snap.close or 0) > 0
-            )
-            if "qfq" in pack and (not preserve_qfq or not has_qfq):
-                _apply_bar_full(snap, pack["qfq"], prev_qfq_close, adj="qfq")
-                prev_qfq_close = pack["qfq"].close or prev_qfq_close
-            elif "qfq" in pack and pack["qfq"].close:
-                prev_qfq_close = pack["qfq"].close
-            if "raw" in pack:
-                _apply_bar_full(snap, pack["raw"], None, adj="raw")
-            if "hfq" in pack:
-                _apply_bar_full(snap, pack["hfq"], None, adj="hfq")
-            if is_new and (snap.close is None or snap.close == 0):
-                if snap.close_raw is not None:
-                    snap.close = float(snap.close_raw)
-                elif "qfq" in pack and pack["qfq"].close:
-                    snap.close = float(pack["qfq"].close)
-            if is_new:
-                s.add(snap)
-                existing[d] = snap
-            n += 1
+        n = upsert_quote_snapshot(
+            s, code, payload, policy=WritePolicy.MERGE_ADJ,
+            cap_date=cap, preserve_qfq=preserve_qfq)
         s.commit()
     return n
 
@@ -239,7 +217,8 @@ def backfill_adj_prices(
                     fail += 1
                     errors.append((code, "empty"))
                 else:
-                    n = _apply_and_upsert(code, triple, preserve_qfq=preserve_qfq)
+                    n = _apply_and_upsert(code, triple, preserve_qfq=preserve_qfq,
+                                          cap_date=end)
                     ok += 1
                     rows += n
             except Exception as e:  # noqa: BLE001

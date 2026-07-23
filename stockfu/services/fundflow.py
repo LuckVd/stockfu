@@ -19,22 +19,26 @@ BROAD = {"510300", "510500", "159915", "512100", "588000"}
 INDUSTRY = {"512480", "512690", "512010", "515030", "512800"}
 
 
-def _amount_series(code: str, lookback: int = 30) -> list[float]:
-    start = date.today() - timedelta(days=lookback + 5)
+def _amount_series(code: str, lookback: int = 30, as_of=None) -> list[float]:
+    ref = as_of or date.today()
+    start = ref - timedelta(days=lookback + 5)
     with session_scope() as s:
         rows = s.exec(select(QuoteSnapshot).where(
             QuoteSnapshot.asset_code == code,
             QuoteSnapshot.quote_date >= start,
+            QuoteSnapshot.quote_date <= ref,
         ).order_by(QuoteSnapshot.quote_date)).all()
     return [r.amount for r in rows if r.amount]
 
 
-def _shares_series(code: str, lookback: int = 30) -> list[float]:
-    start = date.today() - timedelta(days=lookback + 5)
+def _shares_series(code: str, lookback: int = 30, as_of=None) -> list[float]:
+    ref = as_of or date.today()
+    start = ref - timedelta(days=lookback + 5)
     with session_scope() as s:
         rows = s.exec(select(FundFlowSnapshot).where(
             FundFlowSnapshot.etf_code == code,
             FundFlowSnapshot.snap_date >= start,
+            FundFlowSnapshot.snap_date <= ref,
         ).order_by(FundFlowSnapshot.snap_date)).all()
     return [r.shares_outstanding for r in rows if r.shares_outstanding]
 

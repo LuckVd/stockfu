@@ -78,7 +78,7 @@ def indices_history(level: str = "market", scope: str = "MARKET", days: int = 30
 def sector_flow_today_api(top_n: int = Query(10, ge=1, le=90)):
     """板块当日主力资金流即时排名（同花顺，列全且不受东财限流；按净额降序）。
 
-    只读实时；历史落库由每日 --fetch 负责（backfill_sector_flow_today）。
+    只读实时；历史落库由每日 `--fetch --date` 负责（`backfill_sector_flow`）。
     """
     rows = get_manager().get_sector_flow_today()
     rows = sorted(rows, key=lambda x: x.get("net_inflow") or 0, reverse=True)
@@ -102,7 +102,7 @@ def clear_holdings_api():
     return {"ok": True}
 
 
-def _trigger_bg_ensure(code: str) -> None:
+def _trigger_bg_ensure(code: str, target_date=None) -> None:
     """后台补该股历史K线 + 算情绪指数（买入/加自选/CSV 导入新代码后触发）。"""
     import logging
     import threading
@@ -111,7 +111,7 @@ def _trigger_bg_ensure(code: str) -> None:
 
     def _run():
         try:
-            ensure_stock_data_and_index(code)
+            ensure_stock_data_and_index(code, target_date=target_date)
         except Exception as exc:  # noqa: BLE001
             logging.getLogger("stockfu").warning(
                 "ensure_stock_data(%s) 失败: %s", code, exc)
@@ -120,19 +120,21 @@ def _trigger_bg_ensure(code: str) -> None:
 
 
 @router.post("/stock/{code}/ensure")
-def ensure_stock_data(code: str, background: bool = True):
+def ensure_stock_data(code: str, background: bool = True, date: str | None = None):
     """补该股历史K线 + 算情绪指数落库（买入/加自选后触发）。
 
     background=True（默认）起线程后台跑，立即返回，不阻塞前端；
     =False 同步跑完返回结果（调试用）。
+    date: 可选目标交易日(YYYY-MM-DD)；缺省取已收盘的最近交易日(过校验)。
     """
     from stockfu.scheduler.jobs import ensure_stock_data_and_index
 
     if background:
-        _trigger_bg_ensure(code)
+        _trigger_bg_ensure(code, target_date=date)
         return {"ok": True, "code": code, "status": "started",
                 "detail": "后台补K线+算指数中，约几十秒，完成后自动刷新"}
-    return {"ok": True, "code": code, "result": ensure_stock_data_and_index(code)}
+    return {"ok": True, "code": code,
+            "result": ensure_stock_data_and_index(code, target_date=date)}
 
 
 @router.post("/trade")

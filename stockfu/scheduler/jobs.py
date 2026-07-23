@@ -41,36 +41,40 @@ def _is_cn_stock(code: str) -> bool:
     return detect_market(code) == Market.CN
 
 
-def _fetch_today_via_baostock(code: str, days: int = 15) -> bool:
+def _fetch_today_via_baostock(code: str, end_date, days: int = 15) -> bool:
     """A 股个股当日:全局 baostock session 拉近 N 天三复权 → _apply_and_upsert。
 
-    写 qfq+raw+hfq(顺带刷新当日 close_raw,红利分母用)。baostock 全失败(代理池+
-    直连兜底)→ 返回 False;调用方据此放弃该票当日(**不降级东财/腾讯**,避免残缺
-    OHLCV 冒充完整数据)。
+    end_date 为抓取窗口上界(目标交易日,已校验)。写 qfq+raw+hfq(顺带刷新当日
+    close_raw,红利分母用)。baostock 全失败(代理池+直连兜底)→ 返回 False;调用方
+    据此放弃该票当日(**不降级东财/腾讯**,避免残缺 OHLCV 冒充完整数据)。
     """
-    from datetime import date as _d, timedelta as _td
+    from datetime import timedelta as _td
     from stockfu.data.baostock_proxy import ensure_baostock_login, get_global_session
     from stockfu.scheduler.backfill_adj_prices import _apply_and_upsert
+    from stockfu.services.quote_writer import _coerce_date
 
     if not ensure_baostock_login():       # 首只票 boot 全局 session;后续秒返回
         return False
     sess = get_global_session()
     if sess is None:
         return False
-    start = (_d.today() - _td(days=days + 5)).isoformat()
-    end = _d.today().isoformat()
+    end_d = _coerce_date(end_date)
+    start = (end_d - _td(days=days + 5)).isoformat()
+    end = end_d.isoformat()
     try:
         triple = sess.fetch_kline_triple(code, start, end)
     except Exception:  # noqa: BLE001
         return False
     if not any(triple.values()):
         return False
-    return _apply_and_upsert(code, triple, preserve_qfq=False) > 0
+    return _apply_and_upsert(code, triple, preserve_qfq=False, cap_date=end) > 0
 
 
-def _upsert_quote(code: str, timeout: float = 35) -> bool:
+def _upsert_quote(code: str, target_date=None, timeout: float = 35) -> bool:
     """拉最近交易日行情落 quote_snapshot(按市场路由)。
 
+    target_date: 目标交易日(已校验)——baostock 抓取窗口上界 + manager 写入 cap。
+                 None（读路径按需触发）→ 用今天；quote_date 仍取源 bar.date。
     A 股个股 → baostock 三复权(_fetch_today_via_baostock):全字段,顺带 close_raw。
                baostock 全失败即放弃该票当日,**不降级东财/腾讯**(它们缺 pe/pb/
                状态,残缺 OHLCV 会冒充完整数据)。
@@ -79,14 +83,15 @@ def _upsert_quote(code: str, timeout: float = 35) -> bool:
     timeout: 单个标的超时秒数。
     """
     if _is_cn_stock(code):
+        end = target_date or date.today()
         return _call_timeout(
-            lambda: _fetch_today_via_baostock(code), timeout,
+            lambda: _fetch_today_via_baostock(code, end), timeout,
             f"bs_today:{code}", default=False,
         )
-    return _upsert_quote_via_manager(code, timeout)
+    return _upsert_quote_via_manager(code, target_date, timeout)
 
 
-def _upsert_quote_via_manager(code: str, timeout: float = 35) -> bool:
+def _upsert_quote_via_manager(code: str, target_date=None, timeout: float = 35) -> bool:
     """多源 manager 路径(指数/港美股):get_kline+get_quote → _apply_bar_full(qfq)。
 
     quote_date 优先取自 K 线最后一条 bar.date（真实交易日，自动跳周末/节假日）；
@@ -122,7 +127,8 @@ def _upsert_quote_via_manager(code: str, timeout: float = 35) -> bool:
         o, h, l, c, vol, amt = bar.open, bar.high, bar.low, bar.close, bar.volume, bar.amount
         pct = round((bar.close / bars[-2].close - 1) * 100, 2) if len(bars) >= 2 and bars[-2].close else None
     elif q:
-        tday = latest_trade_date()
+        from stockfu.services.quote_writer import _coerce_date
+        tday = _coerce_date(target_date) if target_date else latest_trade_date()
         o, h, l, c, vol, amt = q.open, q.high, q.low, q.price, q.volume, q.amount
         pct = q.pct_chg
     else:
@@ -134,40 +140,36 @@ def _upsert_quote_via_manager(code: str, timeout: float = 35) -> bool:
         bar_ts = getattr(_b, "trade_status", None)
         bar_st = getattr(_b, "is_st", None)
 
+    from stockfu.services.quote_writer import (
+        QuotePayload, WritePolicy, upsert_quote_snapshot,
+    )
     with session_scope() as s:
         existing = s.exec(select(QuoteSnapshot).where(
             QuoteSnapshot.asset_code == code, QuoteSnapshot.quote_date == tday)).first()
-        if existing and existing.close:
-            # OHLCV 已有:仍补空状态列(防「旧行 NULL 永久静默」)
-            ch = False
-            if existing.trade_status is None and bar_ts is not None:
-                existing.trade_status = int(bar_ts)
-                ch = True
-            if existing.is_st is None and bar_st is not None:
-                existing.is_st = int(bar_st)
-                ch = True
-            if ch:
-                s.commit()
-            return True
-        snap = existing or QuoteSnapshot(asset_code=code, quote_date=tday)
-        # 有完整 bar 时走全量写入(含状态/估值);否则用实时 quote 兜底
+        # OHLCV 已有 → 仅补空状态列；否则全量写入（含状态/估值）
+        pol = WritePolicy.PATCH_STATUS if (existing and existing.close) else WritePolicy.FULL_QFQ
+        bar = None
+        extras: dict = {}
         if bars:
-            prev = bars[-2].close if len(bars) >= 2 else None
-            _apply_bar_full(snap, bars[-1], prev)
-        else:
-            # 实时 quote 兜底:按前复权语义写入遗留列 + *_qfq
-            snap.open, snap.high, snap.low, snap.close = o, h, l, c
-            snap.open_qfq, snap.high_qfq, snap.low_qfq, snap.close_qfq = o, h, l, c
-            snap.pct_chg, snap.volume, snap.amount = pct, vol, amt
+            bar = bars[-1]                          # 全字段（含状态/估值）
+        elif q:
+            from types import SimpleNamespace
+            bar = SimpleNamespace(open=o, high=h, low=l, close=c, volume=vol,
+                                  amount=amt, pct_chg=pct, pe=q.pe, pb=q.pb,
+                                  turnover=None, trade_status=None, is_st=None)
+        # 实时 quote 的 pe/pb/market_cap 始终补（bar 可能缺）
         if q:
             if q.pe is not None:
-                snap.pe = q.pe
+                extras["pe"] = q.pe
             if q.pb is not None:
-                snap.pb = q.pb
+                extras["pb"] = q.pb
             if q.market_cap is not None:
-                snap.market_cap = q.market_cap
-        if snap.id is None:
-            s.add(snap)
+                extras["market_cap"] = q.market_cap
+        if bar is not None:
+            upsert_quote_snapshot(
+                s, code, {tday: QuotePayload(qfq=bar, policy=pol, extras=extras)},
+                policy=WritePolicy.FULL_QFQ, cap_date=target_date or tday,
+            )
         if q and q.name:                          # 回填 Asset.name
             a = s.get(Asset, code)
             if a and not a.name:
@@ -195,16 +197,17 @@ def clean_quote_snapshots() -> dict:
     return {"deleted": deleted}
 
 
-def _upsert_fundflow(code: str) -> bool:
+def _upsert_fundflow(code: str, snap_date) -> bool:
     from stockfu.data.manager import get_manager
+    from stockfu.services.quote_writer import _coerce_date
     ff = get_manager().get_etf_fund_flow(code)
     if not ff:
         return False
-    today = date.today()
+    d = _coerce_date(snap_date)   # 用目标交易日盖章，不再用 date.today()（凌晨防错标）
     with session_scope() as s:
         snap = s.exec(select(FundFlowSnapshot).where(
-            FundFlowSnapshot.etf_code == code, FundFlowSnapshot.snap_date == today)).first()
-        snap = snap or FundFlowSnapshot(etf_code=code, snap_date=today)
+            FundFlowSnapshot.etf_code == code, FundFlowSnapshot.snap_date == d)).first()
+        snap = snap or FundFlowSnapshot(etf_code=code, snap_date=d)
         snap.nav, snap.shares_outstanding = ff.get("nav"), ff.get("shares")
         snap.net_inflow = ff.get("amount")
         if snap.id is None:
@@ -213,86 +216,8 @@ def _upsert_fundflow(code: str) -> bool:
     return True
 
 
-def _bar_pct(b, prev_close: float | None) -> float | None:
-    """涨跌幅%:优先 bar.pct_chg,否则用 prev_close 推。"""
-    if getattr(b, "pct_chg", None) is not None:
-        return float(b.pct_chg)
-    if prev_close and prev_close > 0 and b.close:
-        return round((b.close / prev_close - 1) * 100, 2)
-    return None
-
-
-def _apply_bar_full(snap: QuoteSnapshot, b, prev_close: float | None = None,
-                    adj: str = "qfq") -> None:
-    """把一根 K 线写入 snapshot。
-
-    adj=qfq(默认):写遗留 open/high/low/close **与** open_qfq/…/close_qfq,并写
-    volume/amount/状态/估值(与复权无关的字段只在 qfq 路径更新,避免 raw/hfq 覆盖)。
-    adj=raw|hfq:只写对应 *_raw / *_hfq OHLC。
-    """
-    adj_n = (adj or "qfq").lower()
-    o = float(b.open) if b.open is not None else None
-    h = float(b.high) if b.high is not None else None
-    l = float(b.low) if b.low is not None else None
-    c = float(b.close) if b.close is not None else None
-    if adj_n == "raw":
-        if o is not None:
-            snap.open_raw = o
-        if h is not None:
-            snap.high_raw = h
-        if l is not None:
-            snap.low_raw = l
-        if c is not None:
-            snap.close_raw = c
-        return
-    if adj_n == "hfq":
-        if o is not None:
-            snap.open_hfq = o
-        if h is not None:
-            snap.high_hfq = h
-        if l is not None:
-            snap.low_hfq = l
-        if c is not None:
-            snap.close_hfq = c
-        return
-    # qfq + 遗留别名同步
-    snap.open = o
-    snap.high = h
-    snap.low = l
-    snap.close = c if c is not None else (snap.close or 0.0)
-    snap.open_qfq = o
-    snap.high_qfq = h
-    snap.low_qfq = l
-    snap.close_qfq = c
-    if b.volume is not None:
-        snap.volume = b.volume
-    if b.amount is not None:
-        snap.amount = b.amount
-    pct = _bar_pct(b, prev_close)
-    if pct is not None:
-        snap.pct_chg = pct
-    if getattr(b, "trade_status", None) is not None:
-        snap.trade_status = int(b.trade_status)
-    if getattr(b, "is_st", None) is not None:
-        snap.is_st = int(b.is_st)
-    if getattr(b, "pe", None) is not None:
-        snap.pe = float(b.pe)
-    if getattr(b, "pb", None) is not None:
-        snap.pb = float(b.pb)
-    if getattr(b, "turnover", None) is not None:
-        snap.turnover = float(b.turnover)
-
-
-def _patch_status_only(snap: QuoteSnapshot, b) -> bool:
-    """仅补空的 is_st/trade_status。返回是否有改动。"""
-    ch = False
-    if snap.trade_status is None and getattr(b, "trade_status", None) is not None:
-        snap.trade_status = int(b.trade_status)
-        ch = True
-    if snap.is_st is None and getattr(b, "is_st", None) is not None:
-        snap.is_st = int(b.is_st)
-        ch = True
-    return ch
+# 单行写入叶子（_apply_bar_full / _patch_status_only / _bar_pct）已移至
+# stockfu/services/quote_writer.py；本模块所有行情落库改走 writer 收口。
 
 
 def backfill_kline(code: str, days: int = 90) -> int:
@@ -313,35 +238,26 @@ def backfill_kline(code: str, days: int = 90) -> int:
         return _upsert_etf_rows(code, rows)
 
     from stockfu.data.manager import get_manager
+    from stockfu.services.quote_writer import (
+        QuotePayload, WritePolicy, upsert_quote_snapshot,
+    )
     bars = sorted(get_manager().get_kline(code, days), key=lambda b: b.date)
     if not bars:
         return 0
-    n = 0
-    patched = 0
     latest_d = bars[-1].date
+    # 最新日全量刷新；已有历史日仅补状态；缺失日全量插入（funnel 内 PATCH+新行→FULL）
+    payload = {
+        b.date: QuotePayload(
+            qfq=b,
+            policy=WritePolicy.FULL_QFQ if b.date == latest_d else WritePolicy.PATCH_STATUS,
+        )
+        for b in bars
+    }
     with session_scope() as s:
-        existing = {
-            q.quote_date: q for q in s.exec(
-                select(QuoteSnapshot).where(QuoteSnapshot.asset_code == code)).all()
-        }
-        prev_close = None
-        for b in bars:
-            is_latest = (b.date == latest_d)
-            if b.date not in existing:
-                snap = QuoteSnapshot(asset_code=code, quote_date=b.date)
-                _apply_bar_full(snap, b, prev_close)
-                s.add(snap)
-                n += 1
-            elif is_latest:
-                # 最新交易日:全量刷新
-                _apply_bar_full(existing[b.date], b, prev_close)
-                n += 1
-            else:
-                if _patch_status_only(existing[b.date], b):
-                    patched += 1
-            prev_close = b.close if b.close else prev_close
+        n = upsert_quote_snapshot(
+            s, code, payload, policy=WritePolicy.PATCH_STATUS, cap_date=latest_d)
         s.commit()
-    return n + patched
+    return n
 
 
 def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> dict:
@@ -380,27 +296,26 @@ def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> d
         # 最新 bar 的前收 = 倒数第二根 close
         prev_close = bars[-2].close if len(bars) >= 2 else None
 
+        from stockfu.services.quote_writer import (
+            QuotePayload, WritePolicy, upsert_quote_snapshot,
+        )
         with session_scope() as s:
             rows = s.exec(
                 select(QuoteSnapshot).where(QuoteSnapshot.asset_code == code)
             ).all()
             have = {r.quote_date: r for r in rows}
 
-            # ① 历史行:只补状态空列(跳过最新日,下面全量写)
-            for row in rows:
-                if row.quote_date == last.date:
-                    continue
-                b = by_d.get(row.quote_date)
-                if b and _patch_status_only(row, b):
-                    patched += 1
-
-            # ② 最新交易日:全量 upsert
-            snap = have.get(last.date)
-            if snap is None:
-                snap = QuoteSnapshot(asset_code=code, quote_date=last.date)
-                s.add(snap)
-            _apply_bar_full(snap, last, prev_close)
+            # 最新日全量 upsert；已有历史日仅补状态；库内无的历史日不插入(本任务不补K线)
+            payload = {}
+            for d, b in by_d.items():
+                if d == last.date:
+                    payload[d] = QuotePayload(qfq=b, policy=WritePolicy.FULL_QFQ)
+                elif d in have:
+                    payload[d] = QuotePayload(qfq=b, policy=WritePolicy.PATCH_STATUS)
+            written = upsert_quote_snapshot(
+                s, code, payload, policy=WritePolicy.PATCH_STATUS, cap_date=last.date)
             latest_upserted += 1
+            patched += max(0, written - 1)
             s.commit()
 
         if (i + 1) % 50 == 0:
@@ -420,13 +335,16 @@ def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> d
     }
 
 
-def update_index_benchmark(code: str = "sh000001") -> int:
+def update_index_benchmark(code: str = "sh000001", target_date=None) -> int:
     """查 index_quote_daily 最新日期 → 拉 gap → 幂等 upsert。
 
+    target_date: 目标交易日(已校验)，窗口上界 + cap；None→今天(兼容 backfill 调用)。
     akshare 指数日线（index_zh_a_hist）走国内直连（no_proxy）。
     返回新增行数。
     """
+    from stockfu.services.quote_writer import _coerce_date
     akshare_symbol = code[2:]  # sh000001 → 000001
+    end_d = _coerce_date(target_date) if target_date else date.today()
     with session_scope() as s:
         last_row = s.exec(
             select(IndexQuoteDaily).where(
@@ -434,55 +352,48 @@ def update_index_benchmark(code: str = "sh000001") -> int:
             ).order_by(IndexQuoteDaily.quote_date.desc()).limit(1)
         ).first()
     last_date = last_row.quote_date if last_row else None
-    today = date.today()
-    if last_date and last_date >= today:
+    if last_date and last_date >= end_d:
         return 0
     start = (last_date + timedelta(days=1)).isoformat() if last_date else "1990-01-01"
-    end = today.isoformat()
+    end = end_d.isoformat()
     from stockfu.data.akshare_source import get_index_daily
+    from stockfu.services.quote_writer import upsert_index_daily
     rows = get_index_daily(akshare_symbol, start, end)
     if not rows:
         return 0
-    n = 0
     with session_scope() as s:
-        for r in rows:
-            existing = s.exec(select(IndexQuoteDaily).where(
-                IndexQuoteDaily.asset_code == code,
-                IndexQuoteDaily.quote_date == r["quote_date"],
-            )).first()
-            if existing:
-                continue
-            s.add(IndexQuoteDaily(**r))
-            n += 1
+        n = upsert_index_daily(s, code, rows, cap_date=end_d, overwrite=False)
         s.commit()
     return n
 
 
-def update_etf_benchmark(code: str) -> int:
+def update_etf_benchmark(code: str, target_date=None) -> int:
     """ETF 日线增量更新:查 etf_quote_daily 最新日期 → 拉 gap → 幂等 upsert。
 
+    target_date: 目标交易日(已校验)，窗口上界 + cap；None→今天(兼容 backfill 调用)。
     get_etf_daily(**前复权 qfq**：东财 fund_etf_hist_em → 腾讯 qfq 兜底)。
     板块情绪 compute_sector 依赖代表 ETF 的 K 线分位;行情拆表后 ETF 历史在
     etf_quote_daily(非 quote_snapshot)。返回新增+覆盖行数。
     """
     from stockfu.data.akshare_source import get_etf_daily
+    from stockfu.services.quote_writer import _coerce_date
+    end_d = _coerce_date(target_date) if target_date else date.today()
     with session_scope() as s:
         last_row = s.exec(select(EtfQuoteDaily).where(
             EtfQuoteDaily.asset_code == code
         ).order_by(EtfQuoteDaily.quote_date.desc()).limit(1)).first()
     last_date = last_row.quote_date if last_row else None
-    today = date.today()
-    if last_date and last_date >= today:
+    if last_date and last_date >= end_d:
         return 0
     # 有历史时从最近若干交易日重拉,覆盖最新日(前复权基准随分红/拆分会变)
     if last_date:
         start = (last_date - timedelta(days=14)).isoformat()
     else:
         start = "2010-01-01"
-    rows = get_etf_daily(code, start, today.isoformat())
+    rows = get_etf_daily(code, start, end_d.isoformat())
     if not rows:
         return 0
-    return _upsert_etf_rows(code, rows)
+    return _upsert_etf_rows(code, rows, cap_date=end_d)
 
 
 def run_backfill_benchmark(code: str = "sh000001") -> dict:
@@ -495,15 +406,12 @@ def run_backfill_benchmark(code: str = "sh000001") -> dict:
         )).all()
         have_dates = {r.quote_date for r in existing}
     # 全量拉取（1990 至今）
+    from stockfu.services.quote_writer import upsert_index_daily
     today = date.today()
     rows = get_index_daily(code[2:], "1990-01-01", today.isoformat())
-    new_rows = [r for r in rows if r["quote_date"] not in have_dates]
-    if new_rows:
-        with session_scope() as s:
-            for r in new_rows:
-                s.add(IndexQuoteDaily(**r))
-            s.commit()
-        n = len(new_rows)
+    with session_scope() as s:
+        n = upsert_index_daily(s, code, rows, cap_date=today, overwrite=False)
+        s.commit()
     return {"code": code, "total": len(rows), "new": n, "have_before": len(have_dates)}
 
 
@@ -529,6 +437,7 @@ def backfill_sw_index() -> dict:
     返回 {asset_code: {total, new, have_before}}。
     """
     from stockfu.data.akshare_source import get_sw_index_daily
+    from stockfu.services.quote_writer import upsert_index_daily
     summary: dict[str, dict] = {}
     for sym in SW_INDUSTRIES:
         asset_code = f"sw{sym}"
@@ -537,13 +446,13 @@ def backfill_sw_index() -> dict:
                 IndexQuoteDaily.asset_code == asset_code)).all()
             have_dates = {r.quote_date for r in existing}
         rows = get_sw_index_daily(sym)
-        new_rows = [r for r in rows if r["quote_date"] not in have_dates]
-        if new_rows:
+        cap = max((r["quote_date"] for r in rows), default=date.today())
+        new_n = 0
+        if rows:
             with session_scope() as s:
-                for r in new_rows:
-                    s.add(IndexQuoteDaily(**r))
+                new_n = upsert_index_daily(s, asset_code, rows, cap_date=cap, overwrite=False)
                 s.commit()
-        summary[asset_code] = {"total": len(rows), "new": len(new_rows),
+        summary[asset_code] = {"total": len(rows), "new": new_n,
                                "have_before": len(have_dates)}
     return summary
 
@@ -602,32 +511,19 @@ def clear_etf_data() -> dict:
     return out
 
 
-def _upsert_etf_rows(code: str, rows: list[dict]) -> int:
+def _upsert_etf_rows(code: str, rows: list[dict], *, cap_date=None) -> int:
     """将 get_etf_daily 行 upsert 进 etf_quote_daily(有则覆盖 OHLC,无则插入)。
 
     前复权序列在分红/拆分后历史价会整体平移,覆盖保证库内口径一致。
+    cap_date 未传时取行内最大日(兼容旧行为;fetch 路径传目标日做日期上限保证)。
     返回写入(新增+更新)行数。
     """
+    from stockfu.services.quote_writer import upsert_etf_daily
     if not rows:
         return 0
-    n = 0
+    cap = cap_date or max(r["quote_date"] for r in rows)
     with session_scope() as s:
-        existing = {
-            r.quote_date: r for r in s.exec(
-                select(EtfQuoteDaily).where(EtfQuoteDaily.asset_code == code)
-            ).all()
-        }
-        for r in rows:
-            d = r["quote_date"]
-            row = existing.get(d)
-            if row is None:
-                s.add(EtfQuoteDaily(**r))
-                n += 1
-            else:
-                for k in ("open", "high", "low", "close", "pct_chg", "volume", "amount"):
-                    if r.get(k) is not None:
-                        setattr(row, k, r[k])
-                n += 1
+        n = upsert_etf_daily(s, code, rows, cap_date=cap)
         s.commit()
     return n
 
@@ -712,20 +608,26 @@ def run_backfill(days: int) -> dict:
     return result
 
 
-def ensure_stock_data_and_index(code: str, days: int = 1825) -> dict:
-    """单只个股：历史不足则补 K 线 + 抓今日行情 + 算个股三层情绪指数落库。
+def ensure_stock_data_and_index(code: str, days: int = 1825, target_date=None) -> dict:
+    """单只个股：历史不足则补 K 线 + 抓行情(截至 target_date) + 算个股三层情绪指数落库。
 
+    target_date: 目标交易日；None（Web 按需触发）→ 已收盘的最近交易日(过校验)。
     供 Web「加个股即算」与 CLI 复用；返回摘要 dict。
     """
     from stockfu.services.composite import compute_stock, save
+    from stockfu.services.quote_writer import (
+        latest_closed_trade_day, validate_ingest_date,
+    )
 
+    td = (validate_ingest_date(target_date) if target_date
+          else validate_ingest_date(latest_closed_trade_day()))
     with session_scope() as s:
         have = len(s.exec(select(QuoteSnapshot).where(
             QuoteSnapshot.asset_code == code)).all())
     backfilled = backfill_kline(code, days) if have < 60 else 0  # 历史够就不重复拉
-    quoted = _upsert_quote(code)
-    result = compute_stock(code)
-    save(result)
+    quoted = _upsert_quote(code, td)
+    result = compute_stock(code, td)
+    save(result, td)
     return {
         "history_before": have,
         "backfilled": backfilled,
@@ -736,8 +638,8 @@ def ensure_stock_data_and_index(code: str, days: int = 1825) -> dict:
     }
 
 
-def _batch_fetch_today(codes: list[str]) -> tuple[list[str], list[str]]:
-    """对 codes 逐个抓今日行情,按表路由:ETF→update_etf_benchmark(etf_quote_daily),
+def _batch_fetch_today(codes: list[str], target_date=None) -> tuple[list[str], list[str]]:
+    """对 codes 逐个抓行情(截至 target_date),按表路由:ETF→update_etf_benchmark,
     其余→_upsert_quote(quote_snapshot)。否则 ETF 走个股 get_kline 接口会漏抓
     (今天自选里 562500/588870/515650/515450/512710 五只 ETF 即因此失败)。"""
     from stockfu.services.factors import quote_model_for
@@ -746,10 +648,10 @@ def _batch_fetch_today(codes: list[str]) -> tuple[list[str], list[str]]:
     for c in codes:
         try:
             if quote_model_for(c) is EtfQuoteDaily:
-                update_etf_benchmark(c)   # 幂等:今日已补返回 0 不报错,不抛异常即成功
+                update_etf_benchmark(c, target_date)   # 幂等:已补返回 0 不报错
                 ok.append(c)
             else:
-                (ok if _upsert_quote(c) else fail).append(c)
+                (ok if _upsert_quote(c, target_date) else fail).append(c)
         except Exception:  # noqa: BLE001
             fail.append(c)
     return ok, fail
@@ -778,9 +680,12 @@ def _call_timeout(fn, timeout: float, label: str = "", default=None):
     return box.get("r", default)
 
 
-def run_scheduled_fetch() -> dict:
-    """到 daily_fetch_time 触发：批量抓今日 + 失败按间隔重试 N 次 + 分红/ETF/三层指数。
+def run_scheduled_fetch(target_date) -> dict:
+    """批量抓行情(截至 target_date) + 失败重试 + 分红/ETF/三层指数。
 
+    target_date: 目标交易日(**必填**)。非法(未来/未收盘/非交易日)→ raise ValueError。
+                 所有行情窗口上界、快照盖章(资金流/情绪/板块资金流)统一用此日，
+                 彻底杜绝凌晨跑被错标为「未开盘的今天」。
     重试只针对上一轮失败的 code（已落盘的 _upsert_quote 会秒跳过，双重保险）；
     重试耗尽后剩下的不管（读路径会显示最近一条历史快照）。
 
@@ -789,8 +694,10 @@ def run_scheduled_fetch() -> dict:
     import time as _t
 
     from stockfu.config import get_fetch_retry_count, get_fetch_retry_interval
+    from stockfu.services.quote_writer import validate_ingest_date
 
     init_db()
+    td = validate_ingest_date(target_date)   # 唯一日期权威：非法即报错
     t_all = _t.time()
     # 预热 baostock 免费代理池（PE/分红/状态等依赖；直连已黑名单）
     # 行情主路径走东财/腾讯（直连）；baostock 代理延后到分红/情绪，避免全局污染
@@ -798,8 +705,8 @@ def run_scheduled_fetch() -> dict:
         codes = [a.code for a in s.exec(select(Asset)).all()]
     targets = list(dict.fromkeys(codes + INDEX_ETFS))
 
-    print(f"=== [fetch] 1/6 quotes targets={len(targets)} ===", flush=True)
-    ok, fail = _batch_fetch_today(targets)
+    print(f"=== [fetch] 1/6 quotes targets={len(targets)} as_of={td} ===", flush=True)
+    ok, fail = _batch_fetch_today(targets, td)
     retries = get_fetch_retry_count()
     # 失败重试间隔上限 30s，避免配置成「分钟」拖死
     retry_sleep = min(30, max(1, int(get_fetch_retry_interval()) * 5))
@@ -809,27 +716,27 @@ def run_scheduled_fetch() -> dict:
         print(f"  retry {i + 1}/{retries} fail={len(fail)} sleep={retry_sleep}s", flush=True)
         if not all(c.startswith(("HK", "US", "au")) for c in fail):
             _t.sleep(retry_sleep)
-        ok2, fail = _batch_fetch_today(fail)
+        ok2, fail = _batch_fetch_today(fail, td)
         ok.extend(ok2)
     print(f"  quotes ok={len(ok)} fail={len(fail)}", flush=True)
 
     print("=== [fetch] 2/6 index + sector ETF ===", flush=True)
     for _idx in ("sh000001", "sz399006", "sh000688"):
         try:
-            update_index_benchmark(_idx)
+            update_index_benchmark(_idx, td)
         except Exception:  # noqa: BLE001
             pass
     from stockfu.services.composite import SECTOR_MAP as _SECTOR_ETF_MAP
     for _etf in _SECTOR_ETF_MAP.values():
         try:
-            update_etf_benchmark(_etf)
+            update_etf_benchmark(_etf, td)
         except Exception:  # noqa: BLE001
             pass
 
     print("=== [fetch] 3/6 sector flow ===", flush=True)
     from stockfu.services import backfill as bf
     sector_flow = _call_timeout(
-        bf.backfill_sector_flow_today, 45, "sector_flow", default=0,
+        lambda: bf.backfill_sector_flow(td), 45, "sector_flow", default=0,
     ) or 0
 
     # 后半段：分红 / ETF 份额 / 三层指数
@@ -870,13 +777,13 @@ def run_scheduled_fetch() -> dict:
     print("=== [fetch] 5b/6 fundflow ETFs ===", flush=True)  # noqa: kept
     flows = 0
     for c in INDEX_ETFS:
-        if _call_timeout(lambda code=c: _upsert_fundflow(code), 15, f"flow:{c}", default=False):
+        if _call_timeout(lambda code=c: _upsert_fundflow(code, td), 15, f"flow:{c}", default=False):
             flows += 1
 
-    print(f"=== [fetch] 6/6 composite stocks={len(all_codes)} ===", flush=True)
-    # 三层情绪：90s 超时后降级市场+板块
+    print(f"=== [fetch] 6/6 composite stocks={len(all_codes)} as_of={td} ===", flush=True)
+    # 三层情绪：90s 超时后降级市场+板块（全部用 td 盖章 + as_of 读窗）
     comp = _call_timeout(
-        lambda: composite.compute_all(all_codes),
+        lambda: composite.compute_all(all_codes, td),
         90,
         "compute_all",
         default=None,
@@ -885,21 +792,21 @@ def run_scheduled_fetch() -> dict:
         print("  compute_all 超时/失败，降级只算市场+板块情绪", flush=True)
         comp = {}
         try:
-            comp["market"] = composite.compute_market()
-            composite.save(comp["market"])
+            comp["market"] = composite.compute_market(td)
+            composite.save(comp["market"], td)
         except Exception as e:  # noqa: BLE001
             print(f"  compute_market err: {e}", flush=True)
         for _name, _etf in composite.SECTOR_MAP.items():
             try:
                 _r = _call_timeout(
-                    lambda e=_etf, n=_name: composite.compute_sector(e, n),
+                    lambda e=_etf, n=_name: composite.compute_sector(e, n, td),
                     20,
                     f"sector:{_name}",
                     default=None,
                 )
                 if _r and (_r.get("fear") or _r.get("greed") or _r.get("heat")):
                     comp[f"sector:{_name}"] = _r
-                    composite.save(_r)
+                    composite.save(_r, td)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -963,8 +870,21 @@ def run_schedule() -> None:
     from stockfu.services.mail import run_mail_job
 
     def _fetch_then_mail() -> dict:
-        """抓取 + 分红/ETF/三层指数 → 全部完后自动发邮件（不等定时）。"""
-        result = run_scheduled_fetch()
+        """抓取 + 分红/ETF/三层指数 → 全部完后自动发邮件（不等定时）。
+
+        守护进程无人传参：取「已收盘的最近交易日」(过收盘分界才有今天，否则前一交易日)
+        并过 validate_ingest_date；非法(如 daily_fetch_time 设在盘前)→ 跳过本次并告警，
+        绝不用裸 date.today() 当入库日。
+        """
+        from stockfu.services.quote_writer import (
+            latest_closed_trade_day, validate_ingest_date,
+        )
+        try:
+            td = validate_ingest_date(latest_closed_trade_day())
+        except ValueError as _e:
+            print(f"  [skip fetch] 目标日非法，跳过本次调度: {_e}", flush=True)
+            return {"skipped": str(_e)}
+        result = run_scheduled_fetch(td)
         # 只要邮件就绪就发，不管个别标的失败（有数据的发，没数据的跳）
         if get_mail_enabled() and is_mail_ready():
             try:
