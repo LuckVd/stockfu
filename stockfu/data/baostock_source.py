@@ -331,6 +331,10 @@ class BaostockSource(DataSource):
                 cash = _f(row[9]) if len(row) > 9 else None
                 if ex is None or not cash or cash <= 0:
                     continue   # 送转股无现金 / 未实施 / 字段缺失
+                # 防 baostock 结果集串行 bleed：某财年查询返回了别年的陈旧行（实测出现过 2017 标签配 2026 ex_date / 28元）。
+                # 正常分红 ex_date 年与财年相差 0~1；偏差 ≥2 视为脏数据丢弃，否则陈旧行会灌进 TTM 虚高股息率。
+                if abs(ex.year - y) > 1:
+                    continue
                 events.append(DividendEventDTO(
                     ex_date=ex, per_share_cash=cash,
                     record_date=_parse_date(row[5]) if len(row) > 5 else None,
@@ -342,7 +346,8 @@ class BaostockSource(DataSource):
             return None
         # TTM 近 365 天每股现金分红(算子层会按 as_of 重算,此处仅展示用)
         ref = date.today()
-        ttm = sum(e.per_share_cash for e in events if e.ex_date >= ref - timedelta(days=365))
+        ttm = sum(e.per_share_cash for e in events
+                  if ref - timedelta(days=365) <= e.ex_date <= ref)   # 上下界：排除 future ex_date（防未来函数）
         ttm_yield = (round(ttm / latest_price * 100, 2)
                      if latest_price and latest_price > 0 else None)
         return DividendMetric(

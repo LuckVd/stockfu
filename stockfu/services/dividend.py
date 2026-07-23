@@ -75,7 +75,7 @@ def metric_from_db(
     ref = date.today()
     ttm = sum(
         e.per_share_cash for e in events
-        if e.ex_date >= ref - timedelta(days=365)
+        if ref - timedelta(days=365) <= e.ex_date <= ref   # 上下界：排除未除权的 future ex_date（防未来函数）
     )
     ttm_yield = (
         round(ttm / latest_price * 100, 2)
@@ -113,6 +113,7 @@ def persist_dividends(code: str) -> int:
                 record_date=e.record_date, announce_date=e.announce_date,
                 per_share_cash=e.per_share_cash, currency=e.currency, source=e.source,
             ))
+            existing.add(e.ex_date)   # 同批去重：防 metric.events 自身重复（如 baostock 同 ex_date 双行）
             written += 1
         s.commit()
     return written
