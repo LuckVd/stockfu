@@ -6,6 +6,7 @@ daily_stock_analysis/data_provider/fundamental_adapter.py (MIT)。
 """
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, date, timedelta
 from typing import Optional
@@ -360,6 +361,8 @@ class AkshareSource(DataSource):
     # 全量港股实时表（类级缓存 20 分钟，仅取名称用）
     _hk_spot_df: Optional[pd.DataFrame] = None
     _hk_spot_ts: float = 0.0
+    _ths_catalog: list[dict] | None = None
+    _ths_catalog_ts: float = 0.0
 
     # -------- 行情（兜底；主力失败时全量 spot 缓存） --------
     def _fetch_quote(self, code: str) -> Optional[Quote]:
@@ -616,6 +619,64 @@ class AkshareSource(DataSource):
 
     # -------- 板块（同花顺：板块K线+成交额 / 板块资金流 / 大盘资金流）--------
     # 同花顺端点绕开东财 push2/push2his 限流，是板块历史数据的主力源。
+    def get_sector_catalog_ths(self) -> list[dict]:
+        """同花顺标准行业清单（名称+代码），缓存 10 分钟。"""
+        if self._ths_catalog is not None and time.monotonic() - self._ths_catalog_ts < 600:
+            return self._ths_catalog
+        df, _, _ = _call_df([("stock_board_industry_name_ths", {})])
+        if df is None or getattr(df, "empty", True):
+            return []
+        out, seen = [], set()
+        for _, r in df.iterrows():
+            name = safe_str(pick_col(r, ["name", "名称", "行业", "板块名称"]))
+            code = safe_str(pick_col(r, ["code", "代码", "板块代码"]))
+            if name and code and name not in seen:
+                out.append({"name": name, "code": code})
+                seen.add(name)
+        self._ths_catalog, self._ths_catalog_ts = out, time.monotonic()
+        return out
+
+    def get_sector_names_ths(self) -> list[str]:
+        """同花顺标准行业名称清单（当前预期 90 个）。"""
+        return [x["name"] for x in self.get_sector_catalog_ths()]
+
+    def get_sector_kline_period(self, sector_name: str, start_date: str, end_date: str) -> list:
+        """同花顺单行业、单年度日线端点；不使用会隐式循环多年的 AKShare 封装。"""
+        try:
+            start, end = datetime.strptime(start_date, "%Y%m%d").date(), datetime.strptime(end_date, "%Y%m%d").date()
+        except ValueError:
+            return []
+        catalog = {x["name"]: x["code"] for x in self.get_sector_catalog_ths()}
+        code = catalog.get(sector_name)
+        if not code:
+            return []
+        import requests
+        url = f"https://d.10jqka.com.cn/v4/line/bk_{code}/01/{start.year}.js"
+        try:
+            with direct_connection():
+                response = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "http://q.10jqka.com.cn/"}, timeout=20)
+            raw = response.text
+            payload = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+            lines = str(payload.get("data") or "").split(";")
+        except Exception:
+            return []
+        bars = []
+        for line in lines:
+            try:
+                fields = line.split(",")
+                d = datetime.strptime(fields[0], "%Y%m%d").date()
+                if d < start or d > end:
+                    continue
+                bars.append(KlineBar(
+                    date=d,
+                    open=safe_float(fields[1]) or 0.0, high=safe_float(fields[2]) or 0.0,
+                    low=safe_float(fields[3]) or 0.0, close=safe_float(fields[4]) or 0.0,
+                    volume=safe_float(fields[5]), amount=safe_float(fields[6]),
+                ))
+            except (IndexError, ValueError, TypeError):
+                continue
+        return bars
+
     def get_sector_kline(self, sector_name: str, days: int = 1460) -> list:
         """行业板块指数历史K线（同花顺 stock_board_industry_index_ths）。
 
@@ -623,28 +684,14 @@ class AkshareSource(DataSource):
         失败返回 []。注意同花顺 OHLC 列名带「价」后缀（开盘价/最高价/...），区别于东财。
         """
         from datetime import date as _d, timedelta as _td
-        end = _d.today().strftime("%Y%m%d")
-        start = (_d.today() - _td(days=days + 30)).strftime("%Y%m%d")
-        df, _, _ = _call_df([("stock_board_industry_index_ths", {
-            "symbol": sector_name, "start_date": start, "end_date": end,
-        })])
-        if df is None or getattr(df, "empty", True):
-            return []
-        bars: list = []
-        for _, r in df.iterrows():
-            try:
-                d = pd.to_datetime(pick_col(r, ["日期", "日期时间"])).date()
-                bars.append(KlineBar(
-                    date=d,
-                    open=safe_float(pick_col(r, ["开盘价", "开盘"])) or 0.0,
-                    high=safe_float(pick_col(r, ["最高价", "最高"])) or 0.0,
-                    low=safe_float(pick_col(r, ["最低价", "最低"])) or 0.0,
-                    close=safe_float(pick_col(r, ["收盘价", "收盘"])) or 0.0,
-                    volume=safe_float(pick_col(r, ["成交量"])),
-                    amount=safe_float(pick_col(r, ["成交额"])),
-                ))
-            except (KeyError, ValueError, TypeError):
-                continue
+        end_d = _d.today()
+        start_d = _d.today() - _td(days=days + 30)
+        bars = []
+        for year in range(start_d.year, end_d.year + 1):
+            lo = max(start_d, _d(year, 1, 1)).strftime("%Y%m%d")
+            hi = min(end_d, _d(year, 12, 31)).strftime("%Y%m%d")
+            bars.extend(self.get_sector_kline_period(sector_name, lo, hi))
+        bars.sort(key=lambda x: x.date)
         return bars[-days:] if days and len(bars) > days else bars
 
     def get_sector_flow_today(self) -> list:

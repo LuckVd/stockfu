@@ -1,41 +1,37 @@
-## Problem Statement
+# 行业全景分享图：同花顺 90 行业口径
 
-现有分享图仅展示整体市场、创业板、科创50与自选标的，无法说明行业强弱、行业情绪及主力资金的流向；用户无法从导出图片判断市场轮动。
+## 目标
 
-## Solution
+导出图片必须完整、可解释地反映 A 股行业轮动，而不是只展示固定几个代表行业。行业历史数据使用稳定、免费且可复现的同花顺标准行业分类；不为追求数量混合东方财富细分行业或浏览器绕过数据源限制。
 
-分享图增加独立的行业全景分页。采用东方财富同一行业分类下的历史行情和历史主力资金流，展示全部可取得且当日完整的行业。首次初始化串行回补历史；后续仅用同一交易日数据更新。行业情绪分别表达波动/下跌、上涨/流入与相对放量，不建立不可解释的第四个总分。
+## 范围与数据口径
 
-## User Stories
+- 行业宇宙为 `stock_board_industry_name_ths` 返回的 90 个标准行业，名称是唯一键。
+- 历史行情（开高低收、成交量、成交额）使用同花顺行业年度日线，从 2020-01-01 回补至今。
+- 当日资金流使用同花顺行业实时汇总的一次全量响应；字段单位维持数据源的亿元，并在图片标作“亿”。
+- 东方财富不参与行业全景的历史或每日数据，避免 WAF、分类差异和同名行业跨源拼接。
+- 概念板块不在本期范围；它与行业板块分开，不能并入同一排名。
 
-1. As an investor, I want to see every available industry in export images, so that I can identify market-wide rotation.
-2. As an investor, I want each industry to show price change, five-day change and main-fund flow, so that I can distinguish price strength from capital flow.
-3. As an investor, I want fear, greed and heat shown per industry, so that I can compare downside pressure, momentum and attention separately.
-4. As an investor, I want funding states such as continuous inflow, continuous outflow, strengthening and weakening, so that I can read rotation without a black-box score.
-5. As an investor, I want unavailable or stale industry data excluded rather than silently backfilled with an old date, so that exported conclusions are trustworthy.
-6. As an operator, I want initial history collection to be serial and rate-limited, so that the free upstream is not overloaded.
-7. As an operator, I want one failed industry to be reported but not stop the remaining sectors, so that a partial upstream outage does not discard available data.
+## 采集流程
 
-## Implementation Decisions
+首次执行 `python3 main.py --backfill-sector-pulse`：逐行业拉取 2020 至今的日线，严格串行、行业间等待至少 1.2 秒，按“行业+日期”幂等写入。完成后获取一次 90 行业实时资金流，并逐行业串行刷新最近日线，以写入同日行情和资金流。
 
-- The export-data seam is a single market-pulse builder invoked by the existing share-card builder.
-- Historical price and historical fund-flow records use the same Eastmoney industry names; no cross-vendor industry mapping or aggregation is used.
-- Historical collection requests one industry at a time, waits at least 1.2 seconds between industries, is idempotent by date, and reports failed names.
-- An industry is exportable only when both its industry quote and fund-flow records equal the card trade date.
-- Fear combines valid volatility, inverse momentum and inverse fund-flow percentiles; greed combines momentum and fund-flow percentiles; heat is the percentile of amount relative to its preceding 20-day mean.
-- Fund-flow percentile is only used after ten observations. Amount and price history may still produce the remaining measures.
-- Multi-image export dedicates fixed-size industry pages before watchlist pages.
+每日 `--fetch --date`：先获取一次全行业实时资金流，再顺序刷新每个行业的近期日线；只有行情日期和资金流日期都等于目标交易日的行业才可导出。失败行业会记录在摘要中，不影响其余行业，不允许以旧日期代替。
 
-## Testing Decisions
+回补实现必须校验：日线日期去重，且每个年度请求只接受该年份内的记录；全年交易日数异常时记录失败，不能把重复或跨年数据写入库。
 
-- Test the market-pulse builder at its public output boundary with an in-memory database.
-- Assert that an industry missing same-day flow is omitted and a complete industry exposes its state. This follows existing share-integrity tests that validate output freshness instead of private helper calls.
-- Keep data-source calls unmocked only in manually invoked backfill; automated tests do not require network access.
+## 情绪与资金状态
 
-## Out of Scope
+- 恐慌：历史波动分位、反向 5 日动量、反向当日资金横截面分位的平均。
+- 贪婪：5 日动量分位与当日资金横截面分位的平均。
+- 热度：成交额相对于自身前 20 个交易日均值的历史分位。
+- 资金横截面分位仅在当日同日行业数至少 10 时启用；因此不需要伪造历史资金流。
+- 首日资金状态显示“当日净流入/当日净流出”；积累至少 3 个真实交易日后才显示连续流入、连续流出、转强或转弱。
 
-- Paid data vendors, intraday data, automatic trading signals, concept-board aggregation, and a fourth composite rotation score are out of scope.
+## 验收条件
 
-## Further Notes
-
-The free historical-fund-flow endpoint may fail or offer only a recent window. The UI must expose only successfully synchronized same-day rows and must not imply five-year fund-flow history.
+1. 初始化目标行业数来自同花顺清单，预期为 90，而不是固定映射中的 5 个。
+2. 同一行业的历史行情、当日行情和当日资金流均来自同花顺。
+3. 图片仅显示同日完整行业；首日可展示资金方向及横截面情绪，不能声称连续资金趋势。
+4. 自动化测试覆盖同日门禁、当日资金横截面分位和资金状态的样本不足行为。
+5. 数据源失败时输出可审计的成功/失败数量，不写入伪造或跨源数据。
