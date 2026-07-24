@@ -48,8 +48,8 @@ MID = F.WINDOW_MID_DAYS                          # ~5 年情绪分位窗口,对�
 def compute_sentiment(closes: list[float], amounts: list[float]) -> dict | None:
     """行业指数 K 线 → {fear, greed, heat}(各 0-100)或 None(样本不足,该行业当日排除)。
 
-    口径同 composite.compute_for:波动率分位→fear;5日涨幅分位→(100-chg)fear/(chg)greed;
-    成交额分位→greed+heat。样本<30 返回 None。
+    口径同 composite.compute_for:波动率分位→fear；5日涨幅分位→(100-chg)fear/(chg)greed；
+    相对前20日均量的放量分位→heat。样本<30 返回 None。
     """
     if len(closes) < 30:
         return None
@@ -65,11 +65,11 @@ def compute_sentiment(closes: list[float], amounts: list[float]) -> dict | None:
         if p is not None:
             fp.append(100 - p)                 # 跌 → fear
             gp.append(p)                       # 涨 → greed
-    if len(amounts) >= 10:
-        p = F.percentile(amounts, amounts[-1])[0]
+    activity = C._rolling_relative_activity(amounts)
+    if activity:
+        p = F.percentile(activity, activity[-1])[0]
         if p is not None:
-            gp.append(p)
-            hp.append(p)                       # 放量 → greed + heat
+            hp.append(p)                       # 放量只表示活跃，不等于贪婪
     if not (fp or gp or hp):
         return None
     return {

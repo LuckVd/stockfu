@@ -24,6 +24,7 @@
 - **入口**:`--serve`(Web 看板 127.0.0.1:8787)、`--test-mail`(立即生图 + 发测试邮件)、`--schedule`(APScheduler 每日 cron:fetch → mail)。
 - **实现**:`stockfu/services/mail.py`(`render_share_images` playwright 逐页截图 + `send_card_email` SMTP inline 多图);依赖 `playwright install chromium`,且生图时需 `--serve` 在跑。
 - **⚠️ 出图避坑**:主页 `loadAll` 会并发实时算估值、拉起 baostock 代理池 spin 卡死;生图只取 `/share`(纯读库、不等 loadAll),建议配 `BAOSTOCK_PROXY_MODE=direct`。
+- **情绪口径（2026-07-24）**:大盘与卡片上证指数同源；恐慌=20日波动率分位与5日跌幅分位，贪婪=5日涨幅分位（外部上行因子有足够历史后可加入），热度=相对前20日均量的放量分位。成交活跃不再同时抬高贪婪，避免与热度重复及绝对量能长期抬升导致的高位钝化。
 
 ### 共同底层(两方向都依赖)
 
