@@ -80,7 +80,9 @@ def get_portfolio() -> PortfolioSummary:
             mv = price * h.shares
             cost = h.total_cost or (h.avg_cost * h.shares)
             profit = mv - cost
-            m = mgr.get_dividend_metric(h.asset_code, latest_price=price) if snap else None
+            # 股息率分母用不复权 close_raw（缺省回退 qfq close）——禁止 qfq 当分母（口径见 CLAUDE.md）
+            div_price = (snap.close_raw or snap.close) if snap else None
+            m = mgr.get_dividend_metric(h.asset_code, latest_price=div_price) if snap else None
             annual_div = ((m.ttm_cash_per_share or 0.0) if m else 0.0) * h.shares
             cur = (snap.currency if snap else "") or (a.currency if a else "CNY")
             currencies.add(cur)
@@ -143,8 +145,9 @@ def get_watchlist_view() -> list[dict]:
     for a in assets:
         snap = latest_snapshot(a.code)
         price = snap.close if snap else None
-        # ETF/基金无个股分红意义，跳过 dividend 查询（也是 watchlist 卡顿源）
-        m = mgr.get_dividend_metric(a.code, latest_price=price) if (snap and a.asset_type == "stock") else None
+        # 股息率分母用不复权 close_raw（缺省回退 qfq close）；ETF/基金跳过 dividend 查询（也是卡顿源）
+        div_price = (snap.close_raw or snap.close) if snap else None
+        m = mgr.get_dividend_metric(a.code, latest_price=div_price) if (snap and a.asset_type == "stock") else None
         out.append({
             "code": a.code,
             "name": (snap.name if snap and snap.name else "") or a.name or a.code,

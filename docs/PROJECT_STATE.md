@@ -32,6 +32,12 @@
 
 ## 0. 进行中任务 / 冷启动接棒（2026-07-22）
 
+> **【2026-07-24 · 邮件生图数据正确性修复】** 三件事，均在分支 `fix/dividend-ttm-corruption`：
+> ① **股息率虚高**（commit `ca056b9`）：baostock 抓分红结果集串行 bleed 产生 stale 行（2017 标签配 2026 ex_date/28 元）+ TTM 计算只有下界无上界（future ex_date 计入）+ 持仓/自选股息率分母误用 qfq `close`。修：`dividend.metric_from_db`/`baostock.get_dividend_metric` TTM 加上界 `≤today`；baostock 解析丢弃 `|ex_date年−财年|≥2` 的 stale 行；`persist_dividends` 同批去重；`snapshot.LatestSnapshot` 加 `close_raw`、`portfolio` 两处分母改 `close_raw`。五粮液 48%→6.89%。本机 `dividend_event` 清 44 行（5 stale+38 重复+1 phantom）。
+> ② **ETF 显示陈旧数据**：`snapshot._read_latest` 与 `share.perf` 硬编码读 `QuoteSnapshot`、没按 `quote_model_for` 路由 → 7 只自选 ETF 读到 `QuoteSnapshot` 里停在 07-21 的孤儿行（ETF 行情实际在 `EtfQuoteDaily`），卡片显示旧价（588870 曾显示 07-21 的 1.941/+10.85%）。已改这两处路由，全 52 holdings 现 07-23（588870 科创50ETF 1.819/-3.24%）。**⚠️ 仅修了卡片两条路径；其余 reader 未修见 §8.6。**
+> ③ **港美股清除**（保留 yfinance 代码能力）：DB 删 4 Asset+2 Holding；`config.py` watchlist + `db.py` demo holdings 去掉 `00700/09988/AAPL/MSFT`。剩 52 个纯 A 股资产。
+> 已 `--fetch --date 2026-07-23`（行情至 07-23）+ `--test-mail` 重发正确邮件（`BAOSTOCK_PROXY_MODE=direct`）。**PR 待开**（`gh` 未装，手动点链接）；committer 仍 `root@localhost`。
+
 > ✅ **【已完成 2026-07-22】策略参数变体（一等）+ 回测指标持久化** —— 按 `docs/STRATEGY_VARIANTS_PLAN.md` 全量实现并提交（main `561a0e6`+`7a87328`；backtest `feature/backtest` `e96f598`+`4c8a295`）。A) `strategy_id` 编码变体（`base#key`，seed `_expand_variants`/`_deep_merge` 展开器；变体行 derived 每次 seed 强制重同步；recommend 改读 DB config；main 校验复合 id 不静默回落）；B) 引擎原生产出 回本/本金水下分布（低于初始本金、以及亏损至少 10/20/30%）/distinct_bought/stop_loss_count/realized_loss（止损 signal 穿透 6 处，原 `_exec` 写 `None` 丢失）+ schema 1→2。单测 72/72；e2e：base 8% stop_loss=11 vs `#sl30` 30% stop_loss=1（B3 穿透实证）。首个用例 `dividend_cross_section`(8%) + `dividend_cross_section#sl30`(30%) 并存。main DB 已 reseed base 8%（修历史 30% 污染）+ 新增 sl30。附带修复 `asset.note` 遗留列（`_migrate` DROP，干净库 `--init-db` 跑通）。
 >
 > **干净回测 16/16 已落盘**（§0.6 全表，带回撤/卡玛/回本/换手/磨损/仓位/止损成交/止损损失/胜率）：12 策略先落盘 + 本次提速重启 4（pure_factor / dual_bollinger / bollinger_reversion / bollinger_reversion_cross_section，07-22 18:11 完成）。
@@ -203,3 +209,4 @@ stockfu/
 3. ✅ 回测性能修复（bollinger N+1 + value 指纹，§0.8）
 4. 小市值因子仍不可用（market_cap 空）
 5. ruff E 类清理（16 个：E741 模糊变量名 `l` / E702 / E701 / E402，均非 bug）后，基线升级 `select=["E","F"]`
+6. ⚠️ **【未修·2026-07-24 记录】行情拆表后约 10 处代码仍直接 `select(QuoteSnapshot)` 读 ETF/指数**（未按 `quote_model_for` 路由）：`services/{universe,composite,backfill,fundflow,valuation,indices}.py`、`ai/context.py`、`api/routes.py`、`scheduler/jobs.py`（多处）。ETF 行情已迁到 `EtfQuoteDaily`，但 `QuoteSnapshot` 里残留 ETF 孤儿行（停在 2026-07-21、永不再更新）→ 这些 reader 对 ETF 读到陈旧数据。**影响**：Web 看板 ETF 行情行、ETF 三层情绪（`composite` 读 `QuoteSnapshot` 算）等可能显示旧值；**不影响**邮件分享卡片（`snapshot.latest_snapshot`+`share.perf` 已 2026-07-24 改路由）。**修法**：(a) 给这 ~10 处统一改 `quote_model_for` 路由；(b) 删 ETF/Index 的 `QuoteSnapshot` 孤儿行——但会令部分 reader 读空，须逐个确认（`composite` 算 ETF 情绪 / `fundflow` / `indices`）。**当前决定：暂不修**（邮件已正确），记录在此待后续。
