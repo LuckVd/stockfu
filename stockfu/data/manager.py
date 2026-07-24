@@ -146,8 +146,14 @@ class DataProviderManager:
         return self.akshare.get_etf_fund_flow(code)
 
     # -------- 板块（同花顺：板块K线+成交额 / 板块资金流 / 大盘资金流）--------
+    def get_sector_names_ths(self) -> list[str]:
+        return self.akshare.get_sector_names_ths()
+
     def get_sector_kline(self, sector_name: str, days: int = 1460) -> list:
         return self.akshare.get_sector_kline(sector_name, days)
+
+    def get_sector_kline_period(self, sector_name: str, start_date: str, end_date: str) -> list:
+        return self.akshare.get_sector_kline_period(sector_name, start_date, end_date)
 
     def get_sector_flow_today(self) -> list:
         return self.akshare.get_sector_flow_today()

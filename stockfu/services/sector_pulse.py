@@ -41,7 +41,9 @@ def _mean(values: list[float | None]) -> float | None:
 def _state(flows: list[float]) -> str:
     recent = flows[-5:]
     if len(recent) < 3:
-        return "资金样本不足"
+        if not recent:
+            return "资金样本不足"
+        return "当日净流入" if recent[-1] > 0 else "当日净流出" if recent[-1] < 0 else "当日平衡"
     if all(x > 0 for x in recent):
         return "连续流入"
     if all(x < 0 for x in recent):
@@ -82,16 +84,25 @@ def build(as_of: date) -> dict:
         v, c = (_pct(vols, vols[-1]) if vols else None,
                 _pct(chgs, chgs[-1]) if chgs else None)
         a = _pct(acts, acts[-1]) if acts else None
-        fp = _pct(net, net[-1]) if len(net) >= 10 else None
         rows.append({
             "name": name, "day_chg": qs[-1].pct_chg,
             "perf_5d": round(chgs[-1] * 100, 2) if chgs else None,
             "net_inflow": fs[-1].net_inflow,
             "net_inflow_pct": fs[-1].net_inflow_pct,
-            "fear": _mean([v, 100 - c if c is not None else None,
-                           100 - fp if fp is not None else None]),
-            "greed": _mean([c, fp]), "heat": a, "state": _state(net),
+            "_vol": v, "_momentum": c, "_net": fs[-1].net_inflow,
+            "heat": a, "state": _state(net),
         })
+    # 免费源没有行业历史资金流；以同日完整行业的横截面排名表达当天资金偏好。
+    # 这不能被误读为持续流入，连续性仍只由 _state 的真实本地日序列决定。
+    net_values = [r["_net"] for r in rows if r["_net"] is not None]
+    for r in rows:
+        fp = _pct(net_values, r["_net"]) if len(net_values) >= 10 else None
+        vol, momentum = r.pop("_vol"), r.pop("_momentum")
+        r.pop("_net")
+        r["fear"] = _mean([vol, 100 - momentum if momentum is not None else None,
+                            100 - fp if fp is not None else None])
+        r["greed"] = _mean([momentum, fp])
+        r["fund_rank"] = fp
     rows.sort(key=lambda x: (x["net_inflow"] is not None, x["net_inflow"] or 0), reverse=True)
     up = sum(1 for x in rows if (x["day_chg"] or 0) > 0)
     down = sum(1 for x in rows if (x["day_chg"] or 0) < 0)

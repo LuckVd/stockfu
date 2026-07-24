@@ -301,79 +301,95 @@ def backfill_sector_flow_history(sector_names: list[str], *, pause_sec: float = 
     return out
 
 
-def backfill_sector_pulse_history(*, pause_sec: float = 1.2) -> dict:
-    """初始化完整东方财富行业全景，严格串行、每行业最多两次请求。
+def _upsert_sector_bars(name: str, bars: list) -> int:
+    """写入同花顺单一行业的日线；按日期幂等并用相邻收盘价计算涨跌。"""
+    incoming = {b.date: b for b in bars if b.date and b.close and b.close > 0}
+    if not incoming:
+        return 0
+    with session_scope() as s:
+        existing = {r.snap_date: r for r in s.exec(select(SectorSnapshot).where(
+            SectorSnapshot.sector_name == name)).all()}
+        all_dates = sorted(set(existing) | set(incoming))
+        prev_close = None
+        added = 0
+        for d in all_dates:
+            row = existing.get(d)
+            bar = incoming.get(d)
+            close = bar.close if bar else row.close
+            if bar and row is None:
+                s.add(SectorSnapshot(sector_name=name, snap_date=d, open=bar.open,
+                    high=bar.high, low=bar.low, close=bar.close,
+                    pct_chg=round((bar.close / prev_close - 1) * 100, 2) if prev_close else None,
+                    volume=bar.volume, amount=bar.amount))
+                added += 1
+            prev_close = close if close and close > 0 else prev_close
+        s.commit()
+    return added
 
-    选择东方财富行业分类，是因为历史行情与历史资金流可按完全相同的名称取得；
-    不与同花顺行业名交叉映射，避免卡片把不同口径拼成一行。
+
+def backfill_sector_pulse_history(*, pause_sec: float = 0.3) -> dict:
+    """回补同花顺 90 行业的 2020 至今历史日线，严格逐年串行限频。
+
+    同花顺没有免费历史行业资金流；资金流仅由每日全行业实时快照开始积累，
+    情绪首日改用当日横截面排名而非伪造历史。
     """
-    import time
-
     from stockfu.data.manager import get_manager
 
     manager = get_manager()
-    names = manager.get_sector_names_em()
-    result = {"requested": len(names), "quotes": 0, "flows": 0, "ok": [], "failed": []}
-    for i, name in enumerate(names):
-        bars = manager.get_sector_kline_em(name)
-        if bars:
-            # 复用已有 upsert 逻辑，但不再走不同分类的同花顺接口。
-            with session_scope() as s:
-                have = {x.snap_date for x in s.exec(select(SectorSnapshot).where(
-                    SectorSnapshot.sector_name == name)).all()}
-                prev = None
-                for b in sorted(bars, key=lambda x: x.date):
-                    if b.date not in have:
-                        s.add(SectorSnapshot(sector_name=name, snap_date=b.date, open=b.open,
-                            high=b.high, low=b.low, close=b.close,
-                            pct_chg=round((b.close / prev - 1) * 100, 2) if prev else None,
-                            volume=b.volume, amount=b.amount))
-                        result["quotes"] += 1
-                    prev = b.close
-                s.commit()
-        flows = manager.get_sector_flow_history(name)
-        if flows:
-            with session_scope() as s:
-                have = {x.snap_date for x in s.exec(select(SectorFlowSnapshot).where(
-                    SectorFlowSnapshot.sector_name == name)).all()}
-                for r in flows:
-                    if r["date"] not in have:
-                        s.add(SectorFlowSnapshot(sector_name=name, snap_date=r["date"],
-                            net_inflow=r.get("net_inflow"), net_inflow_pct=r.get("net_inflow_pct")))
-                        result["flows"] += 1
-                s.commit()
-        if bars and flows:
-            result["ok"].append(name)
-        else:
-            result["failed"].append(name)
-        if i + 1 < len(names):
-            time.sleep(max(1.0, pause_sec))
+    names = manager.get_sector_names_ths()
+    years = range(2020, date.today().year + 1)
+    result = {"requested": len(names), "quotes": 0, "ok": [], "failed": [], "invalid": []}
+    for name in names:
+        name_ok = True
+        for year in years:
+            bars = manager.get_sector_kline_period(name, f"{year}0101", f"{year}1231")
+            # 上游偶尔忽略日期参数；不接受跨年或重复日期，避免污染历史分位。
+            dates = [b.date for b in bars]
+            if not bars or len(dates) != len(set(dates)) or any(d.year != year for d in dates):
+                name_ok = False
+                result["invalid"].append(f"{name}:{year}")
+            else:
+                result["quotes"] += _upsert_sector_bars(name, bars)
+            time.sleep(max(0.2, pause_sec))
+        (result["ok"] if name_ok else result["failed"]).append(name)
+    result["daily"] = refresh_sector_pulse_today(date.today(), pause_sec=pause_sec)
     return result
 
 
-def refresh_sector_pulse_today(snap_date) -> dict:
-    """每日一次批量刷新同源行业行情+资金流，供分享图同日校验。"""
+def refresh_sector_pulse_today(snap_date, *, pause_sec: float = 0.3) -> dict:
+    """同花顺全行业当日资金流 + 逐行业近期日线；仅写同日完整记录。"""
     from stockfu.data.manager import get_manager
     from stockfu.services.quote_writer import _coerce_date
 
     d = _coerce_date(snap_date)
     manager = get_manager()
-    spots = {x["name"]: x for x in manager.get_sector_spot_em() if x.get("name")}
-    flows = {x["name"]: x for x in manager.get_sector_flow_today_em() if x.get("name")}
-    common = set(spots) & set(flows)
-    with session_scope() as s:
-        for name in common:
-            q, f = spots[name], flows[name]
-            snap = s.exec(select(SectorSnapshot).where(SectorSnapshot.sector_name == name,
-                SectorSnapshot.snap_date == d)).first() or SectorSnapshot(sector_name=name, snap_date=d)
-            snap.close, snap.pct_chg = q.get("close"), q.get("pct_chg")
-            snap.amount, snap.volume = q.get("amount"), q.get("volume")
-            if snap.id is None:
-                s.add(snap)
-            flow = s.exec(select(SectorFlowSnapshot).where(SectorFlowSnapshot.sector_name == name,
-                SectorFlowSnapshot.snap_date == d)).first() or SectorFlowSnapshot(sector_name=name, snap_date=d)
-            flow.net_inflow, flow.net_inflow_pct = f.get("net_inflow"), f.get("net_inflow_pct")
+    flows = {x["name"]: x for x in manager.get_sector_flow_today() if x.get("name")}
+    result = {"listed": len(flows), "kline": 0, "same_day": 0, "failed": [], "date": d.isoformat()}
+    start = (d - timedelta(days=14)).strftime("%Y%m%d")
+    end = d.strftime("%Y%m%d")
+    for name, f in flows.items():
+        bars = manager.get_sector_kline_period(name, start, end)
+        today = next((b for b in bars if b.date == d), None)
+        if today is None:
+            result["failed"].append(name)
+            time.sleep(max(0.2, pause_sec))
+            continue
+        _upsert_sector_bars(name, [today])
+        with session_scope() as s:
+            flow = s.exec(select(SectorFlowSnapshot).where(
+                SectorFlowSnapshot.sector_name == name, SectorFlowSnapshot.snap_date == d)).first()
+            flow = flow or SectorFlowSnapshot(sector_name=name, snap_date=d)
+            flow.net_inflow = f.get("net_inflow")
+            flow.inflow = f.get("inflow")
+            flow.outflow = f.get("outflow")
+            flow.company_count = f.get("company_count")
+            flow.leading_stock = f.get("leading_stock") or ""
+            flow.leading_chg = f.get("leading_chg")
+            flow.index_pct_chg = f.get("index_pct_chg")
             if flow.id is None:
                 s.add(flow)
-        s.commit()
-    return {"spots": len(spots), "flows": len(flows), "same_day": len(common), "date": d.isoformat()}
+            s.commit()
+        result["kline"] += 1
+        result["same_day"] += 1
+        time.sleep(max(0.2, pause_sec))
+    return result
