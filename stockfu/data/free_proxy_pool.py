@@ -28,6 +28,10 @@ ProxyKind = Literal["http", "socks4", "socks5"]
 BAOSTOCK_HOST = "public-api.baostock.com"
 BAOSTOCK_PORT = 10030
 
+# login probe 进程级看门狗总预算下限(秒)。正常 login <5s；超时即 os._exit 强杀
+# 卡在 baostock 内部"接收数据异常"重试循环的 worker，防 shutdown(wait=False) 后孤儿空转。
+_LOGIN_PROBE_WALL_FLOOR = 30.0
+
 _DEFAULT_SOURCES: dict[ProxyKind, list[str]] = {
     "http": [
         "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=8000&country=all&ssl=all&anonymity=all",
@@ -541,6 +545,19 @@ def _mp_baostock_login_probe(args: tuple) -> tuple[bool, float, str]:
     """
     kind, host, port, login_timeout = args
     t0 = time.time()
+    # 进程级硬看门狗：baostock.login() 对坏代理会在内部反复 timeout+重试
+    # （"接收数据异常，请稍后再试"）；sock.settimeout 只管单段 socket，管不住
+    # 库内部循环，worker 会永久卡死。到 deadline 用 os._exit 强杀自己，避免被
+    # ProcessPoolExecutor.shutdown(wait=False) 丢弃后变孤儿空转烧 CPU。
+    _wd_stop = threading.Event()
+
+    def _watchdog() -> None:
+        deadline = t0 + max(float(login_timeout) * 2.5, _LOGIN_PROBE_WALL_FLOOR)
+        while not _wd_stop.wait(1.0):
+            if time.time() >= deadline:
+                os._exit(2)
+
+    threading.Thread(target=_watchdog, daemon=True).start()
     try:
         import baostock as bs
         import baostock.common.contants as cons
@@ -581,6 +598,8 @@ def _mp_baostock_login_probe(args: tuple) -> tuple[bool, float, str]:
         return False, ms, f"code={code} {msg}"
     except Exception as e:  # noqa: BLE001
         return False, (time.time() - t0) * 1000, f"{type(e).__name__}: {e}"
+    finally:
+        _wd_stop.set()
 
 
 def _install_baostock_proxy(ep: ProxyEndpoint, timeout: float) -> None:
