@@ -35,7 +35,9 @@
 > **【2026-07-24 · 邮件生图数据正确性修复】** 三件事，均在分支 `fix/dividend-ttm-corruption`：
 > ① **股息率虚高**（commit `ca056b9`）：baostock 抓分红结果集串行 bleed 产生 stale 行（2017 标签配 2026 ex_date/28 元）+ TTM 计算只有下界无上界（future ex_date 计入）+ 持仓/自选股息率分母误用 qfq `close`。修：`dividend.metric_from_db`/`baostock.get_dividend_metric` TTM 加上界 `≤today`；baostock 解析丢弃 `|ex_date年−财年|≥2` 的 stale 行；`persist_dividends` 同批去重；`snapshot.LatestSnapshot` 加 `close_raw`、`portfolio` 两处分母改 `close_raw`。五粮液 48%→6.89%。本机 `dividend_event` 清 44 行（5 stale+38 重复+1 phantom）。
 > ② **ETF 显示陈旧数据**：`snapshot._read_latest` 与 `share.perf` 硬编码读 `QuoteSnapshot`、没按 `quote_model_for` 路由 → 7 只自选 ETF 读到 `QuoteSnapshot` 里停在 07-21 的孤儿行（ETF 行情实际在 `EtfQuoteDaily`），卡片显示旧价（588870 曾显示 07-21 的 1.941/+10.85%）。已改这两处路由，全 52 holdings 现 07-23（588870 科创50ETF 1.819/-3.24%）。**⚠️ 仅修了卡片两条路径；其余 reader 未修见 §8.6。**
-> ③ **港美股清除**（保留 yfinance 代码能力）：DB 删 4 Asset+2 Holding；`config.py` watchlist + `db.py` demo holdings 去掉 `00700/09988/AAPL/MSFT`。剩 52 个纯 A 股资产。
+
+> ③ **分享导出完整性门禁**：卡片只要有自选或三大指数未更新至同一交易日，`/share` 返回 409、邮件任务跳过发送；校验按 `quote_model_for` 路由三张行情表，避免 ETF 旧孤儿行误判。卡片区间收益也固定截至卡片交易日，周末与补发结果可复现。
+> ④ **港美股清除**（保留 yfinance 代码能力）：DB 删 4 Asset+2 Holding；`config.py` watchlist + `db.py` demo holdings 去掉 `00700/09988/AAPL/MSFT`。剩 52 个纯 A 股资产。
 > 已 `--fetch --date 2026-07-23`（行情至 07-23）+ `--test-mail` 重发正确邮件（`BAOSTOCK_PROXY_MODE=direct`）。**PR 待开**（`gh` 未装，手动点链接）；committer 仍 `root@localhost`。
 
 > ✅ **【已完成 2026-07-22】策略参数变体（一等）+ 回测指标持久化** —— 按 `docs/STRATEGY_VARIANTS_PLAN.md` 全量实现并提交（main `561a0e6`+`7a87328`；backtest `feature/backtest` `e96f598`+`4c8a295`）。A) `strategy_id` 编码变体（`base#key`，seed `_expand_variants`/`_deep_merge` 展开器；变体行 derived 每次 seed 强制重同步；recommend 改读 DB config；main 校验复合 id 不静默回落）；B) 引擎原生产出 回本/本金水下分布（低于初始本金、以及亏损至少 10/20/30%）/distinct_bought/stop_loss_count/realized_loss（止损 signal 穿透 6 处，原 `_exec` 写 `None` 丢失）+ schema 1→2。单测 72/72；e2e：base 8% stop_loss=11 vs `#sl30` 30% stop_loss=1（B3 穿透实证）。首个用例 `dividend_cross_section`(8%) + `dividend_cross_section#sl30`(30%) 并存。main DB 已 reseed base 8%（修历史 30% 污染）+ 新增 sl30。附带修复 `asset.note` 遗留列（`_migrate` DROP，干净库 `--init-db` 跑通）。

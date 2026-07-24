@@ -801,6 +801,12 @@ def run_scheduled_fetch(target_date) -> dict:
             except Exception:  # noqa: BLE001
                 pass
 
+    # 导出只接受同一交易日的自选 + 三个市场指数；不建额外状态表，结果随本次摘要返回。
+    from stockfu.services.share import export_readiness
+    export_data = export_readiness(td)
+    if not export_data["ok"]:
+        print(f"  [export blocked] stale={export_data['stale'][:8]}", flush=True)
+
     summary = {
         "quotes": len(ok),
         "retries": retries,
@@ -810,6 +816,8 @@ def run_scheduled_fetch(target_date) -> dict:
         "fundflow_etfs": flows,
         "sector_flow": sector_flow,
         "composite_levels": len(comp) if isinstance(comp, dict) else 0,
+        "export_ready": export_data["ok"],
+        "export_stale": export_data["stale"],
         "elapsed_sec": round(_t.time() - t_all, 1),
     }
     print(f"=== [fetch] done {summary} ===", flush=True)
@@ -874,13 +882,15 @@ def run_schedule() -> None:
             print(f"  [skip fetch] 目标日非法，跳过本次调度: {_e}", flush=True)
             return {"skipped": str(_e)}
         result = run_scheduled_fetch(td)
-        # 只要邮件就绪就发，不管个别标的失败（有数据的发，没数据的跳）
-        if get_mail_enabled() and is_mail_ready():
+        # 分享数据不是同一交易日则不发，避免把混合日期卡片当作当日日报。
+        if get_mail_enabled() and is_mail_ready() and result.get("export_ready"):
             try:
                 mail_result = run_mail_job()
                 result["mail"] = mail_result
             except Exception as exc:  # noqa: BLE001
                 result["mail"] = {"ok": False, "detail": str(exc)}
+        elif get_mail_enabled() and is_mail_ready():
+            result["mail"] = {"ok": False, "detail": "分享数据日期不完整，已跳过发信"}
         return result
 
     hhmm = get_daily_fetch_time()

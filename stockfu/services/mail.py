@@ -130,9 +130,13 @@ def send_card_email(images: list[bytes], subject: str | None = None) -> dict:
 def run_mail_job() -> dict:
     """出图 + 发信，供 scheduler mail job 与 --test-mail 复用。"""
     from stockfu.config import is_mail_ready
+    from stockfu.services.share import export_readiness
 
     if not is_mail_ready():
         return {"ok": False, "detail": "邮件未配置完整（账号 / 授权码 / 收件人）"}
+    readiness = export_readiness()
+    if not readiness["ok"]:
+        return {"ok": False, "detail": "分享数据日期不完整，已跳过发信", "data": readiness}
     try:
         imgs = render_share_images()
     except Exception as exc:  # noqa: BLE001
