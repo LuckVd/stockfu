@@ -82,6 +82,11 @@ def _migrate() -> None:
                     "close_qfq = COALESCE(close_qfq, close) "
                     "WHERE close IS NOT NULL OR close_qfq IS NOT NULL"
                 ))
+    if insp.has_table("sector_flow_snapshot"):
+        cols = [c["name"] for c in insp.get_columns("sector_flow_snapshot")]
+        if "net_inflow_pct" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE sector_flow_snapshot ADD COLUMN net_inflow_pct FLOAT"))
     if insp.has_table("operator_result"):
         cols = [c["name"] for c in insp.get_columns("operator_result")]
         # raw_score 列已废弃(G10 后并入 score,全库无代码读写)→ DROP 回收(SQLite≥3.35)。幂等。

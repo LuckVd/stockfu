@@ -143,6 +143,13 @@ def run_backfill_sw() -> None:
     print("回补 31 个申万一级行业指数历史日线（akshare index_hist_sw）…")
     print(f"✓ {_run()}")
 
+
+def run_backfill_sector_pulse() -> None:
+    from stockfu.services.backfill import backfill_sector_pulse_history
+
+    print("回补完整行业历史行情与资金流（严格串行，行业间至少等待 1.2 秒）…")
+    print(f"✓ {backfill_sector_pulse_history(pause_sec=1.2)}")
+
 def run_backfill_etf_industry() -> None:
     from stockfu.scheduler.jobs import backfill_industry_etf as _run
 
@@ -671,6 +678,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补回测基准 sh000001 历史日线（首次部署用）")
     p.add_argument("--backfill-sw", action="store_true",
                    help="回补 31 个申万一级行业指数历史日线(akshare index_hist_sw;行业情绪/轮动前置)")
+    p.add_argument("--backfill-sector-pulse", action="store_true",
+                   help="串行回补完整行业历史行情+资金流(东方财富同口径，行业间≥1.2秒)")
     p.add_argument("--backfill-etf-industry", action="store_true",
                    help="回补行业 ETF 历史日线(前复权 qfq：东财→腾讯;可交易轮动前置)")
     p.add_argument("--backfill-etf", action="store_true",
@@ -800,6 +809,8 @@ def main() -> None:
         run_backfill_benchmark()
     elif args.backfill_sw:
         run_backfill_sw()
+    elif args.backfill_sector_pulse:
+        run_backfill_sector_pulse()
     elif args.backfill_etf_industry:
         run_backfill_etf_industry()
     elif args.backfill_etf:

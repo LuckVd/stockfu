@@ -121,4 +121,8 @@ def build_card() -> dict:
     } for p in wl]
     holdings.sort(key=lambda h: (h["day_chg"] if h["day_chg"] is not None else -999), reverse=True)
 
-    return {"date": td.isoformat(), "market": market, "holdings": holdings}
+    # 行业全景是附加信息：仅使用与卡片同日的行业行情+资金流；尚未完成历史
+    # 初始化时返回空列表，绝不以陈旧板块数据冒充当日结论。
+    from stockfu.services import sector_pulse
+    return {"date": td.isoformat(), "market": market, "sectors": sector_pulse.build(td),
+            "holdings": holdings}

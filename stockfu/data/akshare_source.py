@@ -679,6 +679,75 @@ class AkshareSource(DataSource):
             })
         return out
 
+    def get_sector_flow_history(self, sector_name: str) -> list[dict]:
+        """东财行业历史主力资金流（近期窗口）。失败返回空。
+
+        这个接口按行业逐个请求，调用方必须串行并限频；这里不做重试或并发，
+        以免初始化全行业历史时触发数据源限流。
+        """
+        with direct_connection():
+            try:
+                import akshare as ak
+                df = ak.stock_sector_fund_flow_hist(symbol=sector_name)
+            except Exception:
+                return []
+        if df is None or df.empty:
+            return []
+        out: list[dict] = []
+        for _, r in df.iterrows():
+            try:
+                d = pd.to_datetime(pick_col(r, ["日期"])).date()
+            except (KeyError, ValueError, TypeError):
+                continue
+            out.append({
+                "date": d,
+                "net_inflow": safe_float(pick_col(r, ["主力净流入-净额"])),
+                "net_inflow_pct": safe_float(pick_col(r, ["主力净流入-净占比"])),
+            })
+        return out
+
+    def get_sector_names_em(self) -> list[str]:
+        """东方财富行业分类清单；与其历史资金流接口保持同一分类。"""
+        with direct_connection():
+            try:
+                import akshare as ak
+                df = ak.stock_board_industry_name_em()
+            except Exception:
+                return []
+        if df is None or df.empty:
+            return []
+        return list(dict.fromkeys(
+            safe_str(pick_col(r, ["板块名称", "名称", "行业名称"])) for _, r in df.iterrows()
+            if safe_str(pick_col(r, ["板块名称", "名称", "行业名称"]))
+        ))
+
+    def get_sector_kline_em(self, sector_name: str) -> list:
+        """东方财富行业历史日线，与 get_sector_flow_history 同分类。"""
+        with direct_connection():
+            try:
+                import akshare as ak
+                df = ak.stock_board_industry_hist_em(
+                    symbol=sector_name, start_date="20200101",
+                    end_date=date.today().strftime("%Y%m%d"), period="日k", adjust="")
+            except Exception:
+                return []
+        if df is None or df.empty:
+            return []
+        out = []
+        for _, r in df.iterrows():
+            try:
+                d = pd.to_datetime(pick_col(r, ["日期"])).date()
+                out.append(KlineBar(date=d,
+                    open=safe_float(pick_col(r, ["开盘"])) or 0.0,
+                    high=safe_float(pick_col(r, ["最高"])) or 0.0,
+                    low=safe_float(pick_col(r, ["最低"])) or 0.0,
+                    close=safe_float(pick_col(r, ["收盘"])) or 0.0,
+                    volume=safe_float(pick_col(r, ["成交量"])),
+                    amount=safe_float(pick_col(r, ["成交额"]))))
+            except (KeyError, ValueError, TypeError):
+                continue
+        return out
+
     def get_market_fund_flow(self) -> list:
         """大盘资金流历史（akshare stock_market_fund_flow，~6个月逐日）。
 

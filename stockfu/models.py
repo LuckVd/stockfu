@@ -243,6 +243,7 @@ class SectorFlowSnapshot(SQLModel, table=True):
     sector_name: str = Field(index=True)
     snap_date: date = Field(default_factory=date.today, index=True)
     net_inflow: float | None = None              # 主力净额
+    net_inflow_pct: float | None = None          # 主力净流入占比（历史源可提供）
     inflow: float | None = None
     outflow: float | None = None
     company_count: int | None = None

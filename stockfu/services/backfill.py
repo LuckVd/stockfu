@@ -248,6 +248,7 @@ def backfill_sector_flow(snap_date) -> int:
                 SectorFlowSnapshot.snap_date == d)).first()
             snap = snap or SectorFlowSnapshot(sector_name=sector, snap_date=d)
             snap.net_inflow = f.get("net_inflow")
+            # 同花顺即时表无净占比；保留为空，历史东财源会补齐。
             snap.inflow = f.get("inflow")
             snap.outflow = f.get("outflow")
             snap.company_count = f.get("company_count")
@@ -259,3 +260,92 @@ def backfill_sector_flow(snap_date) -> int:
             n += 1
         s.commit()
     return n
+
+
+def backfill_sector_flow_history(sector_names: list[str], *, pause_sec: float = 1.2) -> dict:
+    """串行回补行业历史资金流，返回逐行业结果。
+
+    东财历史接口按行业查询且会主动限流。本函数刻意不使用线程/协程：一次只发
+    一个请求，每次请求后等待至少 ``pause_sec``。单行业失败只记录失败，不阻断
+    其余行业；已有日期幂等跳过。调用者应把返回摘要留在日志，不能把失败行业
+    当作当天资金流有效。
+    """
+    import time
+
+    from stockfu.data.manager import get_manager
+
+    out = {"requested": len(sector_names), "rows": 0, "ok": [], "failed": []}
+    for i, name in enumerate(sector_names):
+        rows = get_manager().get_sector_flow_history(name)
+        if not rows:
+            out["failed"].append(name)
+        else:
+            added = 0
+            with session_scope() as s:
+                existing = {r.snap_date for r in s.exec(select(SectorFlowSnapshot).where(
+                    SectorFlowSnapshot.sector_name == name)).all()}
+                for r in rows:
+                    d = r.get("date")
+                    if d is None or d in existing:
+                        continue
+                    s.add(SectorFlowSnapshot(
+                        sector_name=name, snap_date=d, net_inflow=r.get("net_inflow"),
+                        net_inflow_pct=r.get("net_inflow_pct"),
+                    ))
+                    added += 1
+                s.commit()
+            out["rows"] += added
+            out["ok"].append({"name": name, "rows": len(rows), "added": added})
+        if i + 1 < len(sector_names):
+            time.sleep(max(1.0, pause_sec))
+    return out
+
+
+def backfill_sector_pulse_history(*, pause_sec: float = 1.2) -> dict:
+    """初始化完整东方财富行业全景，严格串行、每行业最多两次请求。
+
+    选择东方财富行业分类，是因为历史行情与历史资金流可按完全相同的名称取得；
+    不与同花顺行业名交叉映射，避免卡片把不同口径拼成一行。
+    """
+    import time
+
+    from stockfu.data.manager import get_manager
+
+    manager = get_manager()
+    names = manager.get_sector_names_em()
+    result = {"requested": len(names), "quotes": 0, "flows": 0, "ok": [], "failed": []}
+    for i, name in enumerate(names):
+        bars = manager.get_sector_kline_em(name)
+        if bars:
+            # 复用已有 upsert 逻辑，但不再走不同分类的同花顺接口。
+            with session_scope() as s:
+                have = {x.snap_date for x in s.exec(select(SectorSnapshot).where(
+                    SectorSnapshot.sector_name == name)).all()}
+                prev = None
+                for b in sorted(bars, key=lambda x: x.date):
+                    if b.date not in have:
+                        s.add(SectorSnapshot(sector_name=name, snap_date=b.date, open=b.open,
+                            high=b.high, low=b.low, close=b.close,
+                            pct_chg=round((b.close / prev - 1) * 100, 2) if prev else None,
+                            volume=b.volume, amount=b.amount))
+                        result["quotes"] += 1
+                    prev = b.close
+                s.commit()
+        flows = manager.get_sector_flow_history(name)
+        if flows:
+            with session_scope() as s:
+                have = {x.snap_date for x in s.exec(select(SectorFlowSnapshot).where(
+                    SectorFlowSnapshot.sector_name == name)).all()}
+                for r in flows:
+                    if r["date"] not in have:
+                        s.add(SectorFlowSnapshot(sector_name=name, snap_date=r["date"],
+                            net_inflow=r.get("net_inflow"), net_inflow_pct=r.get("net_inflow_pct")))
+                        result["flows"] += 1
+                s.commit()
+        if bars and flows:
+            result["ok"].append(name)
+        else:
+            result["failed"].append(name)
+        if i + 1 < len(names):
+            time.sleep(max(1.0, pause_sec))
+    return result
