@@ -724,11 +724,8 @@ def run_scheduled_fetch(target_date) -> dict:
         except Exception:  # noqa: BLE001
             pass
 
-    print("=== [fetch] 3/6 sector flow ===", flush=True)
+    print("=== [fetch] 3/6 sector pulse ===", flush=True)
     from stockfu.services import backfill as bf
-    sector_flow = _call_timeout(
-        lambda: bf.backfill_sector_flow(td), 45, "sector_flow", default=0,
-    ) or 0
     sector_pulse = _call_timeout(
         lambda: bf.refresh_sector_pulse_today(td), 45, "sector_pulse", default={},
     ) or {}
@@ -817,7 +814,6 @@ def run_scheduled_fetch(target_date) -> dict:
         "still_failed_codes": fail[:20],
         "dividends": divs,
         "fundflow_etfs": flows,
-        "sector_flow": sector_flow,
         "sector_pulse": sector_pulse,
         "composite_levels": len(comp) if isinstance(comp, dict) else 0,
         "export_ready": export_data["ok"],
