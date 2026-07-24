@@ -1,10 +1,10 @@
 """三层情绪指数合成（市场 / 板块 / 个股）。
 
 框架（CNN 式）：每个因子取自身历史分位(0-100) → 按指数方向等权平均。
-- K线派生因子(volatility/momentum/amount)：从 quote_snapshot 算 rolling 序列 → 分位（立即可用）
+- K线派生因子(volatility/momentum/relative_activity)：从行情序列算 rolling 序列 → 分位（立即可用）
 - 外部因子(连板/两融/ERP/资金流/涨跌家数)：取当日值，分位从 factor_snapshot 历史算
   （首日无历史→跳过，随每日 --fetch 积累后生效；越跑越准）
-方向：fear=下行(vol高/跌/资金流出/ERP高)，greed=上行(涨/放量/连板/两融升/资金流入)，heat=活跃(成交/连板数)。
+方向：fear=下行(vol高/跌/资金流出/ERP高)，greed=上行(涨/连板/两融升/资金流入)，heat=相对活跃(相对均量/连板数)。
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from stockfu.db import session_scope
 from stockfu.models import FactorSnapshot, IndexSnapshot, SectorFlowSnapshot, SectorSnapshot
 from stockfu.services import factors as F
 
-BENCH = "512100"  # 大盘基准：中证1000ETF（中小盘代表，比沪深300 更能反映全市场）
+BENCH = "sh000001"  # 卡片展示上证指数，情绪与展示基准必须同源
 MID = F.WINDOW_MID_DAYS  # 情绪/量价类 5 年窗口
 
 # 板块/主题 → 代表 ETF（板块层用其 K 线 + 板块资金流）
@@ -53,6 +53,23 @@ def _rolling_vol(closes, n=20):
 
 def _rolling_chg(closes, n=5):
     return [closes[i] / closes[i - n] - 1 for i in range(n, len(closes))] if len(closes) > n else []
+
+
+def _rolling_relative_activity(values, n=20):
+    """量能相对前 n 日均量的倍数序列。
+
+    不直接对绝对成交额/成交量做五年分位，避免市场扩容、指数点位或 ETF 规模的
+    长期变化把“热度”系统性推高。当天量能只和此前 n 日自身均量比较，再对这个
+    倍数取历史分位。
+    """
+    if len(values) <= n:
+        return []
+    out = []
+    for i in range(n, len(values)):
+        base = sum(values[i - n:i]) / n
+        if base > 0 and values[i] >= 0:
+            out.append(values[i] / base)
+    return out
 
 
 def _pct(series, value):
@@ -148,18 +165,21 @@ def compute_for(code, level, scope, ext=None, val_pcts=None, ext_pcts=None, as_o
         vols, chgs = _rolling_vol(closes), _rolling_chg(closes)
         vol_pct = _pct(vols, vols[-1]) if vols else None
         chg_pct = _pct(chgs, chgs[-1]) if chgs else None
-        # 成交活跃度：优先成交额(amount)，样本不足则回退成交量(volume)
-        amt_series = amounts if len(amounts) >= 10 else volumes
-        amt_pct = _pct(amt_series, amt_series[-1]) if amt_series else None
-        comps.update(volatility_pct=vol_pct, momentum_pct=chg_pct, amount_pct=amt_pct)
+        # 热度只衡量相对自身近期均量的放量程度；优先成交额，缺失时回退成交量。
+        # 相对 20 日均量至少需要 21 个有效值；部分指数只补了近期成交额，
+        # 此时应回退到完整的成交量，不能因此把热度显示为空。
+        amt_series = amounts if len(amounts) >= 21 else volumes
+        activity = _rolling_relative_activity(amt_series)
+        activity_pct = _pct(activity, activity[-1]) if activity else None
+        comps.update(volatility_pct=vol_pct, momentum_pct=chg_pct,
+                     relative_activity_pct=activity_pct)
         if vol_pct is not None:
             fp.append(vol_pct)
         if chg_pct is not None:
             fp.append(100 - chg_pct)   # 跌 → fear
             gp.append(chg_pct)         # 涨 → greed
-        if amt_pct is not None:
-            gp.append(amt_pct)
-            hp.append(amt_pct)
+        if activity_pct is not None:
+            hp.append(activity_pct)
 
     for name, (val, belong) in ext.items():
         ext_raws[name] = val
@@ -192,15 +212,18 @@ def compute_for(code, level, scope, ext=None, val_pcts=None, ext_pcts=None, as_o
 
 
 def _ensure_bench_kline(min_bars: int = 60) -> None:
-    """大盘基准(510300)K线不足则补——大盘指数依赖它，否则恒为空。"""
+    """大盘基准 K 线不足则补；指数与 ETF/个股走各自行情表。"""
     from stockfu.db import session_scope
-    from stockfu.models import QuoteSnapshot
+    model = F.quote_model_for(BENCH)
     with session_scope() as s:
-        n = len(s.exec(select(QuoteSnapshot).where(
-            QuoteSnapshot.asset_code == BENCH)).all())
+        n = len(s.exec(select(model).where(model.asset_code == BENCH)).all())
     if n < min_bars:
-        from stockfu.scheduler.jobs import backfill_kline
-        backfill_kline(BENCH, 1825)
+        if BENCH.startswith(("sh", "sz")):
+            from stockfu.scheduler.jobs import run_backfill_benchmark
+            run_backfill_benchmark(BENCH)
+        else:
+            from stockfu.scheduler.jobs import backfill_kline
+            backfill_kline(BENCH, 1825)
 
 
 def compute_market(as_of=None):

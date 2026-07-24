@@ -640,11 +640,11 @@ tr.detail td{padding:0;border:0;background:var(--bg)}
     <h3>情绪指数怎么算</h3>
     <div class="desc">三个指数均为 0–100，采用 CNN 式算法：每个因子取近 5 年历史分位，再按方向等权平均。</div>
     <div class="help-item"><b>恐慌指数</b>下行因子（波动率分位 + 跌幅分位）。值越高 = 市场越恐慌。</div>
-    <div class="help-item"><b>贪婪指数</b>上行因子（涨幅分位 + 成交分位 + 资金流入 / 连板 / 两融）。值越高 = 越贪婪。</div>
-    <div class="help-item"><b>热度指数</b>成交活跃度分位。值越高 = 越放量。</div>
+    <div class="help-item"><b>贪婪指数</b>上行因子（涨幅分位 + 资金流入 / 连板 / 两融）。值越高 = 越贪婪。</div>
+    <div class="help-item"><b>热度指数</b>相对近20日均量的放量分位。值越高 = 越活跃。</div>
     <div class="help-item"><b>表情档位</b>每个指数从低到高对应 5 档表情：恐慌 😌🙂😐😰😱；贪婪 😌🙂😐😁🤑；热度 ❄️🌤️😐🥵🔥。</div>
     <div class="help-item"><b>热度方向</b>热度按当日涨跌着色：<span style="color:var(--heat-up)">红 = 买入热</span>（涨）、<span style="color:var(--heat-dn)">绿 = 卖出热</span>（跌）；数字是强度（0-100）。</div>
-    <div class="desc" style="margin-top:12px">三层粒度：大盘（沪深300 基准）/ 板块 / 个股，算法相同。点击持仓表里的代码，可看个股各因子的分位明细。</div>
+    <div class="desc" style="margin-top:12px">三层粒度：大盘（上证指数基准）/ 板块 / 个股，算法相同。点击持仓表里的代码，可看个股各因子的分位明细。</div>
     <div class="actions"><button class="btn" id="help-close">明白了</button></div>
   </div>
 </div>
@@ -878,7 +878,7 @@ async function toggleDetail(tr, code){
     `<div class="item"><div class="k">热度 HEAT</div><div class="v">${heatArrows(r.heat, r.today_chg)} <small style="color:var(--ink-mute)">${r.heat==null?'':'分位 '+Math.round(r.heat)}</small></div></div>`+
     cell('波动分位', comps.volatility_pct)+
     cell('动量分位', comps.momentum_pct)+
-    cell('成交分位', comps.amount_pct)+
+    cell('相对量能分位', comps.relative_activity_pct)+
     cell('PE分位', comps.pe_pct)+
     cell('PB分位', comps.pb_pct)+
     `<div class="item"><div class="k">因子数 F/G/H</div><div class="v">${(r.factor_counts||{}).fear||0}/${(r.factor_counts||{}).greed||0}/${(r.factor_counts||{}).heat||0}</div></div>`;
@@ -1326,7 +1326,7 @@ function shareTH(){return `<tr class="hd"><th>名称</th><th>现价</th><th>今�
 function shareRow(p){
   return `<tr><td>${p.name||p.code}<small>${p.code}</small></td><td>${scCur(p.currency)}${p.price==null||isNaN(p.price)?'—':p.price.toFixed(2)}</td><td class="${scCls(p.day_chg)}">${p.day_chg==null?'—':(p.day_chg>=0?'+':'')+p.day_chg.toFixed(2)+'%'}</td><td class="${scCls(p.perf_1w)}">${scFmt(p.perf_1w)}</td><td class="${scCls(p.perf_1m)}">${scFmt(p.perf_1m)}</td><td class="${scCls(p.perf_1y)}">${scFmt(p.perf_1y)}</td><td>${indexBar(p.fear,true)}</td><td>${indexBar(p.greed,true)}</td><td>${indexBar(p.heat,true,p.day_chg)}</td><td>${p.ttm_yield_pct==null?'—':p.ttm_yield_pct.toFixed(2)+'%'}</td></tr>`;
 }
-function shareTail(){return `<div class="sc-note"><div><b>情绪指数</b> = 多因子 → 各自历史分位(0-100) → 等权平均（CNN 式）</div><div><b>恐慌</b>：波动率/跌幅/资金流出/ERP 等下行因子分位</div><div><b>贪婪</b>：涨幅/成交/连板/两融/资金流入等上行因子分位</div><div><b>热度</b>：成交活跃度分位（红=买方热、绿=卖方热）</div></div><div class="sc-foot">StockFu · asset &amp; sentiment</div>`}
+function shareTail(){return `<div class="sc-note"><div><b>情绪指数</b> = 多因子 → 各自历史分位(0-100) → 等权平均（CNN 式）</div><div><b>恐慌</b>：波动率/跌幅/资金流出/ERP 等下行因子分位</div><div><b>贪婪</b>：涨幅/连板/两融/资金流入等上行因子分位</div><div><b>热度</b>：相对近20日均量的放量分位（红=买方热、绿=卖方热）</div></div><div class="sc-foot">StockFu · asset &amp; sentiment</div>`}
 function sharePhead(d,page,total){return `<div class="sc-phead"><div class="brand">Stock<span class="gold">Fu</span> · ${d.date||''}</div><div class="ph-meta">第 ${page}/${total} 页</div></div>`}
 
 // 单图：与原渲染输出完全一致

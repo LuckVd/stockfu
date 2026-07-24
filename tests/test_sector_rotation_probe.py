@@ -40,13 +40,14 @@ class TestComputeSentiment(unittest.TestCase):
         self.assertLess(p["greed"], 45.0)
 
     def test_volume_spike_heat(self):
-        """放量(价平)→ 成交额分位高 → heat 高(>70)。注:同一 amount 同时进 greed,故 greed 也升。"""
+        """放量(价平)→ 相对均量分位高 → heat 高；不应推高 greed。"""
         from stockfu.backtest.probes.sector_rotation import compute_sentiment
         closes = [100.0] * 125
         amounts = [1e8] * 120 + [5e8] * 5             # 末 5 日 5× 放量
         s = compute_sentiment(closes, amounts)
         self.assertIsNotNone(s)
         self.assertGreater(s["heat"], 70.0)
+        self.assertEqual(s["greed"], 50.0)
 
     def test_short_series_none(self):
         """样本 <30 → None(该行业当日排除)。"""
