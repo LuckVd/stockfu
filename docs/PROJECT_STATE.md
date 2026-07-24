@@ -65,6 +65,8 @@
 | 覆盖率 | `python3 -c "from stockfu.scheduler.backfill_adj_prices import adj_price_coverage; print(adj_price_coverage())"` |
 | 完成标志 | 日志出现 `=== 完成 ok=…`；`raw_pct`/`hfq_pct` 接近 100% |
 
+> **深历史补数（2026-07-25）**：若库内已有较晚年份的 qfq，默认续传的完成判定只比较 `[start,end]` 内 raw/hfq 与 qfq 的行数，**不会校验是否从请求的 `start` 开始覆盖**；例如已有 2020 年以后数据时，补 2013 年起的 raw/hfq 会被误判完成。此场景使用 `scripts/backfill_deep_supervisor.sh`：它以 `--full --proxy-mode direct` 强制重抓，并以每趟 3 小时 `timeout` 和最多 50 趟重试监管。`preserve_qfq=True` 使重复写入安全；首趟完成且 `fail=0` 即收口。运行时不得同时启动其他 SQLite 写任务。
+
 > IP 已解封,代理池仍为首选;直连仅作代理池耗尽兜底(`BAOSTOCK_DIRECT_FALLBACK`,自动触发)。勿手动 `--proxy-mode direct` 跑全量(串行单 IP 风险)。进程可 double-fork 后台跑。
 
 若进程挂了（关会话后应仍在；若 `ps` 无进程）：
