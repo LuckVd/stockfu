@@ -34,7 +34,11 @@ def get_portfolio_api():
 def share_card():
     """分享卡片：大盘指数 + 持仓公开数据（脱敏，不含持仓数/成本/盈亏/市值/年红利）。"""
     from stockfu.services import share
-    return jsonable_encoder(share.build_card())
+    try:
+        return jsonable_encoder(share.build_card())
+    except ValueError as exc:
+        # 数据日期不一致时明确拒绝，避免浏览器下载一张貌似当天、实为混合日期的图。
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/watchlist")
