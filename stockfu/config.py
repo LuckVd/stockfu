@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     db_url: str = f"sqlite:///{DATA_DIR / 'stockfu.db'}"
 
     # 种子自选
-    watchlist: str = "600519,000858,600036,601318,00700,09988,AAPL,MSFT,510300,510500"
+    watchlist: str = "600519,000858,600036,601318,510300,510500"
 
     # 数据源增强
     tushare_token: str = ""
