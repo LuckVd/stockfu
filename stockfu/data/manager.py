@@ -152,6 +152,15 @@ class DataProviderManager:
     def get_sector_flow_today(self) -> list:
         return self.akshare.get_sector_flow_today()
 
+    def get_sector_flow_history(self, sector_name: str) -> list[dict]:
+        return self.akshare.get_sector_flow_history(sector_name)
+
+    def get_sector_names_em(self) -> list[str]:
+        return self.akshare.get_sector_names_em()
+
+    def get_sector_kline_em(self, sector_name: str) -> list:
+        return self.akshare.get_sector_kline_em(sector_name)
+
     def get_market_fund_flow(self) -> list:
         return self.akshare.get_market_fund_flow()
 

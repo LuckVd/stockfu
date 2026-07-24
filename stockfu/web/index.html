@@ -1323,6 +1323,13 @@ function shareHead(d){
   return h;
 }
 function shareTH(){return `<tr class="hd"><th>名称</th><th>现价</th><th>今涨</th><th>近1周</th><th>近1月</th><th>近1年</th><th>恐慌</th><th>贪婪</th><th>热度</th><th>股息率</th></tr>`}
+function shareSectorTH(){return `<tr class="hd"><th>行业</th><th>今涨</th><th>近5日</th><th>主力净额</th><th>资金状态</th><th>恐慌</th><th>贪婪</th><th>热度</th></tr>`}
+function shareSectorRow(x){
+  const net=x.net_inflow==null?'—':(x.net_inflow>=0?'+':'')+x.net_inflow.toFixed(2)+'亿';
+  return `<tr><td>${x.name}</td><td class="${scCls(x.day_chg)}">${scFmt(x.day_chg)}</td><td class="${scCls(x.perf_5d)}">${scFmt(x.perf_5d)}</td><td class="${scCls(x.net_inflow)}">${net}</td><td>${x.state||'—'}</td><td>${indexBar(x.fear,true)}</td><td>${indexBar(x.greed,true)}</td><td>${indexBar(x.heat,true,x.day_chg)}</td></tr>`;
+}
+function shareSectorHead(d){const s=d.sectors||{};return `<div class="sc-sec">行业全景 · ${s.count||0} 个同日行业</div><div class="sc-bench"><span class="lbl">市场广度</span><span class="grp"><span class="it">上涨 <b class="upc">${s.up||0}</b></span><span class="it">下跌 <b class="dnc">${s.down||0}</b></span><span class="it">主力净额 <b class="${scCls(s.net_inflow)}">${s.net_inflow==null?'—':(s.net_inflow>=0?'+':'')+s.net_inflow.toFixed(2)+'亿'}</b></span></span></div>`}
+function shareSectorTable(rows){return `<table class="sc-tbl"><tbody>${shareSectorTH()}${rows.map(shareSectorRow).join('')}</tbody></table>`}
 function shareRow(p){
   return `<tr><td>${p.name||p.code}<small>${p.code}</small></td><td>${scCur(p.currency)}${p.price==null||isNaN(p.price)?'—':p.price.toFixed(2)}</td><td class="${scCls(p.day_chg)}">${p.day_chg==null?'—':(p.day_chg>=0?'+':'')+p.day_chg.toFixed(2)+'%'}</td><td class="${scCls(p.perf_1w)}">${scFmt(p.perf_1w)}</td><td class="${scCls(p.perf_1m)}">${scFmt(p.perf_1m)}</td><td class="${scCls(p.perf_1y)}">${scFmt(p.perf_1y)}</td><td>${indexBar(p.fear,true)}</td><td>${indexBar(p.greed,true)}</td><td>${indexBar(p.heat,true,p.day_chg)}</td><td>${p.ttm_yield_pct==null?'—':p.ttm_yield_pct.toFixed(2)+'%'}</td></tr>`;
 }
@@ -1333,7 +1340,8 @@ function sharePhead(d,page,total){return `<div class="sc-phead"><div class="bran
 function renderShareSingle(d){
   let h=shareHead(d)+`<table class="sc-tbl"><tbody>${shareTH()}`;
   (d.holdings||[]).forEach(p=>{h+=shareRow(p)});
-  return h+`</tbody></table>${shareTail()}`;
+  const sectors=(d.sectors||{}).rows||[];
+  return h+`</tbody></table>${sectors.length?shareSectorHead(d)+shareSectorTable(sectors):''}${shareTail()}`;
 }
 
 // 多图：测量真实行高 → 按 9:16 页高切片 → 每页独立 .sc-page（绝不切断行）
@@ -1377,6 +1385,12 @@ function renderShareMulti(d){
   // 4) 渲染每页
   const N=pages.length;
   let h='';
+  const sectors=(d.sectors||{}).rows||[];
+  // 行业数据独立分页：每页固定 10 行，保证移动长图可读；无同日全景数据则不展示。
+  for(let i=0;i<sectors.length;i+=10){
+    h+=`<div class="sc-page">${i===0?shareHead(d):sharePhead(d,Math.floor(i/10)+1,Math.ceil(sectors.length/10))}${shareSectorHead(d)}${shareSectorTable(sectors.slice(i,i+10))}<div class="sc-pnum">行业 ${Math.floor(i/10)+1} / ${Math.ceil(sectors.length/10)}</div></div>`;
+    h+=`<div class="sc-dlrow"><button class="btn sm dl-one" data-idx="${Math.floor(i/10)}">下载行业第 ${Math.floor(i/10)+1} 页</button></div>`;
+  }
   pages.forEach((pg,idx)=>{
     h+=`<div class="sc-page">${pg.head?shareHead(d):sharePhead(d,idx+1,N)}`;
     h+=`<table class="sc-tbl"><tbody>${shareTH()}`;
