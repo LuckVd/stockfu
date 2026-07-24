@@ -32,6 +32,12 @@
 
 ## 0. 进行中任务 / 冷启动接棒（2026-07-22）
 
+> 🔥 **【2026-07-24 · 聚宽交叉验证 · 当前主线】** 用聚宽 **jqboson 独立回测引擎**重跑策略3 `dividend_cross_section#sl30`,验证本地结论(年化 10.65%/回撤 16.2%/夏普 0.78/年换手 0.61)在另一套数据+撮合引擎下成立。分支 `feat/joinquant-crosscheck`(已推送 `f6a371d`);脚本 `scripts/joinquant_dividend_sl30.py`(**本会话改动未提交 git**)。
+> **进度:三因子全部跑通 + 诊断全删 + 口径逐行对齐本地**(核对 `stockfu/services` + `ai/operators/factors` 源码)。2021-01-04~06 探针验证:601288 红利20/低波17.7/价值5.2、601098 红利20/低波17.3/价值20,**选股转银行红利价值(农行/中信/工行),与本地 sl30 风格一致**。
+> **jqboson 四大坑(全踩平,详见脚本注释 + memory `joinquant-crosscheck-env`)**:① `get_price` 多只股票返回**长格式** DataFrame(`['time','code','close']`,非横截面/非官方 Panel 式)→ `_normalize_panel` 探测 code/security 标识列 + time 排序归一;② `dir(finance)` 对 `__getattr__` 动态表返回空 → `_resolve_dividend_source` 用 **hasattr** 逐候选枚举;③ 无 `finance.STK_DIVIDEND` 表;④ `STK_XR_XD` 无每股现金字段,用 **`bonus_ratio_rmb`(每10股派息RMB)÷10÷不复权价** + **`a_xr_date`(除权除息日)**(≡ 本地 `dividend_yield_ttm`)。
+> **口径对齐**:红利 bonus10 ≡ 本地;低波 bar 数 `3*365+20+30=1145`、分位 mid-rank `(below+equal/2)/n`(对齐 `factors.percentile`/`valuation._percentile_sorted`)。**唯一不可避差异**:价值因子本地用日频 PE(~1250点),jqboson `get_fundamentals` 只能逐日查、日频不可行(160万次)→ 脚本月采样(61点),分位排序影响很小、阈值一致,已注明勿改。**不缩窗口/不降采样**(用户明确不偏离口径)→ 全周期(5年/1300交易日)聚宽免费版必超时,接受或分段跑。
+> **接棒**:① 跑验证曲线(建议先 6 个月 2021-01-04~07-01)对照本地量级;② 全周期分段跑拼曲线;③ 验证 OK 后提交 git + 开 PR(剩可接受差异:universe 固定788 vs 本地动态池、竞争键、止损 T+1、科创板688市价单需限价)。详见 `.local/WORKSTATE.md`。
+
 > **【2026-07-24 · 邮件生图数据正确性修复】** 三件事，均在分支 `fix/dividend-ttm-corruption`：
 > ① **股息率虚高**（commit `ca056b9`）：baostock 抓分红结果集串行 bleed 产生 stale 行（2017 标签配 2026 ex_date/28 元）+ TTM 计算只有下界无上界（future ex_date 计入）+ 持仓/自选股息率分母误用 qfq `close`。修：`dividend.metric_from_db`/`baostock.get_dividend_metric` TTM 加上界 `≤today`；baostock 解析丢弃 `|ex_date年−财年|≥2` 的 stale 行；`persist_dividends` 同批去重；`snapshot.LatestSnapshot` 加 `close_raw`、`portfolio` 两处分母改 `close_raw`。五粮液 48%→6.89%。本机 `dividend_event` 清 44 行（5 stale+38 重复+1 phantom）。
 > ② **ETF 显示陈旧数据**：`snapshot._read_latest` 与 `share.perf` 硬编码读 `QuoteSnapshot`、没按 `quote_model_for` 路由 → 7 只自选 ETF 读到 `QuoteSnapshot` 里停在 07-21 的孤儿行（ETF 行情实际在 `EtfQuoteDaily`），卡片显示旧价（588870 曾显示 07-21 的 1.941/+10.85%）。已改这两处路由，全 52 holdings 现 07-23（588870 科创50ETF 1.819/-3.24%）。**⚠️ 仅修了卡片两条路径；其余 reader 未修见 §8.6。**
