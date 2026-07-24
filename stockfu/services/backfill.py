@@ -337,22 +337,43 @@ def backfill_sector_pulse_history(*, pause_sec: float = 0.3) -> dict:
 
     manager = get_manager()
     names = manager.get_sector_names_ths()
-    years = range(2020, date.today().year + 1)
+    years = list(range(2020, date.today().year + 1))
+    total = len(names) * len(years)
     result = {"requested": len(names), "quotes": 0, "ok": [], "failed": [], "invalid": []}
-    for name in names:
+    completed = 0
+    for sector_no, name in enumerate(names, start=1):
         name_ok = True
         for year in years:
+            completed += 1
             bars = manager.get_sector_kline_period(name, f"{year}0101", f"{year}1231")
             # 上游偶尔忽略日期参数；不接受跨年或重复日期，避免污染历史分位。
             dates = [b.date for b in bars]
             if not bars or len(dates) != len(set(dates)) or any(d.year != year for d in dates):
                 name_ok = False
                 result["invalid"].append(f"{name}:{year}")
+                state = "无效"
             else:
-                result["quotes"] += _upsert_sector_bars(name, bars)
+                written = _upsert_sector_bars(name, bars)
+                result["quotes"] += written
+                state = f"{len(bars)}条，写入{written}条"
+            print(
+                f"[历史行业 {completed}/{total}] {sector_no}/{len(names)} {name} {year}: {state}",
+                flush=True,
+            )
             time.sleep(max(0.2, pause_sec))
         (result["ok"] if name_ok else result["failed"]).append(name)
+        print(
+            f"[历史行业完成 {sector_no}/{len(names)}] {name}: "
+            f"累计写入{result['quotes']}条，失败行业{len(result['failed'])}个",
+            flush=True,
+        )
+    print("[当日资金] 开始写入全行业资金与同日行情…", flush=True)
     result["daily"] = refresh_sector_pulse_today(date.today(), pause_sec=pause_sec)
+    print(
+        f"[当日资金完成] 同日完整{result['daily']['same_day']}个，"
+        f"失败{len(result['daily']['failed'])}个",
+        flush=True,
+    )
     return result
 
 
