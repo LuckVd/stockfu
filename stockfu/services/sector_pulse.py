@@ -89,6 +89,8 @@ def build(as_of: date) -> dict:
             "perf_5d": round(chgs[-1] * 100, 2) if chgs else None,
             "net_inflow": fs[-1].net_inflow,
             "net_inflow_pct": fs[-1].net_inflow_pct,
+            "leading_stock": fs[-1].leading_stock or None,   # 领涨股名（空串/None 统一为 None）
+            "leading_chg": fs[-1].leading_chg,               # 领涨股涨跌幅%
             "_vol": v, "_momentum": c, "_net": fs[-1].net_inflow,
             "heat": a, "state": _state(net),
         })
