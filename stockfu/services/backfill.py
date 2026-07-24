@@ -349,3 +349,31 @@ def backfill_sector_pulse_history(*, pause_sec: float = 1.2) -> dict:
         if i + 1 < len(names):
             time.sleep(max(1.0, pause_sec))
     return result
+
+
+def refresh_sector_pulse_today(snap_date) -> dict:
+    """每日一次批量刷新同源行业行情+资金流，供分享图同日校验。"""
+    from stockfu.data.manager import get_manager
+    from stockfu.services.quote_writer import _coerce_date
+
+    d = _coerce_date(snap_date)
+    manager = get_manager()
+    spots = {x["name"]: x for x in manager.get_sector_spot_em() if x.get("name")}
+    flows = {x["name"]: x for x in manager.get_sector_flow_today_em() if x.get("name")}
+    common = set(spots) & set(flows)
+    with session_scope() as s:
+        for name in common:
+            q, f = spots[name], flows[name]
+            snap = s.exec(select(SectorSnapshot).where(SectorSnapshot.sector_name == name,
+                SectorSnapshot.snap_date == d)).first() or SectorSnapshot(sector_name=name, snap_date=d)
+            snap.close, snap.pct_chg = q.get("close"), q.get("pct_chg")
+            snap.amount, snap.volume = q.get("amount"), q.get("volume")
+            if snap.id is None:
+                s.add(snap)
+            flow = s.exec(select(SectorFlowSnapshot).where(SectorFlowSnapshot.sector_name == name,
+                SectorFlowSnapshot.snap_date == d)).first() or SectorFlowSnapshot(sector_name=name, snap_date=d)
+            flow.net_inflow, flow.net_inflow_pct = f.get("net_inflow"), f.get("net_inflow_pct")
+            if flow.id is None:
+                s.add(flow)
+        s.commit()
+    return {"spots": len(spots), "flows": len(flows), "same_day": len(common), "date": d.isoformat()}

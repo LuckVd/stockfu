@@ -748,6 +748,44 @@ class AkshareSource(DataSource):
                 continue
         return out
 
+    def get_sector_spot_em(self) -> list[dict]:
+        """东方财富行业当日行情批量表，一次请求覆盖全部行业。"""
+        with direct_connection():
+            try:
+                import akshare as ak
+                df = ak.stock_board_industry_spot_em()
+            except Exception:
+                return []
+        if df is None or df.empty:
+            return []
+        out = []
+        for _, r in df.iterrows():
+            name = safe_str(pick_col(r, ["板块名称", "名称"]))
+            if not name:
+                continue
+            out.append({"name": name,
+                "close": safe_float(pick_col(r, ["最新价", "最新", "收盘"])),
+                "pct_chg": safe_float(pick_col(r, ["涨跌幅"])),
+                "amount": safe_float(pick_col(r, ["成交额"])),
+                "volume": safe_float(pick_col(r, ["成交量"]))})
+        return out
+
+    def get_sector_flow_today_em(self) -> list[dict]:
+        """东方财富行业当日主力资金流批量表，一次请求覆盖全部行业。"""
+        df, _, _ = _call_df([("stock_sector_fund_flow_rank", {
+            "indicator": "今日", "sector_type": "行业资金流"})])
+        if df is None or df.empty:
+            return []
+        out = []
+        for _, r in df.iterrows():
+            name = safe_str(pick_col(r, ["名称", "行业", "板块名称"]))
+            if name:
+                out.append({"name": name,
+                    "net_inflow": safe_float(pick_col(r, ["主力净流入-净额", "主力净流入"])),
+                    "net_inflow_pct": safe_float(pick_col(r, ["主力净流入-净占比"])),
+                })
+        return out
+
     def get_market_fund_flow(self) -> list:
         """大盘资金流历史（akshare stock_market_fund_flow，~6个月逐日）。
 

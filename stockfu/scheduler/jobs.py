@@ -729,6 +729,9 @@ def run_scheduled_fetch(target_date) -> dict:
     sector_flow = _call_timeout(
         lambda: bf.backfill_sector_flow(td), 45, "sector_flow", default=0,
     ) or 0
+    sector_pulse = _call_timeout(
+        lambda: bf.refresh_sector_pulse_today(td), 45, "sector_pulse", default={},
+    ) or {}
 
     # 后半段：分红 / ETF 份额 / 三层指数
     from stockfu.services import composite, dividend as div_svc
@@ -815,6 +818,7 @@ def run_scheduled_fetch(target_date) -> dict:
         "dividends": divs,
         "fundflow_etfs": flows,
         "sector_flow": sector_flow,
+        "sector_pulse": sector_pulse,
         "composite_levels": len(comp) if isinstance(comp, dict) else 0,
         "export_ready": export_data["ok"],
         "export_stale": export_data["stale"],
