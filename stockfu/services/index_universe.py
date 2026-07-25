@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import csv
 from datetime import date
+from io import StringIO
 from typing import Iterable
 
 from sqlalchemy import func
@@ -203,6 +205,68 @@ def backfill_baostock_hs300(*, start: date, end: date) -> dict:
                 import_snapshot("000300", members, effective_from=as_of,
                                 source="baostock_hs300_snapshot_unverified",
                                 source_ref=f"baostock://query_hs300_stocks?date={as_of.isoformat()}")
+                out["imported"] += 1
+            known = members
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append({"date": as_of.isoformat(), "error": f"{type(exc).__name__}: {exc}"})
+    return out
+
+
+def _month_starts(start: date, end: date) -> list[date]:
+    current = date(start.year, start.month, 1)
+    months: list[date] = []
+    while current <= end:
+        months.append(current)
+        current = date(current.year + (current.month == 12), current.month % 12 + 1, 1)
+    return months
+
+
+def fetch_yfiua_monthly_snapshot(index_name: str, as_of: date) -> set[str] | None:
+    """下载公开月度成分镜像，缺文件时返回 None。
+
+    镜像只保证月度时点，不能替代指数公司对临时调样的正式公告；调用方必须将
+    它保留为 ``unverified`` 来源，且不可据此宣称日级完整性。
+    """
+    import requests
+    from stockfu.data.base import direct_connection
+
+    url = ("https://yfiua.github.io/index-constituents/"
+           f"{as_of.year:04d}/{as_of.month:02d}/constituents-{index_name}.csv")
+    with direct_connection():
+        response = requests.get(url, timeout=30)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    rows = csv.DictReader(StringIO(response.text))
+    members = {normalize_code((row.get("Symbol") or "").split(".", 1)[0]) for row in rows}
+    members.discard("")
+    if not members:
+        raise RuntimeError(f"月度镜像为空: {url}")
+    return members
+
+
+def backfill_yfiua_csi1000(*, start: date, end: date) -> dict:
+    """回补镜像可得的中证1000月度快照（当前从 2025-04 起）。"""
+    out = {"scanned": 0, "imported": 0, "unchanged": 0, "missing": 0, "errors": []}
+    known: set[str] | None = None
+    for as_of in _month_starts(start, end):
+        out["scanned"] += 1
+        try:
+            members = fetch_yfiua_monthly_snapshot("csi1000", as_of)
+            if members is None:
+                out["missing"] += 1
+                continue
+            if len(members) != 1000:
+                raise RuntimeError(f"{as_of} 返回成员数 {len(members)}，期望 1000")
+            baseline = known if known is not None else _snapshot_members_at_or_before("000852", as_of)
+            if members == baseline:
+                out["unchanged"] += 1
+            else:
+                url = ("https://yfiua.github.io/index-constituents/"
+                       f"{as_of.year:04d}/{as_of.month:02d}/constituents-csi1000.csv")
+                import_snapshot("000852", members, effective_from=as_of,
+                                source="yfiua_csi1000_monthly_mirror_unverified",
+                                source_ref=url)
                 out["imported"] += 1
             known = members
         except Exception as exc:  # noqa: BLE001
