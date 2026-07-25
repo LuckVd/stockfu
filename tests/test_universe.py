@@ -12,6 +12,7 @@ from stockfu.services.index_universe import (
     HISTORICAL_INDEX_CODES, _month_starts, member_on, normalize_code,
     parse_sina_corp_index_history,
 )
+from stockfu.ai.rebalancers.top_n_picker import TopNPicker
 
 
 class TestBoardAndLimit(unittest.TestCase):
@@ -87,7 +88,7 @@ class TestEligibleOn(unittest.TestCase):
 
 class TestIndexMembershipIntervals(unittest.TestCase):
     def test_default_universe_excludes_unfinished_indices(self):
-        self.assertEqual(HISTORICAL_INDEX_CODES, ("000300", "000852"))
+        self.assertEqual(HISTORICAL_INDEX_CODES, ("000300", "000905"))
 
     def test_right_boundary_is_exclusive(self):
         spans = [(date(2020, 1, 1), date(2020, 6, 1))]
@@ -116,6 +117,38 @@ class TestIndexMembershipIntervals(unittest.TestCase):
         self.assertEqual(parse_sina_corp_index_history(html), [
             (date(2014, 10, 17), date(2019, 12, 16)),
         ])
+
+
+class TestExitOnlyRebalancing(unittest.TestCase):
+    def test_exit_only_holding_cannot_displace_new_candidate(self):
+        rebalancer = TopNPicker()
+        final = rebalancer.adjust(
+            desired={"OUT": 0.20, "IN": 0.20},
+            current={"OUT": 0.12, "IN": 0.0},
+            meta={
+                "OUT": {"raw": 100.0, "confidence": 1.0, "exit_only": True},
+                "IN": {"raw": 1.0, "confidence": 1.0},
+            },
+            equity=100_000,
+            params={"top_n": 1, "lock_days": 0, "max_replace": 1, "max_w": 0.20},
+        )
+        self.assertEqual(final["OUT"], 0.12)
+        self.assertEqual(final["IN"], 0.20)
+
+    def test_exit_only_sell_signal_is_preserved(self):
+        rebalancer = TopNPicker()
+        final = rebalancer.adjust(
+            desired={"OUT": 0.0, "IN": 0.20},
+            current={"OUT": 0.12, "IN": 0.0},
+            meta={
+                "OUT": {"raw": 100.0, "confidence": 1.0, "exit_only": True},
+                "IN": {"raw": 1.0, "confidence": 1.0},
+            },
+            equity=100_000,
+            params={"top_n": 1, "lock_days": 0, "max_replace": 1, "max_w": 0.20},
+        )
+        self.assertEqual(final["OUT"], 0.0)
+        self.assertEqual(final["IN"], 0.20)
 
 
 if __name__ == "__main__":
