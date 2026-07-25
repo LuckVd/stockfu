@@ -27,6 +27,7 @@
     python main.py --clear-dividend-cache  # 清错误口径 dividend_yield 的 operator_result
 """
 import argparse
+from datetime import date
 
 
 def run_api(host: str, port: int, reload: bool) -> None:
@@ -277,6 +278,22 @@ def run_backfill_index_universe(index_codes: str | None) -> None:
         except Exception as exc:  # noqa: BLE001
             print({"index_code": code, "error": f"{type(exc).__name__}: {exc}"})
     print(audit_coverage(codes))
+
+
+def run_backfill_index_universe_history(start: str, end: str) -> None:
+    """从可复现历史接口回补沪深300；正式档案仍是验收基准。"""
+    from datetime import date
+    from stockfu.db import init_db
+    from stockfu.services.index_universe import audit_coverage, backfill_baostock_hs300
+
+    init_db()
+    start_d, end_d = date.fromisoformat(start), date.fromisoformat(end)
+    if end_d < start_d:
+        raise ValueError("--index-history-end 不能早于 --index-history-start")
+    print(f"回补沪深300历史快照（baostock，待中证正式档案核验）: {start_d} → {end_d}")
+    result = backfill_baostock_hs300(start=start_d, end=end_d)
+    print(result)
+    print(audit_coverage(("000300",)))
 
 
 def run_backfill_quote_status() -> None:
@@ -713,6 +730,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补 security_master(list_date/board, baostock;时点宇宙前置)")
     p.add_argument("--backfill-index-universe", action="store_true",
                    help="导入中证正式当前成分快照(只按文件日期写入；不伪造历史)")
+    p.add_argument("--backfill-index-universe-history", action="store_true",
+                   help="逐交易日回补沪深300历史成分（baostock，标为待正式档案核验）")
+    p.add_argument("--index-history-start", default="2006-01-01",
+                   help="配合 --backfill-index-universe-history：起始日期 YYYY-MM-DD")
+    p.add_argument("--index-history-end", default=None,
+                   help="配合 --backfill-index-universe-history：结束日期 YYYY-MM-DD（默认今天）")
     p.add_argument("--index-codes", default=None,
                    help="配合 --backfill-index-universe：逗号分隔指数代码；默认四条历史宇宙指数")
     p.add_argument("--backfill-quote-status", action="store_true",
@@ -850,6 +873,9 @@ def main() -> None:
         run_backfill_universe()
     elif args.backfill_index_universe:
         run_backfill_index_universe(args.index_codes)
+    elif args.backfill_index_universe_history:
+        run_backfill_index_universe_history(args.index_history_start,
+                                             args.index_history_end or date.today().isoformat())
     elif args.backfill_quote_status:
         run_backfill_quote_status()
     elif args.backfill_dividend:
