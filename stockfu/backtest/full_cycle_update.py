@@ -43,7 +43,7 @@ class StrategyRunSpec:
     strategy_id: str
     rebalancer_id: str
     rebalancer_params: dict = field(default_factory=dict)
-    universe: str = "all"       # all | etf | universe_788
+    universe: str = "all"       # all | etf | universe_788 | historical_indices
     strict: bool = True
     min_amount: float | None = MIN_AMOUNT  # 仅 universe=all 时生效; etf/788 为 None
     tier: str = "warm"          # hot / warm / cold — 批跑顺序
@@ -234,6 +234,15 @@ def _resolve_codes(spec: StrategyRunSpec) -> tuple[list[str], Any]:
         return codes, None
     if spec.universe == "universe_788":
         return _load_universe_788(), None
+    if spec.universe == "historical_indices":
+        from stockfu.services.index_universe import (
+            HISTORICAL_INDEX_CODES, HISTORICAL_UNIVERSE_ID, historical_member_codes,
+        )
+        codes = historical_member_codes(HISTORICAL_INDEX_CODES)
+        rules = UniverseRules(universe_id=HISTORICAL_UNIVERSE_ID,
+                              index_codes=HISTORICAL_INDEX_CODES,
+                              min_amount_ma20=spec.min_amount)
+        return codes, rules
     # all
     codes = resolve_base_codes("all")
     rules = None

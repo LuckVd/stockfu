@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from stockfu.services.universe import (
     DayFlags, UniverseContext, UniverseRules, board_of_code, limit_pct_for,
 )
+from stockfu.services.index_universe import member_on
 
 
 class TestBoardAndLimit(unittest.TestCase):
@@ -69,6 +70,23 @@ class TestEligibleOn(unittest.TestCase):
         }
         u = ctx.eligible_on(date(2025, 1, 2), flags)
         self.assertEqual(u, {"C"})
+
+    def test_historical_membership_is_point_in_time(self):
+        rules = UniverseRules(index_codes=("000300",), min_list_days=0)
+        ctx = self._ctx(["IN", "OUT"], {
+            "IN": date(2010, 1, 1), "OUT": date(2010, 1, 1),
+        }, rules=rules)
+        ctx.memberships = {"IN": [(date(2020, 1, 1), date(2020, 6, 1))]}
+        flags = {"IN": DayFlags(has_row=True), "OUT": DayFlags(has_row=True)}
+        self.assertEqual(ctx.eligible_on(date(2020, 5, 29), flags), {"IN"})
+        self.assertEqual(ctx.eligible_on(date(2020, 6, 1), flags), set())
+
+
+class TestIndexMembershipIntervals(unittest.TestCase):
+    def test_right_boundary_is_exclusive(self):
+        spans = [(date(2020, 1, 1), date(2020, 6, 1))]
+        self.assertTrue(member_on(spans, date(2020, 5, 29)))
+        self.assertFalse(member_on(spans, date(2020, 6, 1)))
 
 
 if __name__ == "__main__":
