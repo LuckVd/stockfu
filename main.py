@@ -261,6 +261,24 @@ def run_backfill_universe() -> None:
         print(f"  警告: {r['error']}")
 
 
+def run_backfill_index_universe(index_codes: str | None) -> None:
+    """导入带有效日期的中证当前快照；历史档案须逐期补齐，绝不倒灌。"""
+    from stockfu.db import init_db
+    from stockfu.services.index_universe import (
+        HISTORICAL_INDEX_CODES, audit_coverage, fetch_official_current_snapshot,
+        normalize_index_codes,
+    )
+
+    init_db()
+    codes = normalize_index_codes(index_codes.split(",") if index_codes else HISTORICAL_INDEX_CODES)
+    for code in codes:
+        try:
+            print(fetch_official_current_snapshot(code))
+        except Exception as exc:  # noqa: BLE001
+            print({"index_code": code, "error": f"{type(exc).__name__}: {exc}"})
+    print(audit_coverage(codes))
+
+
 def run_backfill_quote_status() -> None:
     """补全:历史 is_st/trade_status + 每只票最新交易日全量数据(OHLCV/估值/状态)。"""
     from stockfu.db import init_db
@@ -693,6 +711,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="清空 ETF 表后全量重灌前复权日线(INDEX+行业+SECTOR+自选;东财qfq→腾讯qfq)")
     p.add_argument("--backfill-universe", action="store_true",
                    help="回补 security_master(list_date/board, baostock;时点宇宙前置)")
+    p.add_argument("--backfill-index-universe", action="store_true",
+                   help="导入中证正式当前成分快照(只按文件日期写入；不伪造历史)")
+    p.add_argument("--index-codes", default=None,
+                   help="配合 --backfill-index-universe：逗号分隔指数代码；默认四条历史宇宙指数")
     p.add_argument("--backfill-quote-status", action="store_true",
                    help="补历史 is_st/trade_status + 每只票最新交易日全量数据(baostock)")
     p.add_argument("--backfill-dividend", action="store_true",
@@ -826,6 +848,8 @@ def main() -> None:
         run_backfill_etf()
     elif args.backfill_universe:
         run_backfill_universe()
+    elif args.backfill_index_universe:
+        run_backfill_index_universe(args.index_codes)
     elif args.backfill_quote_status:
         run_backfill_quote_status()
     elif args.backfill_dividend:

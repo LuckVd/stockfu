@@ -130,6 +130,23 @@ class SecurityMaster(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_now)
 
 
+class IndexConstituent(SQLModel, table=True):
+    """指数历史成分的有效区间；右边界为开区间。"""
+    __tablename__ = "index_constituent"
+    id: int | None = Field(default=None, primary_key=True)
+    index_code: str = Field(index=True)
+    asset_code: str = Field(index=True)
+    effective_from: date = Field(index=True)
+    effective_to: date | None = Field(default=None, index=True)
+    announce_date: date | None = Field(default=None, index=True)
+    source: str = ""
+    source_ref: str = ""
+    imported_at: datetime = Field(default_factory=_now)
+    __table_args__ = (UniqueConstraint(
+        "index_code", "asset_code", "effective_from",
+        name="uq_index_constituent_code_from"),)
+
+
 class IndexSnapshot(SQLModel, table=True):
     """情绪指数天级快照，三层粒度：market / sector / stock。
 

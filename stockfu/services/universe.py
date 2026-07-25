@@ -54,6 +54,8 @@ class UniverseRules:
     use_list_date: bool = True            # 无 master 时退回 first_quote_date
     # 可选流动性(默认关:用户池已是大盘候选)
     min_amount_ma20: float | None = None
+    # 非空时另要求当日属于指定历史指数成分；为空保持旧大盘候选池行为。
+    index_codes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -75,6 +77,7 @@ class UniverseContext:
     rules: UniverseRules
     master: dict[str, SecurityMaster] = field(default_factory=dict)
     first_quote: dict[str, date] = field(default_factory=dict)
+    memberships: dict[str, list[tuple[date, date | None]]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, codes: list[str], rules: UniverseRules | None = None) -> "UniverseContext":
@@ -100,7 +103,12 @@ class UniverseContext:
             for code, d0 in rows:
                 if code and d0:
                     first_quote[code] = d0 if isinstance(d0, date) else date.fromisoformat(str(d0)[:10])
-        return cls(codes=codes, rules=rules, master=master, first_quote=first_quote)
+        memberships = {}
+        if rules.index_codes:
+            from stockfu.services.index_universe import memberships_for
+            memberships = memberships_for(codes, rules.index_codes)
+        return cls(codes=codes, rules=rules, master=master, first_quote=first_quote,
+                   memberships=memberships)
 
     def list_anchor(self, code: str) -> date | None:
         """可交易起点锚点:优先 list_date,否则 first_quote。"""
@@ -128,6 +136,10 @@ class UniverseContext:
         rules = self.rules
         out: set[str] = set()
         for code in self.codes:
+            if rules.index_codes:
+                from stockfu.services.index_universe import member_on
+                if not member_on(self.memberships.get(code, []), as_of):
+                    continue
             m = self.master.get(code)
             if m and m.delist_date and as_of >= m.delist_date:
                 continue
@@ -164,6 +176,7 @@ class UniverseContext:
             "base_size": len(self.codes),
             "master_coverage": len(self.master),
             "first_quote_coverage": len(self.first_quote),
+            "membership_coverage": len(self.memberships) if self.rules.index_codes else None,
             "status_coverage": quote_status_coverage(self.codes),
         }
         if sizes:
