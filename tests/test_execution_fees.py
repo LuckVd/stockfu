@@ -56,5 +56,34 @@ class TestApplyActionStampDuty(unittest.TestCase):
         self.assertEqual(buy_fee(date(2021, 1, 4)), buy_fee(date(2025, 1, 2)))
 
 
+class TestCashDividendTax(unittest.TestCase):
+    def test_holding_period_dividend_tax(self):
+        """不满1月20%、满1月不满1年10%、满1年免税，且现金净额入账。"""
+        from stockfu.backtest.engine import Position, VirtualAccount
+        acct = VirtualAccount(1_000)
+        acct.positions["A"] = Position(
+            shares=300,
+            avg_cost=10.0,
+            lots=[(100, date(2024, 12, 20)), (100, date(2024, 11, 20)), (100, date(2023, 12, 1))],
+        )
+        rec = acct.credit_dividend("A", 1.0, date(2025, 1, 10), date(2025, 1, 10))
+        self.assertEqual(rec["gross"], 300.0)
+        self.assertEqual(rec["tax"], 30.0)
+        self.assertEqual(rec["net"], 270.0)
+        self.assertEqual(acct.cash, 1270.0)
+
+    def test_sale_consumes_oldest_lot_before_dividend(self):
+        from stockfu.backtest.engine import Position, VirtualAccount
+        acct = VirtualAccount(10_000)
+        acct.positions["A"] = Position(
+            shares=200, avg_cost=10.0,
+            lots=[(100, date(2023, 1, 1)), (100, date(2024, 12, 20))],
+        )
+        acct.apply_action("A", "reduce", 0.0833, 10.0, {"A": 10.0}, as_of=date(2025, 1, 10))
+        rec = acct.credit_dividend("A", 1.0, date(2025, 1, 11))
+        self.assertEqual(acct.positions["A"].shares, 100)
+        self.assertEqual(rec["tax"], 20.0)
+
+
 if __name__ == "__main__":
     unittest.main()

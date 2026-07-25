@@ -14,10 +14,10 @@ class TestBacktestDataProviders(unittest.TestCase):
         code = "600001"
         # 周五收盘应覆盖同周前面的交易日。
         cache = {
-            date(2024, 1, 4): {code: (1, 1, 1, 10, 0, 0, 1, 1, 10, None, None)},
-            date(2024, 1, 5): {code: (1, 1, 1, 11, 0, 0, 1, 1, 11, None, None)},
-            date(2024, 1, 8): {code: (1, 1, 1, 12, 0, 0, 1, 1, 12, None, None)},
-            date(2024, 1, 12): {code: (1, 1, 1, 13, 0, 0, 1, 1, 13, None, None)},
+            date(2024, 1, 4): {code: (1, 1, 1, 10, 0, 0, 1, 1, 1, 1, 1, 10, None, None)},
+            date(2024, 1, 5): {code: (1, 1, 1, 11, 0, 0, 1, 1, 1, 1, 1, 11, None, None)},
+            date(2024, 1, 8): {code: (1, 1, 1, 12, 0, 0, 1, 1, 1, 1, 1, 12, None, None)},
+            date(2024, 1, 12): {code: (1, 1, 1, 13, 0, 0, 1, 1, 1, 1, 1, 13, None, None)},
         }
         with _backtest_series_ctx(cache):
             self.assertEqual(_weekly_closes(code, date(2024, 1, 12), 30), [11, 13])
@@ -44,7 +44,7 @@ class TestBacktestDataProviders(unittest.TestCase):
 
         code = "600001"
         as_of = date(2024, 6, 1)
-        cache = {as_of: {code: (1, 1, 1, 9, 0, 0, 1, 1, 10, None, None)}}
+        cache = {as_of: {code: (1, 1, 1, 9, 0, 0, 1, 1, 1, 1, 1, 10, None, None)}}
         dividends = {code: [(date(2024, 1, 10), 0.5)]}
         with _backtest_series_ctx(cache, dividends):
             self.assertEqual(dividend_yield_ttm(code, as_of), (5.0, 0.5))

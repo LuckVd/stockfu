@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from sqlmodel import select, and_
@@ -60,6 +60,7 @@ DEFAULT_PORTFOLIO_BRAKE = 0.10  # 组合回撤刹车:equity 较峰值回撤达�
 class Position:
     shares: int = 0
     avg_cost: float = 0.0
+    lots: list[tuple[int, date]] = field(default_factory=list)  # (shares, buy_date), FIFO for dividend tax
 
 
 class VirtualAccount:
@@ -70,6 +71,8 @@ class VirtualAccount:
         self.initial: float = float(initial_cash)
         self.positions: dict[str, Position] = {}
         self.fee_paid: float = 0.0
+        self.dividend_received: float = 0.0
+        self.dividend_tax_paid: float = 0.0
 
     def equity(self, prices: dict[str, float]) -> float:
         return self.cash + sum(
@@ -123,6 +126,7 @@ class VirtualAccount:
             new_total = pos.shares + shares
             pos.avg_cost = (pos.avg_cost * pos.shares + cost) / new_total  # 移动加权平均
             pos.shares = new_total
+            pos.lots.append((shares, as_of or date.today()))
             self.cash -= (cost + fee)
             self.fee_paid += fee
             return {"kind": action, "code": code, "shares": shares, "price": price,
@@ -138,12 +142,55 @@ class VirtualAccount:
                    + proceeds * (stamp_duty_rate(as_of) + TRANSFER_FEE_RATE))
             realized = (price - pos.avg_cost) * shares - fee   # 已实现盈亏(扣费后,含印花税+过户费)
             pos.shares -= shares
+            remaining = shares
+            kept: list[tuple[int, date]] = []
+            for lot_shares, lot_date in pos.lots:
+                sold = min(remaining, lot_shares)
+                remaining -= sold
+                if lot_shares > sold:
+                    kept.append((lot_shares - sold, lot_date))
+                elif remaining < 0:  # 防御性分支，正常不会触发
+                    kept.append((-remaining, lot_date))
+                    remaining = 0
+            pos.lots = kept
             self.cash += (proceeds - fee)
             self.fee_paid += fee
             if pos.shares == 0:
                 pos.avg_cost = 0.0
             return {"kind": action, "code": code, "shares": -shares, "price": price,
                     "fee": round(fee, 2), "pnl": round(realized, 2)}
+
+    def credit_dividend(self, code: str, per_share_cash: float, as_of: date,
+                        record_date: date | None = None) -> dict | None:
+        """除息日为隔夜持仓入账现金分红，并按持有期扣缴红利税。"""
+        pos = self.positions.get(code)
+        if not pos or pos.shares <= 0 or per_share_cash <= 0:
+            return None
+        ref_date = record_date or as_of
+        # 正常回测路径的买入都会建立 lots；兼容手工构造仓位时保守按最高税率。
+        lots = pos.lots or [(pos.shares, ref_date)]
+        gross = tax = 0.0
+        covered = 0
+        for shares, buy_date in lots:
+            if shares <= 0:
+                continue
+            covered += shares
+            amount = shares * per_share_cash
+            held_days = max((ref_date - buy_date).days, 0)
+            rate = 0.20 if held_days <= 30 else (0.10 if held_days <= 365 else 0.0)
+            gross += amount
+            tax += amount * rate
+        if covered < pos.shares:
+            amount = (pos.shares - covered) * per_share_cash
+            gross += amount
+            tax += amount * 0.20
+        net = gross - tax
+        self.cash += net
+        self.dividend_received += gross
+        self.dividend_tax_paid += tax
+        return {"kind": "cash_dividend", "code": code, "shares": pos.shares,
+                "gross": round(gross, 2), "tax": round(tax, 2), "net": round(net, 2),
+                "per_share_cash": per_share_cash}
 
 
 # =====================================================================
@@ -191,8 +238,10 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
     return 0.0, "unavailable"
 
 
-# 紧凑 bar 下标:(open, high, low, close_qfq, pct, st, status, amount, close_raw, pe, pb)
-_BI_O, _BI_H, _BI_L, _BI_C, _BI_PCT, _BI_ST, _BI_TS, _BI_AMT, _BI_C_RAW, _BI_PE, _BI_PB = range(11)
+# 紧凑 bar 下标:(qfq OHLC, pct, st, status, amount, raw OHLC, pe, pb)。
+# 信号使用 qfq；账户成交/估值使用 raw，并以现金分红补回总回报，避免重复计息。
+(_BI_O, _BI_H, _BI_L, _BI_C, _BI_PCT, _BI_ST, _BI_TS, _BI_AMT,
+ _BI_O_RAW, _BI_H_RAW, _BI_L_RAW, _BI_C_RAW, _BI_PE, _BI_PB) = range(14)
 
 # quote_series 字段 → 紧凑 bar 下标(供回测内存供给器切片)
 _QS_FIELD_IDX = {
@@ -219,6 +268,26 @@ def _preload_dividend_events(codes: list[str], start: date, end: date) -> dict[s
         ).order_by(DividendEvent.asset_code, DividendEvent.ex_date)).all()
     for event in rows:
         out.setdefault(event.asset_code, []).append((event.ex_date, event.per_share_cash))
+    return out
+
+
+def _preload_cash_dividends(codes: list[str], start: date, end: date) -> dict[date, list[tuple[str, float, date | None]]]:
+    """预载除息日现金流；与因子用 TTM 索引分开，避免改变其供给接口。"""
+    from stockfu.models import DividendEvent
+
+    out: dict[date, list[tuple[str, float, date | None]]] = {}
+    if not codes:
+        return out
+    with session_scope() as s:
+        rows = s.exec(select(DividendEvent).where(
+            DividendEvent.asset_code.in_(codes),
+            DividendEvent.ex_date >= start,
+            DividendEvent.ex_date <= end,
+        )).all()
+    for event in rows:
+        cash = float(event.per_share_cash or 0.0)
+        if cash > 0:
+            out.setdefault(event.ex_date, []).append((event.asset_code, cash, event.record_date))
     return out
 
 
@@ -356,7 +425,7 @@ def _pack_bar_row(r) -> tuple:
         1 if is_st else 0,
         int(trade_status) if trade_status is not None else 1,
         _f("amount"),
-        _f("close_raw"),
+        _f("open_raw"), _f("high_raw"), _f("low_raw"), _f("close_raw"),
         _f("pe"), _f("pb"),
     )
 
@@ -365,6 +434,8 @@ def _bar_from_tuple(t: tuple) -> dict:
     """紧凑 tuple → 旧 day_bars 字段 dict(调用方字段名不变)。"""
     return {
         "open": t[_BI_O], "high": t[_BI_H], "low": t[_BI_L], "close": t[_BI_C],
+        "open_raw": t[_BI_O_RAW], "high_raw": t[_BI_H_RAW],
+        "low_raw": t[_BI_L_RAW], "close_raw": t[_BI_C_RAW],
         "pct_chg": t[_BI_PCT],
         "is_st": bool(t[_BI_ST]),
         "trade_status": int(t[_BI_TS]) if t[_BI_TS] is not None else 1,
@@ -414,15 +485,15 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
             "asset_code, quote_date, "
             "COALESCE(open_qfq, open), COALESCE(high_qfq, high), "
             "COALESCE(low_qfq, low), COALESCE(close_qfq, close), pct_chg, "
-            "is_st, trade_status, amount, close_raw, pe, pb"
+            "is_st, trade_status, amount, open_raw, high_raw, low_raw, close_raw, pe, pb"
         ),
         "etf_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
-            "NULL as is_st, 1 as trade_status, amount, NULL as close_raw, NULL as pe, NULL as pb"
+            "NULL as is_st, 1 as trade_status, amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb"
         ),
         "index_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
-            "NULL as is_st, 1 as trade_status, NULL as amount, NULL as close_raw, NULL as pe, NULL as pb"
+            "NULL as is_st, 1 as trade_status, NULL as amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb"
         ),
     }
     cache: dict = {}
@@ -456,7 +527,7 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
                         break
                     for row in rows:
                         (asset_code, qdate, o, h, l, c, pct,
-                         is_st, trade_status, amount, close_raw, pe, pb) = row
+                         is_st, trade_status, amount, o_raw, h_raw, l_raw, close_raw, pe, pb) = row
                         if isinstance(qdate, str):
                             qdate = date.fromisoformat(qdate[:10])
                         packed = (
@@ -468,6 +539,9 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
                             1 if is_st else 0,
                             int(trade_status) if trade_status is not None else 1,
                             float(amount) if amount is not None else None,
+                            float(o_raw) if o_raw is not None else None,
+                            float(h_raw) if h_raw is not None else None,
+                            float(l_raw) if l_raw is not None else None,
                             float(close_raw) if close_raw is not None else None,
                             float(pe) if pe is not None else None,
                             float(pb) if pb is not None else None,
@@ -492,10 +566,11 @@ def _day_market_from_pack(
     for code, t in pack.items():
         bar = _bar_from_tuple(t)
         day_bars[code] = bar
-        if bar["close"] is not None:
-            close_prices[code] = bar["close"]
-        if bar["open"] is not None:
-            open_prices[code] = bar["open"]
+        # 账户收益走 raw，分红在除息日另行入账；旧行没有 raw 时兼容回落 qfq。
+        if (bar["close_raw"] or bar["close"]) is not None:
+            close_prices[code] = bar["close_raw"] or bar["close"]
+        if (bar["open_raw"] or bar["open"]) is not None:
+            open_prices[code] = bar["open_raw"] or bar["open"]
     return close_prices, open_prices, day_bars
 
 
@@ -528,10 +603,10 @@ def _get_day_market(codes: list[str], as_of: date,
             for r in rows:
                 bar = _bar_from_row(r)
                 day_bars[r.asset_code] = bar
-                if bar["close"] is not None:
-                    close_prices[r.asset_code] = bar["close"]
-                if bar["open"] is not None:
-                    open_prices[r.asset_code] = bar["open"]
+                if (bar["close_raw"] or bar["close"]) is not None:
+                    close_prices[r.asset_code] = bar["close_raw"] or bar["close"]
+                if (bar["open_raw"] or bar["open"]) is not None:
+                    open_prices[r.asset_code] = bar["open_raw"] or bar["open"]
     return close_prices, open_prices, day_bars
 
 
@@ -822,6 +897,7 @@ def run_backtest(codes: list[str], start: date, end: date,
         _preload_dividend_events(list(codes), _pre_start, end)
         if market_cache else {}
     )
+    cash_dividends = _preload_cash_dividends(list(codes), start, end) if market_cache else {}
 
     # 整段回测复用一个线程池(旧:每天 with 创建/销毁;冷 miss 并行在 prefetch 内,
     # analyze 热路径有 prefill 时串行,池仅兜底无 prefill 路径)。
@@ -848,6 +924,12 @@ def run_backtest(codes: list[str], start: date, end: date,
             list(codes), as_of, market_cache=market_cache)
         if not close_prices:
             continue
+        # 除息现金流属于隔夜持仓权益，必须先于当日开盘卖单入账。
+        for code, cash, record_date in cash_dividends.get(as_of, []):
+            rec = acct.credit_dividend(code, cash, as_of, record_date)
+            if rec:
+                rec.update(date=as_of.isoformat(), status="credited")
+                trades.append(rec)
         last_close.update(close_prices)   # 停牌日 close 缺失时,沿用上一交易日价估值(不记 0)
 
         # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌/涨跌停顺延或拒绝)----
@@ -878,12 +960,14 @@ def run_backtest(codes: list[str], start: date, end: date,
                 fill = check_fill(
                     side, px,
                     pct_chg=bar.get("pct_chg"),
-                    open_=bar.get("open"), high=bar.get("high"),
-                    low=bar.get("low"), close=bar.get("close"),
+                    open_=bar.get("open_raw") or bar.get("open"),
+                    high=bar.get("high_raw") or bar.get("high"),
+                    low=bar.get("low_raw") or bar.get("low"),
+                    close=bar.get("close_raw") or bar.get("close"),
                     board=uni_ctx.board(code),
                     is_st=bool(bar.get("is_st")),
                     trade_status=int(bar.get("trade_status", 1)),
-                    pre_close=infer_pre_close(bar.get("close"), bar.get("pct_chg")),
+                    pre_close=infer_pre_close(bar.get("close_raw") or bar.get("close"), bar.get("pct_chg")),
                     rules=execution_rules,
                 )
                 if not fill.ok:
@@ -1180,6 +1264,9 @@ def run_backtest(codes: list[str], start: date, end: date,
         sum((t.get("pnl") or 0.0) for t in _sl_filled), 2
     )  # 负数=亏损(元);pnl 符号:盈>0 亏<0(与上方 win/loss 判定一致)
     metrics["total_fee"] = round(acct.fee_paid, 2)
+    metrics["cash_dividend_gross"] = round(acct.dividend_received, 2)
+    metrics["dividend_tax_paid"] = round(acct.dividend_tax_paid, 2)
+    metrics["cash_dividend_net"] = round(acct.dividend_received - acct.dividend_tax_paid, 2)
     # 组合层指标(从 holdings_curve 算,对标 zipline ledger gross leverage + 单仓集中度):
     _gross = [sum(p["weight"] for p in d.get("positions", [])) for d in holdings_curve]
     metrics["avg_gross_leverage"] = round(sum(_gross) / len(_gross) * 100, 1) if _gross else None

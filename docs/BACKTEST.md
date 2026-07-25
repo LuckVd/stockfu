@@ -220,7 +220,7 @@ print(r["equity_curve"][-1])
 2. **Phase 2**:`prefetch_fn` 单日批量读/冷填算子缓存 → 有 prefill 时 **串行** `analyze_fn`(热路径任务极轻,线程池为负优化);无 prefill 兜底才用池。行情走区间预载 D 或 `_get_day_market`
 3. **Phase 3**:仓位层 `compute_target_weight`(信号→desired)+ risk 连续确认棒 + confidence gate → `rebalancer.adjust`(选股)→ `PositionManager` 边沿触发/冷却 → 挂单
 
-**费用**(VirtualAccount,贴近真实):佣金万 3(最低 5 元/笔,双边)+ 印花税(**日期化** `stamp_duty_rate(as_of)`:2023-08-28 前千一 0.001、之后万五 0.0005,仅卖出)+ 过户费 0.001%(双边);A 股整百股。
+**费用与分红**(VirtualAccount,贴近真实):佣金万 3(最低 5 元/笔,双边)+ 印花税(**日期化** `stamp_duty_rate(as_of)`:2023-08-28 前千一 0.001、之后万五 0.0005,仅卖出)+ 过户费 0.001%(双边);A 股整百股。账户成交与估值用不复权价，除息日为隔夜持仓入账现金分红；按登记日持有期计红利税（≤30 日 20%、31–365 日 10%、>365 日免税），并记录 `cash_dividend_gross`、`dividend_tax_paid` 与 `cash_dividend_net`。信号和技术因子仍使用前复权价，避免除息造成假跌幅。
 
 **资金分配 / 风控约束**(本轮对标 rqalpha/backtrader 升级,详见 `docs/ARCHITECTURE_REVIEW.md`):
 - 单仓 `max_w=0.10`、总仓 `max_gross=0.90`(留 10% cash sleeve,对所有 rebalancer 生效)
