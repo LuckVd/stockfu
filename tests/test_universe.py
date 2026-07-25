@@ -8,7 +8,9 @@ from unittest.mock import MagicMock
 from stockfu.services.universe import (
     DayFlags, UniverseContext, UniverseRules, board_of_code, limit_pct_for,
 )
-from stockfu.services.index_universe import _month_starts, member_on, normalize_code
+from stockfu.services.index_universe import (
+    HISTORICAL_INDEX_CODES, _month_starts, member_on, normalize_code,
+)
 
 
 class TestBoardAndLimit(unittest.TestCase):
@@ -83,6 +85,9 @@ class TestEligibleOn(unittest.TestCase):
 
 
 class TestIndexMembershipIntervals(unittest.TestCase):
+    def test_default_universe_excludes_unfinished_indices(self):
+        self.assertEqual(HISTORICAL_INDEX_CODES, ("000300", "000852"))
+
     def test_right_boundary_is_exclusive(self):
         spans = [(date(2020, 1, 1), date(2020, 6, 1))]
         self.assertTrue(member_on(spans, date(2020, 5, 29)))
