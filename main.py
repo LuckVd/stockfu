@@ -296,6 +296,21 @@ def run_backfill_index_universe_history(start: str, end: str) -> None:
     print(audit_coverage(("000300",)))
 
 
+def run_backfill_index_universe_mirror(start: str, end: str) -> None:
+    """导入可追溯月度镜像；它只补覆盖，不能作为日级正式历史。"""
+    from datetime import date
+    from stockfu.db import init_db
+    from stockfu.services.index_universe import audit_coverage, backfill_yfiua_csi1000
+
+    init_db()
+    start_d, end_d = date.fromisoformat(start), date.fromisoformat(end)
+    if end_d < start_d:
+        raise ValueError("--index-history-end 不能早于 --index-history-start")
+    print(f"导入中证1000月度镜像（待正式档案核验）: {start_d} → {end_d}")
+    print(backfill_yfiua_csi1000(start=start_d, end=end_d))
+    print(audit_coverage(("000852",)))
+
+
 def run_backfill_quote_status() -> None:
     """补全:历史 is_st/trade_status + 每只票最新交易日全量数据(OHLCV/估值/状态)。"""
     from stockfu.db import init_db
@@ -732,6 +747,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="导入中证正式当前成分快照(只按文件日期写入；不伪造历史)")
     p.add_argument("--backfill-index-universe-history", action="store_true",
                    help="逐交易日回补沪深300历史成分（baostock，标为待正式档案核验）")
+    p.add_argument("--backfill-index-universe-mirror", action="store_true",
+                   help="导入中证1000可得的月度成分镜像（待正式档案核验，非日级完整）")
     p.add_argument("--index-history-start", default="2006-01-01",
                    help="配合 --backfill-index-universe-history：起始日期 YYYY-MM-DD")
     p.add_argument("--index-history-end", default=None,
@@ -876,6 +893,9 @@ def main() -> None:
     elif args.backfill_index_universe_history:
         run_backfill_index_universe_history(args.index_history_start,
                                              args.index_history_end or date.today().isoformat())
+    elif args.backfill_index_universe_mirror:
+        run_backfill_index_universe_mirror(args.index_history_start,
+                                            args.index_history_end or date.today().isoformat())
     elif args.backfill_quote_status:
         run_backfill_quote_status()
     elif args.backfill_dividend:

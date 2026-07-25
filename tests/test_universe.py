@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 from stockfu.services.universe import (
     DayFlags, UniverseContext, UniverseRules, board_of_code, limit_pct_for,
 )
-from stockfu.services.index_universe import member_on
+from stockfu.services.index_universe import _month_starts, member_on
 
 
 class TestBoardAndLimit(unittest.TestCase):
@@ -87,6 +87,12 @@ class TestIndexMembershipIntervals(unittest.TestCase):
         spans = [(date(2020, 1, 1), date(2020, 6, 1))]
         self.assertTrue(member_on(spans, date(2020, 5, 29)))
         self.assertFalse(member_on(spans, date(2020, 6, 1)))
+
+    def test_monthly_mirror_boundaries(self):
+        self.assertEqual(
+            _month_starts(date(2025, 4, 18), date(2025, 6, 1)),
+            [date(2025, 4, 1), date(2025, 5, 1), date(2025, 6, 1)],
+        )
 
 
 if __name__ == "__main__":
