@@ -18,8 +18,10 @@ from sqlmodel import select
 from stockfu.db import session_scope
 from stockfu.models import IndexConstituent
 
-HISTORICAL_INDEX_CODES = ("000300", "000852", "399006", "000688")
-HISTORICAL_UNIVERSE_ID = "cn_historical_indices_v1"
+# 当前正式回测宇宙：沪深300 + 中证1000。创业板指/科创50可保留归档数据，
+# 但不参与默认策略宇宙，避免未补齐的公告链影响回测口径。
+HISTORICAL_INDEX_CODES = ("000300", "000852")
+HISTORICAL_UNIVERSE_ID = "cn_historical_csi300_csi1000_v1"
 INDEX_INCEPTION = {
     "000300": date(2006, 1, 1), "000852": date(2014, 10, 17),
     "399006": date(2010, 6, 1), "000688": date(2020, 7, 23),
