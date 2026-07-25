@@ -67,6 +67,8 @@
 
 > **深历史补数（2026-07-25）**：若库内已有较晚年份的 qfq，默认续传的完成判定只比较 `[start,end]` 内 raw/hfq 与 qfq 的行数，**不会校验是否从请求的 `start` 开始覆盖**；例如已有 2020 年以后数据时，补 2013 年起的 raw/hfq 会被误判完成。此场景使用 `scripts/backfill_deep_supervisor.sh`：它以 `--full --proxy-mode direct` 强制重抓，并以每趟 3 小时 `timeout` 和最多 50 趟重试监管。`preserve_qfq=True` 使重复写入安全；首趟完成且 `fail=0` 即收口。运行时不得同时启动其他 SQLite 写任务。
 
+> **分红深历史**：`--backfill-dividend` 默认仅查近 10 个财年；需要 2013 年起的红利因子时，运行 `BAOSTOCK_PROXY_MODE=direct python3 -u main.py --backfill-dividend --backfill-dividend-start-year 2013`。该任务按 `asset_code + ex_date` 幂等写入 `dividend_event`，历史模式将单票看门狗提高至 60 秒；与其他 SQLite 写任务互斥。
+
 > IP 已解封,代理池仍为首选;直连仅作代理池耗尽兜底(`BAOSTOCK_DIRECT_FALLBACK`,自动触发)。勿手动 `--proxy-mode direct` 跑全量(串行单 IP 风险)。进程可 double-fork 后台跑。
 
 若进程挂了（关会话后应仍在；若 `ps` 无进程）：
