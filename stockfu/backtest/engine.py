@@ -1048,7 +1048,9 @@ def run_backtest(codes: list[str], start: date, end: date,
         total0 = acct.equity(close_prices)
         cash_r = acct.cash / total0 if total0 > 0 else 0.0  # noqa: F841
         snap: dict[str, dict] = {}
-        # 分析集合 = 宇宙;持仓不在宇宙也进 snap(权重/只减不加),但不跑算子
+        # 分析集合 = 入选池 E(t) + 已持仓的持仓管理池 M(t)。调出成分不再进
+        # E(t)，因此不能建仓/加仓；但它若仍有仓位，必须继续运行退出、止损和
+        # 减仓规则，不能因调出而无限期冻结持仓。
         analyze_codes = set(u)
         for code in set(close_prices) | {
             c for c, p in acct.positions.items() if p.shares > 0
@@ -1061,7 +1063,7 @@ def run_backtest(codes: list[str], start: date, end: date,
                                       else {**last_close, **close_prices}),
                 "in_universe": code in u,
             }
-            if code in u:
+            if code in u or (pos and pos.shares > 0 and code in close_prices):
                 analyze_codes.add(code)
 
         results: dict[str, dict] = {}
@@ -1089,8 +1091,8 @@ def run_backtest(codes: list[str], start: date, end: date,
                     pass
 
         # ---- Phase 3: 仓位层(信号→desired→组合层→目标仓位→边沿触发→冷却) ----
-        # 3a. 逐标的算 desired(仅宇宙内跑信号);持仓不在宇宙 → 只减不加(desired=None 维持,
-        #     后置 clamp 禁止增仓;ST 且 exclude_st 时 desired=0 清仓)
+        # 3a. 逐标的算 desired。宇宙外持仓走 exit-only：仍跑卖出/止损/减仓，
+        # 但绝不可建仓或加仓；非持仓的宇宙外股票完全不参与信号。
         desired: dict[str, float | None] = {}
         meta: dict[str, dict] = {}
         _sig: dict[str, str] = {}      # 记 signal/risk_vetoed 供 3c trade 记录用
@@ -1099,7 +1101,7 @@ def run_backtest(codes: list[str], start: date, end: date,
             current_w = snap[code]["weight"]
             in_u = code in u
 
-            # 不在宇宙:不参与截面信号;ST 持仓(exclude_st)强制目标 0;其它持仓 desired=None 维持
+            # 宇宙外且未持仓：不是候选，也不进入持仓管理池。
             if not in_u:
                 fl = day_flags.get(code)
                 if (universe_rules.exclude_st and fl and fl.is_st and current_w > 0):
@@ -1108,10 +1110,10 @@ def run_backtest(codes: list[str], start: date, end: date,
                     _veto[code] = False
                     meta[code] = {"score": None, "confidence": None,
                                   "signal": "universe_st_exit", "risk_vetoed": False,
-                                  "raw": None}
-                elif current_w > 0:
-                    desired[code] = None  # 维持,后置 clamp 禁止加仓
-                continue
+                                  "raw": None, "exit_only": True}
+                    continue
+                if current_w <= 0:
+                    continue
 
             r = results.get(code)
             if not r or "error" in r or not r.get("aggregate"):
@@ -1156,12 +1158,19 @@ def run_backtest(codes: list[str], start: date, end: date,
                     target_weight = 0.0
                     signal = "stop_loss"
 
+            # 调出后的持仓：让策略的正常卖出、止损、减仓生效，但任何正向目标都
+            # 不得超过现有仓位。exit_only 也传给 TopN，确保它不占用新选名额、不会
+            # 被组合层按排名当作候选股重新加仓。
+            exit_only = not in_u
+            if exit_only and target_weight is not None:
+                target_weight = min(target_weight, current_w)
+
             desired[code] = target_weight
             _sig[code] = signal
             _veto[code] = risk_vetoed
             meta[code] = {"score": total_score, "confidence": confidence,
                           "signal": signal, "risk_vetoed": risk_vetoed,
-                          "raw": total_score}
+                          "raw": total_score, "exit_only": exit_only}
 
         # 3b. 仓位调整层:desired全集 + current全集 → 最终目标仓位(独立基础架构,从 app_config 取)
         current_weights = {c: s["weight"] for c, s in snap.items()}   # 全集(含未覆盖持仓)
@@ -1171,7 +1180,7 @@ def run_backtest(codes: list[str], start: date, end: date,
             params=rebalancer_params,
         )
 
-        # 宇宙外持仓:禁止加仓(target 上限 = current);允许减仓/清仓
+        # 宇宙外持仓:禁止加仓(target 上限 = current);允许 exit-only 信号减仓/清仓。
         for code, tw in list(final.items()):
             if code in u or tw is None:
                 continue

@@ -281,19 +281,21 @@ def run_backfill_index_universe(index_codes: str | None) -> None:
 
 
 def run_backfill_index_universe_history(start: str, end: str) -> None:
-    """从可复现历史接口回补沪深300；正式档案仍是验收基准。"""
+    """从 BaoStock 可复现历史接口回补默认 300+500；仍待正式档案核验。"""
     from datetime import date
     from stockfu.db import init_db
-    from stockfu.services.index_universe import audit_coverage, backfill_baostock_hs300
+    from stockfu.services.index_universe import (
+        HISTORICAL_INDEX_CODES, audit_coverage, backfill_baostock_historical_indices,
+    )
 
     init_db()
     start_d, end_d = date.fromisoformat(start), date.fromisoformat(end)
     if end_d < start_d:
         raise ValueError("--index-history-end 不能早于 --index-history-start")
-    print(f"回补沪深300历史快照（baostock，待中证正式档案核验）: {start_d} → {end_d}")
-    result = backfill_baostock_hs300(start=start_d, end=end_d)
+    print(f"回补沪深300+中证500历史快照（baostock，串行、待正式档案核验）: {start_d} → {end_d}")
+    result = backfill_baostock_historical_indices(start=start_d, end=end_d)
     print(result)
-    print(audit_coverage(("000300",)))
+    print(audit_coverage(HISTORICAL_INDEX_CODES))
 
 
 def run_backfill_index_universe_mirror(start: str, end: str) -> None:
@@ -753,9 +755,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backfill-universe", action="store_true",
                    help="回补 security_master(list_date/board, baostock;时点宇宙前置)")
     p.add_argument("--backfill-index-universe", action="store_true",
-                   help="导入中证正式当前成分快照(只按文件日期写入；不伪造历史)")
+                   help="导入默认指数当前成分快照(只按文件日期写入；不伪造历史)")
     p.add_argument("--backfill-index-universe-history", action="store_true",
-                   help="逐交易日回补沪深300历史成分（baostock，标为待正式档案核验）")
+                   help="逐交易日串行回补沪深300+中证500历史成分（baostock，待正式档案核验）")
     p.add_argument("--backfill-index-universe-mirror", action="store_true",
                    help="导入中证1000可得的月度成分镜像（待正式档案核验，非日级完整）")
     p.add_argument("--backfill-star50-initial", action="store_true",
@@ -765,7 +767,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--index-history-end", default=None,
                    help="配合 --backfill-index-universe-history：结束日期 YYYY-MM-DD（默认今天）")
     p.add_argument("--index-codes", default=None,
-                   help="配合 --backfill-index-universe：逗号分隔指数代码；默认四条历史宇宙指数")
+                   help="配合 --backfill-index-universe：逗号分隔指数代码；默认历史宇宙指数")
     p.add_argument("--backfill-quote-status", action="store_true",
                    help="补历史 is_st/trade_status + 每只票最新交易日全量数据(baostock)")
     p.add_argument("--backfill-dividend", action="store_true",

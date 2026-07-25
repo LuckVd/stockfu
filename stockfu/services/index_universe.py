@@ -12,6 +12,7 @@ from datetime import date
 from html import unescape
 from io import StringIO
 import re
+import time
 from typing import Iterable
 
 from sqlalchemy import func
@@ -20,12 +21,13 @@ from sqlmodel import select
 from stockfu.db import session_scope
 from stockfu.models import IndexConstituent
 
-# 当前正式回测宇宙：沪深300 + 中证1000。创业板指/科创50可保留归档数据，
-# 但不参与默认策略宇宙，避免未补齐的公告链影响回测口径。
-HISTORICAL_INDEX_CODES = ("000300", "000852")
-HISTORICAL_UNIVERSE_ID = "cn_historical_csi300_csi1000_v1"
+# 当前正式回测宇宙：BaoStock 可复现的沪深300 + 中证500。中证1000、创业板指/
+# 科创50的数据可以保留归档，但不参与默认策略，避免混入不完整或不同来源的样本链。
+HISTORICAL_INDEX_CODES = ("000300", "000905")
+HISTORICAL_UNIVERSE_ID = "cn_historical_baostock_csi300_csi500_v1"
 INDEX_INCEPTION = {
-    "000300": date(2006, 1, 1), "000852": date(2014, 10, 17),
+    "000300": date(2006, 1, 1), "000905": date(2007, 1, 15),
+    "000852": date(2014, 10, 17),
     "399006": date(2010, 6, 1), "000688": date(2020, 7, 23),
 }
 SSE_STAR50_INITIAL_URL = (
@@ -268,8 +270,14 @@ def _snapshot_members_at_or_before(index_code: str, as_of: date) -> set[str]:
         )).all())
 
 
-def fetch_baostock_hs300_snapshot(as_of: date) -> set[str]:
-    """取得 BaoStock 给出的某交易日沪深 300 成分。
+_BAOSTOCK_INDEX_QUERIES = {
+    "000300": ("hs300", "query_hs300_stocks", 300),
+    "000905": ("zz500", "query_zz500_stocks", 500),
+}
+
+
+def fetch_baostock_index_snapshot(index_code: str, as_of: date) -> set[str]:
+    """取得 BaoStock 给出的某交易日宽基指数成分。
 
     这是可复现的历史接口，但不是指数公司正式档案。因此写入时会明确标记为
     ``unverified``；正式中证样本文件到位后可进行逐期交叉核验，而不会混淆来源。
@@ -277,11 +285,18 @@ def fetch_baostock_hs300_snapshot(as_of: date) -> set[str]:
     from stockfu.data.baostock_proxy import ensure_baostock_login
     import baostock as bs
 
+    code = normalize_code(index_code)
+    try:
+        source_key, method_name, expected_size = _BAOSTOCK_INDEX_QUERIES[code]
+    except KeyError as exc:
+        raise ValueError(f"BaoStock 不支持指数成分历史查询: {index_code!r}") from exc
+    if as_of < INDEX_INCEPTION[code]:
+        raise ValueError(f"{code} 在 {as_of} 尚未成立")
     if not ensure_baostock_login():
         raise RuntimeError("baostock 登录失败")
-    result = bs.query_hs300_stocks(date=as_of.isoformat())
+    result = getattr(bs, method_name)(date=as_of.isoformat())
     if result.error_code != "0":
-        raise RuntimeError(f"baostock query_hs300_stocks: {result.error_code} {result.error_msg}")
+        raise RuntimeError(f"baostock {method_name}: {result.error_code} {result.error_msg}")
     fields = {name: i for i, name in enumerate(result.fields)}
     code_pos = fields.get("code")
     if code_pos is None:
@@ -290,15 +305,34 @@ def fetch_baostock_hs300_snapshot(as_of: date) -> set[str]:
     while result.next():
         raw = result.get_row_data()[code_pos]
         members.add(normalize_code(raw.rsplit(".", 1)[-1]))
-    if len(members) != 300:
-        raise RuntimeError(f"baostock {as_of} 返回成员数 {len(members)}，期望 300")
+    if len(members) != expected_size:
+        raise RuntimeError(
+            f"baostock {source_key} {as_of} 返回成员数 {len(members)}，期望 {expected_size}"
+        )
     return members
 
 
-def backfill_baostock_hs300(*, start: date, end: date) -> dict:
-    """按本地上证交易日扫描沪深300，仅在成分变化日落完整快照。"""
+def fetch_baostock_hs300_snapshot(as_of: date) -> set[str]:
+    """兼容旧调用的沪深300快捷入口。"""
+    return fetch_baostock_index_snapshot("000300", as_of)
+
+
+def fetch_baostock_zz500_snapshot(as_of: date) -> set[str]:
+    """取得 BaoStock 给出的某交易日中证500成分。"""
+    return fetch_baostock_index_snapshot("000905", as_of)
+
+
+def backfill_baostock_index(index_code: str, *, start: date, end: date) -> dict:
+    """按交易日串行扫描 BaoStock 指数，仅在成员变化日落完整快照。"""
     from stockfu.models import IndexQuoteDaily
 
+    code = normalize_code(index_code)
+    if code not in _BAOSTOCK_INDEX_QUERIES:
+        raise ValueError(f"BaoStock 不支持指数成分历史查询: {index_code!r}")
+    start = max(start, INDEX_INCEPTION[code])
+    if end < start:
+        return {"index_code": code, "scanned": 0, "imported": 0, "unchanged": 0,
+                "errors": [], "status": "before_inception"}
     with session_scope() as s:
         trade_dates = s.exec(select(IndexQuoteDaily.quote_date).where(
             IndexQuoteDaily.asset_code == "sh000001",
@@ -307,24 +341,42 @@ def backfill_baostock_hs300(*, start: date, end: date) -> dict:
         ).order_by(IndexQuoteDaily.quote_date)).all()
     if not trade_dates:
         raise RuntimeError("缺少 sh000001 交易日历；请先运行 --backfill-benchmark")
-    out = {"scanned": 0, "imported": 0, "unchanged": 0, "errors": []}
+    source_key, method_name, _ = _BAOSTOCK_INDEX_QUERIES[code]
+    out = {"index_code": code, "scanned": 0, "imported": 0, "unchanged": 0, "errors": []}
     known: set[str] | None = None
     for as_of in trade_dates:
         out["scanned"] += 1
         try:
-            members = fetch_baostock_hs300_snapshot(as_of)
-            baseline = known if known is not None else _snapshot_members_at_or_before("000300", as_of)
+            members = fetch_baostock_index_snapshot(code, as_of)
+            baseline = known if known is not None else _snapshot_members_at_or_before(code, as_of)
             if members == baseline:
                 out["unchanged"] += 1
             else:
-                import_snapshot("000300", members, effective_from=as_of,
-                                source="baostock_hs300_snapshot_unverified",
-                                source_ref=f"baostock://query_hs300_stocks?date={as_of.isoformat()}")
+                import_snapshot(code, members, effective_from=as_of,
+                                source=f"baostock_{source_key}_snapshot_unverified",
+                                source_ref=f"baostock://{method_name}?date={as_of.isoformat()}")
                 out["imported"] += 1
             known = members
         except Exception as exc:  # noqa: BLE001
             out["errors"].append({"date": as_of.isoformat(), "error": f"{type(exc).__name__}: {exc}"})
+        # BaoStock 明确不允许并发；串行扫描也保留请求间隔，避免被服务端限流。
+        time.sleep(0.3)
     return out
+
+
+def backfill_baostock_hs300(*, start: date, end: date) -> dict:
+    """兼容旧调用的沪深300回补入口。"""
+    return backfill_baostock_index("000300", start=start, end=end)
+
+
+def backfill_baostock_historical_indices(*, start: date, end: date,
+                                         index_codes: Iterable[str] | None = None) -> dict:
+    """按默认 300+500 依次回补；严格串行，避免 BaoStock 并发封禁。"""
+    codes = normalize_index_codes(index_codes)
+    unsupported = set(codes) - set(_BAOSTOCK_INDEX_QUERIES)
+    if unsupported:
+        raise ValueError(f"BaoStock 不支持: {sorted(unsupported)}")
+    return {code: backfill_baostock_index(code, start=start, end=end) for code in codes}
 
 
 def _month_starts(start: date, end: date) -> list[date]:

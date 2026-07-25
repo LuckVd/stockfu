@@ -42,14 +42,27 @@ class TopNPicker(Rebalancer):
         if not all_codes:
             return {}
 
+        # 调出指数但仍持有的股票只允许退出：它们继续接受策略给出的减仓/清仓，
+        # 却不能占用 TopN 的新选名额，更不能被 lock/排名逻辑重新加仓。
+        exit_only = {
+            c for c in all_codes if (meta or {}).get(c, {}).get("exit_only", False)
+        }
+        candidate_codes = all_codes - exit_only
+        final: dict[str, float | None] = {}
+        for code in exit_only:
+            d = desired.get(code)
+            cur = current.get(code, 0.0)
+            final[code] = cur if d is None else min(d, cur)
+            if final[code] == 0.0:
+                self._entry_day.pop(code, None)
+
         # ① 全市场排序:横截面百分位(raw)× confidence 降序
-        pct = _cross_section_percentiles(meta, all_codes)
-        ranked = self._rank_stocks(all_codes, meta, pct)
+        pct = _cross_section_percentiles(meta, candidate_codes)
+        ranked = self._rank_stocks(candidate_codes, meta, pct)
         target_set = set(ranked[:top_n])
         rank_pos = {c: i for i, c in enumerate(ranked)}
 
-        held_codes = {c for c in all_codes if current.get(c, 0) > 0.001}
-        final: dict[str, float | None] = {}
+        held_codes = {c for c in candidate_codes if current.get(c, 0) > 0.001}
         replaceable: list[str] = []
 
         # ② 当前持仓分类:target 内保留满仓;非 target 的 lock 期内保留、过 lock 进 replaceable
@@ -90,7 +103,7 @@ class TopNPicker(Rebalancer):
                     self._entry_day[code] = self._day
 
         # ⑤ 未覆盖的票:已持仓维持,其余不开仓(建仓只走 ③/④)
-        for code in all_codes:
+        for code in candidate_codes:
             if code not in final:
                 final[code] = current[code] if code in held_codes else None
 
@@ -99,6 +112,8 @@ class TopNPicker(Rebalancer):
         if len(pos) > top_n:
             keep = set(ranked[:top_n])
             for c in pos:
+                if c in exit_only:
+                    continue
                 if c in keep:
                     continue
                 entry = self._entry_day.get(c)
