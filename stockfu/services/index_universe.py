@@ -9,7 +9,9 @@ from __future__ import annotations
 from collections import defaultdict
 import csv
 from datetime import date
+from html import unescape
 from io import StringIO
+import re
 from typing import Iterable
 
 from sqlalchemy import func
@@ -30,6 +32,10 @@ SSE_STAR50_INITIAL_URL = (
     "https://www.sse.com.cn/market/sseindex/diclosure/c/10077925/"
     "files/1e710951ab8d4f0997e3737eee6ebc86.xlsx"
 )
+SINA_CORP_INDEX_HISTORY_URL = (
+    "https://vip.stock.finance.sina.com.cn/corp/go.php/"
+    "vCI_CorpXiangGuan/stockid/{code}.phtml"
+)
 
 
 def normalize_code(raw: object) -> str:
@@ -42,6 +48,51 @@ def normalize_code(raw: object) -> str:
 def normalize_index_codes(codes: Iterable[str] | None = None) -> tuple[str, ...]:
     raw = codes or HISTORICAL_INDEX_CODES
     return tuple(sorted({normalize_code(c) for c in raw if normalize_code(c)}))
+
+
+def parse_sina_corp_index_history(html: str, *, index_code: str = "000852") -> list[tuple[date, date | None]]:
+    """解析新浪个股“相关指数”页中的指定指数纳入区间。
+
+    该页同时保留已调出股票的记录；右边界为空代表仍在指数内。解析器只依赖
+    表格的四列顺序（名称、代码、纳入日、调出日），方便用网页 fixture 回归测试。
+    """
+    wanted = normalize_code(index_code)
+    out: list[tuple[date, date | None]] = []
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, flags=re.IGNORECASE | re.DOTALL):
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", row, flags=re.IGNORECASE | re.DOTALL)
+        values = [unescape(re.sub(r"<[^>]+>", "", value)).replace("\\xa0", " ").strip()
+                  for value in cells]
+        if len(values) < 4 or normalize_code(values[1]) != wanted:
+            continue
+        try:
+            start = date.fromisoformat(values[2])
+        except ValueError as exc:
+            raise RuntimeError(f"新浪相关指数页纳入日期异常: {values[2]!r}") from exc
+        end = None
+        if values[3] and values[3] not in {"--", "-"}:
+            try:
+                end = date.fromisoformat(values[3])
+            except ValueError as exc:
+                raise RuntimeError(f"新浪相关指数页调出日期异常: {values[3]!r}") from exc
+            if end <= start:
+                raise RuntimeError(f"新浪相关指数页区间异常: {start} -> {end}")
+        out.append((start, end))
+    return sorted(set(out))
+
+
+def fetch_sina_corp_index_history(code: str, *, index_code: str = "000852") -> list[tuple[date, date | None]]:
+    """读取一只股票在指定指数中的全部纳入/调出区间（不写数据库）。"""
+    import requests
+    from stockfu.data.base import direct_connection
+
+    normalized = normalize_code(code)
+    if not normalized or not normalized.isdigit() or len(normalized) != 6:
+        raise ValueError(f"证券代码异常: {code!r}")
+    url = SINA_CORP_INDEX_HISTORY_URL.format(code=normalized)
+    with direct_connection():
+        response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    return parse_sina_corp_index_history(response.text, index_code=index_code)
 
 
 def historical_member_codes(index_codes: Iterable[str] | None = None) -> list[str]:
