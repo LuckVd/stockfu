@@ -24,6 +24,10 @@ INDEX_INCEPTION = {
     "000300": date(2006, 1, 1), "000852": date(2014, 10, 17),
     "399006": date(2010, 6, 1), "000688": date(2020, 7, 23),
 }
+SSE_STAR50_INITIAL_URL = (
+    "https://www.sse.com.cn/market/sseindex/diclosure/c/10077925/"
+    "files/1e710951ab8d4f0997e3737eee6ebc86.xlsx"
+)
 
 
 def normalize_code(raw: object) -> str:
@@ -118,6 +122,64 @@ def import_snapshot(index_code: str, members: Iterable[str], *, effective_from: 
                   effective_to=next_date, source=source, source_ref=source_ref))
         s.commit()
     return {"index_code": index_code, "effective_from": str(effective_from), "members": len(member_set), "added": len(member_set), "closed": len(prior), "status": "imported"}
+
+
+def import_adjustment(index_code: str, *, added: Iterable[str], removed: Iterable[str],
+                      effective_from: date, announce_date: date | None,
+                      source: str, source_ref: str) -> dict:
+    """把一份正式调样公告变为该生效日的完整快照。
+
+    公告通常只给调入/调出；数据库始终保存完整集合。导入前严格校验调出项在
+    上期内、调入项不在上期内，避免错读表格列或跨指数混入后静默污染历史。
+    """
+    index_code = normalize_code(index_code)
+    with session_scope() as s:
+        prior_date = s.exec(select(func.max(IndexConstituent.effective_from)).where(
+            IndexConstituent.index_code == index_code,
+            IndexConstituent.effective_from < effective_from,
+        )).one()
+        if prior_date is None:
+            raise ValueError(f"{index_code} {effective_from} 缺少上期完整快照")
+        prior = set(s.exec(select(IndexConstituent.asset_code).where(
+            IndexConstituent.index_code == index_code,
+            IndexConstituent.effective_from == prior_date,
+        )).all())
+    add_set = {normalize_code(code) for code in added if normalize_code(code)}
+    remove_set = {normalize_code(code) for code in removed if normalize_code(code)}
+    if not add_set or not remove_set:
+        raise ValueError("调样公告的调入或调出列表为空，拒绝导入")
+    if add_set & prior:
+        raise ValueError(f"调入项已在上期成分中: {sorted(add_set & prior)}")
+    if remove_set - prior:
+        raise ValueError(f"调出项不在上期成分中: {sorted(remove_set - prior)}")
+    members = (prior - remove_set) | add_set
+    if len(members) != len(prior) - len(remove_set) + len(add_set):
+        raise ValueError("调样后成员数异常")
+    return import_snapshot(index_code, members, effective_from=effective_from,
+                           announce_date=announce_date, source=source, source_ref=source_ref)
+
+
+def import_sse_star50_initial_snapshot() -> dict:
+    """从上交所 2020-06-19 公告附件导入科创50的正式初始样本。"""
+    from io import BytesIO
+    import pandas as pd
+    import requests
+    from stockfu.data.base import direct_connection
+
+    with direct_connection():
+        response = requests.get(SSE_STAR50_INITIAL_URL, timeout=30)
+    response.raise_for_status()
+    df = pd.read_excel(BytesIO(response.content))
+    code_column = next((name for name in df.columns if "证券代码" in str(name)), None)
+    if code_column is None:
+        raise RuntimeError(f"上交所初始名单列结构变化: {list(df.columns)}")
+    members = df[code_column].tolist()
+    if len({normalize_code(code) for code in members}) != 50:
+        raise RuntimeError(f"上交所初始名单成员数异常: {len(members)}")
+    return import_snapshot("000688", members, effective_from=date(2020, 7, 23),
+                           announce_date=date(2020, 6, 19),
+                           source="sse_official_initial_constituents",
+                           source_ref=SSE_STAR50_INITIAL_URL)
 
 
 def fetch_official_current_snapshot(index_code: str) -> dict:

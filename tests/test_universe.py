@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 from stockfu.services.universe import (
     DayFlags, UniverseContext, UniverseRules, board_of_code, limit_pct_for,
 )
-from stockfu.services.index_universe import _month_starts, member_on
+from stockfu.services.index_universe import _month_starts, member_on, normalize_code
 
 
 class TestBoardAndLimit(unittest.TestCase):
@@ -93,6 +93,10 @@ class TestIndexMembershipIntervals(unittest.TestCase):
             _month_starts(date(2025, 4, 18), date(2025, 6, 1)),
             [date(2025, 4, 1), date(2025, 5, 1), date(2025, 6, 1)],
         )
+
+    def test_official_adjustment_codes_can_be_normalized(self):
+        self.assertEqual({normalize_code(v) for v in ("688001", 688002.0)},
+                         {"688001", "688002"})
 
 
 if __name__ == "__main__":

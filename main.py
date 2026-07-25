@@ -311,6 +311,15 @@ def run_backfill_index_universe_mirror(start: str, end: str) -> None:
     print(audit_coverage(("000852",)))
 
 
+def run_backfill_star50_initial() -> None:
+    from stockfu.db import init_db
+    from stockfu.services.index_universe import audit_coverage, import_sse_star50_initial_snapshot
+
+    init_db()
+    print(import_sse_star50_initial_snapshot())
+    print(audit_coverage(("000688",)))
+
+
 def run_backfill_quote_status() -> None:
     """补全:历史 is_st/trade_status + 每只票最新交易日全量数据(OHLCV/估值/状态)。"""
     from stockfu.db import init_db
@@ -749,6 +758,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="逐交易日回补沪深300历史成分（baostock，标为待正式档案核验）")
     p.add_argument("--backfill-index-universe-mirror", action="store_true",
                    help="导入中证1000可得的月度成分镜像（待正式档案核验，非日级完整）")
+    p.add_argument("--backfill-star50-initial", action="store_true",
+                   help="导入上交所公告附带的科创50官方初始样本（2020-07-23）")
     p.add_argument("--index-history-start", default="2006-01-01",
                    help="配合 --backfill-index-universe-history：起始日期 YYYY-MM-DD")
     p.add_argument("--index-history-end", default=None,
@@ -896,6 +907,8 @@ def main() -> None:
     elif args.backfill_index_universe_mirror:
         run_backfill_index_universe_mirror(args.index_history_start,
                                             args.index_history_end or date.today().isoformat())
+    elif args.backfill_star50_initial:
+        run_backfill_star50_initial()
     elif args.backfill_quote_status:
         run_backfill_quote_status()
     elif args.backfill_dividend:
