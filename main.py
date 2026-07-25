@@ -332,27 +332,34 @@ def run_clear_dividend_cache() -> None:
     print(f"✓ 已删除 operator_result dividend_yield {n} 行")
 
 
-def run_backfill_dividend() -> None:
+def run_backfill_dividend(start_year: int | None = None) -> None:
     """回补全市场 A 股分红历史 → dividend_event 表。
 
-    baostock query_dividend_data 主源(财年口径,近 10 年),akshare 兜底。
+    baostock query_dividend_data 主源(财年口径,默认近 10 年),akshare 兜底。
     resolve_base_codes('all') 取 quote_snapshot 全池(~800 票);按 ex_date 去重,
     幂等可重跑。baostock socket 轻量单线程,预计 10-20 分钟,建议后台跑。
     """
     from stockfu.db import init_db, session_scope
     from sqlalchemy import text
+    from datetime import date
     from stockfu.services.universe import resolve_base_codes
     from stockfu.services import dividend as div_svc
 
     init_db()
+    start_year = start_year or (date.today().year - 9)
+    if start_year < 1990 or start_year > date.today().year:
+        raise ValueError(f"非法分红回补起始年: {start_year}")
+    years = date.today().year - start_year + 1
     codes = resolve_base_codes("all")
     with session_scope() as s:
         before = s.exec(text("SELECT COUNT(*) FROM dividend_event")).all()[0][0]
-    print(f"回补 {len(codes)} 只 A 股分红历史(baostock 主源 / akshare 兜底;前:{before} 行)…")
+    print(f"回补 {len(codes)} 只 A 股分红历史({start_year}→{date.today().year}; "
+          f"baostock 主源 / akshare 兜底;前:{before} 行)…")
     new = errors = 0
     for i, c in enumerate(codes, 1):
         try:
-            new += div_svc.persist_dividends(c)
+            # 历史请求每只会查多个财年，给 baostock 更长的线程看门狗时间。
+            new += div_svc.persist_dividends(c, years=years, timeout=60.0)
         except Exception as e:  # noqa: BLE001
             errors += 1
             if errors <= 5:
@@ -690,6 +697,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="补历史 is_st/trade_status + 每只票最新交易日全量数据(baostock)")
     p.add_argument("--backfill-dividend", action="store_true",
                    help="回补全市场分红历史→dividend_event(baostock query_dividend_data 主源/akshare兜底;红利因子前置,10-20分钟)")
+    p.add_argument("--backfill-dividend-start-year", type=int, default=None,
+                   help="分红历史回补的起始财年(仅与 --backfill-dividend 一起使用；默认近10年)")
     p.add_argument("--backfill-adj-prices", action="store_true",
                    help="baostock 串行拉齐前复权/不复权/后复权→quote_snapshot "
                         "(*_qfq/*_raw/*_hfq);默认免费代理池;完成后清 dividend_yield 缓存")
@@ -820,7 +829,7 @@ def main() -> None:
     elif args.backfill_quote_status:
         run_backfill_quote_status()
     elif args.backfill_dividend:
-        run_backfill_dividend()
+        run_backfill_dividend(args.backfill_dividend_start_year)
     elif args.schedule:
         run_schedule()
     elif args.clean_quotes:

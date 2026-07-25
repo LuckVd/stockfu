@@ -93,12 +93,14 @@ def metric_from_db(
     )
 
 
-def persist_dividends(code: str) -> int:
+def persist_dividends(code: str, *, years: int = 10, timeout: float = 10.0) -> int:
     """拉取分红事件并写入 dividend_event 表（按 ex_date 去重）。返回写入条数。
 
     强制联网（force_network），不走「仅库」短路，否则无法回补。
     """
-    metric = get_manager().get_dividend_metric(code, force_network=True)
+    metric = get_manager().get_dividend_metric(
+        code, force_network=True, years=years, timeout=timeout,
+    )
     if not metric or not metric.events:
         return 0
     written = 0

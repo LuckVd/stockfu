@@ -54,7 +54,8 @@ class DataProviderManager:
                             latest_price: Optional[float] = None,
                             timeout: float = 10.0,
                             *,
-                            force_network: bool = False) -> Optional[DividendMetric]:
+                            force_network: bool = False,
+                            years: int = 10) -> Optional[DividendMetric]:
         """取分红指标。
 
         默认 **优先本地 dividend_event 表**（看板/邮件出图零 baostock）；
@@ -63,7 +64,9 @@ class DataProviderManager:
         """
         # 分红事件低频，按 code 缓存；并对「查不到」做负缓存——ETF/无分红股反复
         # 触发 akshare→yfinance 联网重试是 watchlist 卡顿的主因。
-        cache_key = f"{code}|net={int(force_network)}"
+        # 历史回补可显式拉更早财年；不能与日常的 10 年窗口共用联网缓存。
+        years = max(1, int(years))
+        cache_key = f"{code}|net={int(force_network)}|years={years}"
         cached = self._dividend_cache.get(cache_key)
         if cached is not None and not force_network:
             return cached if cached.events else None   # 空 marker 命中→None（无分红）
@@ -95,7 +98,11 @@ class DataProviderManager:
                 if fn is None:
                     continue
                 try:
-                    m = fn(code, latest_price=latest_price)
+                    # baostock 支持 years；其它兼容数据源未必接受该可选参数。
+                    try:
+                        m = fn(code, latest_price=latest_price, years=years)
+                    except TypeError:
+                        m = fn(code, latest_price=latest_price)
                 except Exception:  # noqa: BLE001
                     m = None
                 if m and m.events:
@@ -120,7 +127,7 @@ class DataProviderManager:
         stored = result if result is not None else DividendMetric(code=code)
         self._dividend_cache.set(cache_key, stored)
         # 联网结果同步到读路径缓存键，避免紧接着看板再打网
-        self._dividend_cache.set(f"{code}|net=0", stored)
+        self._dividend_cache.set(f"{code}|net=0|years={years}", stored)
         return result
 
     # -------- K 线 --------
