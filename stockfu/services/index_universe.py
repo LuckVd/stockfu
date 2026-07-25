@@ -136,6 +136,80 @@ def fetch_official_current_snapshot(index_code: str) -> dict:
                            source="csindex_current_constituent", source_ref=ref)
 
 
+def _snapshot_members_at_or_before(index_code: str, as_of: date) -> set[str]:
+    """返回最近一份完整快照的成员，不把已结束的区间误当作当日成员。"""
+    with session_scope() as s:
+        latest = s.exec(select(func.max(IndexConstituent.effective_from)).where(
+            IndexConstituent.index_code == index_code,
+            IndexConstituent.effective_from <= as_of,
+        )).one()
+        if latest is None:
+            return set()
+        return set(s.exec(select(IndexConstituent.asset_code).where(
+            IndexConstituent.index_code == index_code,
+            IndexConstituent.effective_from == latest,
+        )).all())
+
+
+def fetch_baostock_hs300_snapshot(as_of: date) -> set[str]:
+    """取得 BaoStock 给出的某交易日沪深 300 成分。
+
+    这是可复现的历史接口，但不是指数公司正式档案。因此写入时会明确标记为
+    ``unverified``；正式中证样本文件到位后可进行逐期交叉核验，而不会混淆来源。
+    """
+    from stockfu.data.baostock_proxy import ensure_baostock_login
+    import baostock as bs
+
+    if not ensure_baostock_login():
+        raise RuntimeError("baostock 登录失败")
+    result = bs.query_hs300_stocks(date=as_of.isoformat())
+    if result.error_code != "0":
+        raise RuntimeError(f"baostock query_hs300_stocks: {result.error_code} {result.error_msg}")
+    fields = {name: i for i, name in enumerate(result.fields)}
+    code_pos = fields.get("code")
+    if code_pos is None:
+        raise RuntimeError(f"baostock 字段异常: {result.fields}")
+    members: set[str] = set()
+    while result.next():
+        raw = result.get_row_data()[code_pos]
+        members.add(normalize_code(raw.rsplit(".", 1)[-1]))
+    if len(members) != 300:
+        raise RuntimeError(f"baostock {as_of} 返回成员数 {len(members)}，期望 300")
+    return members
+
+
+def backfill_baostock_hs300(*, start: date, end: date) -> dict:
+    """按本地上证交易日扫描沪深300，仅在成分变化日落完整快照。"""
+    from stockfu.models import IndexQuoteDaily
+
+    with session_scope() as s:
+        trade_dates = s.exec(select(IndexQuoteDaily.quote_date).where(
+            IndexQuoteDaily.asset_code == "sh000001",
+            IndexQuoteDaily.quote_date >= start,
+            IndexQuoteDaily.quote_date <= end,
+        ).order_by(IndexQuoteDaily.quote_date)).all()
+    if not trade_dates:
+        raise RuntimeError("缺少 sh000001 交易日历；请先运行 --backfill-benchmark")
+    out = {"scanned": 0, "imported": 0, "unchanged": 0, "errors": []}
+    known: set[str] | None = None
+    for as_of in trade_dates:
+        out["scanned"] += 1
+        try:
+            members = fetch_baostock_hs300_snapshot(as_of)
+            baseline = known if known is not None else _snapshot_members_at_or_before("000300", as_of)
+            if members == baseline:
+                out["unchanged"] += 1
+            else:
+                import_snapshot("000300", members, effective_from=as_of,
+                                source="baostock_hs300_snapshot_unverified",
+                                source_ref=f"baostock://query_hs300_stocks?date={as_of.isoformat()}")
+                out["imported"] += 1
+            known = members
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append({"date": as_of.isoformat(), "error": f"{type(exc).__name__}: {exc}"})
+    return out
+
+
 def audit_coverage(index_codes: Iterable[str] | None = None) -> dict:
     wanted = normalize_index_codes(index_codes)
     out = {"universe_id": HISTORICAL_UNIVERSE_ID, "indices": {}, "union_size": len(historical_member_codes(wanted))}
