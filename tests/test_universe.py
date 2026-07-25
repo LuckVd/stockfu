@@ -10,6 +10,7 @@ from stockfu.services.universe import (
 )
 from stockfu.services.index_universe import (
     HISTORICAL_INDEX_CODES, _month_starts, member_on, normalize_code,
+    parse_sina_corp_index_history,
 )
 
 
@@ -102,6 +103,19 @@ class TestIndexMembershipIntervals(unittest.TestCase):
     def test_official_adjustment_codes_can_be_normalized(self):
         self.assertEqual({normalize_code(v) for v in ("688001", 688002.0)},
                          {"688001", "688002"})
+
+    def test_sina_corp_page_keeps_removed_index_memberships(self):
+        html = """
+        <table><tr><th>名称</th></tr>
+        <tr><td><div>中证1000</div></td><td><div>000852</div></td>
+            <td><div>2014-10-17</div></td><td><div>2019-12-16</div></td></tr>
+        <tr><td><div>沪深300</div></td><td><div>000300</div></td>
+            <td><div>2014-10-17</div></td><td><div></div></td></tr>
+        </table>
+        """
+        self.assertEqual(parse_sina_corp_index_history(html), [
+            (date(2014, 10, 17), date(2019, 12, 16)),
+        ])
 
 
 if __name__ == "__main__":
