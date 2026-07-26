@@ -31,26 +31,21 @@ _OP_NAMES = {
     "reversal": "反转", "low_volatility": "低波动", "dividend_yield": "股息率",
 }
 
-# 策略清单: strategy_id。name + config 从 strategies/{id}.yaml 读(单一真源)。
+# 当前保留策略：按最近可比全周期结果的收益/夏普前列并按策略族去重。
+# name + config 从 strategies/{id}.yaml 读(单一真源)。
 # 注意:active 由 app_config('active_strategy_id') 单 key 指针决定,此处不再设默认活跃。
 _STRATEGIES = [
-    "pure_factor",
-    "macd_cross",
     "momentum_breakout",
-    "momentum_breakout_cross_section",
-    "dual_bollinger",
-    "bollinger_reversion",
-    "bollinger_reversion_cross_section",
-    "cn_momentum_rotation",
     "cn_momentum_cross_section",
-    "etf_momentum_rotation",
-    "etf_momentum_cross_section",
-    "dividend_low_vol",
+    "dual_bollinger",
     "dividend_cross_section",
-    "reversal_strategy",
-    "reversal_cross_section",
-    "cross_section_factor",
 ]
+_RETAINED_STRATEGY_IDS = frozenset({
+    "momentum_breakout",
+    "cn_momentum_cross_section",
+    "dual_bollinger",
+    "dividend_cross_section#sl30",
+})
 
 _STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
 
@@ -100,6 +95,7 @@ def seed_operators_and_strategies() -> int:
     from stockfu.ai.operators import REGISTRY, discover_and_register
 
     discover_and_register()
+    _cleanup_pruned_strategies()
     # 清理已下线的回测 LLM 算子 + 依赖它的策略(operator 表删 type='llm' 后,
     # 其 operator_result 孤儿由下方 cleanup_operator_results 自动清)。
     _cleanup_legacy_llm()
@@ -118,6 +114,8 @@ def seed_operators_and_strategies() -> int:
         for sid in _STRATEGIES:
             _, yaml_text = _load_strategy_yaml(sid)
             for vsid, vname, vtext, derived in _expand_variants(sid, yaml_text):
+                if vsid not in _RETAINED_STRATEGY_IDS:
+                    continue
                 _upsert_strategy(s, vsid, vname, vtext, derived=derived)
                 n += 1
         s.commit()
@@ -149,6 +147,27 @@ def seed_operators_and_strategies() -> int:
     if cleaned:
         log.info("清理 operator_result 孤儿缓存 %d 行", cleaned)
     return n
+
+
+def _cleanup_pruned_strategies() -> None:
+    """删除未入选策略，并将活跃指针收口到保留集。
+
+    这是产品策略目录的硬边界，不能只靠一次性手工删库；否则之后 init/seed
+    会把旧 YAML 对应的策略重新写回，或留下不可运行的 active 指针。
+    """
+    from sqlalchemy import text
+
+    from stockfu.db import engine
+
+    kept = tuple(sorted(_RETAINED_STRATEGY_IDS))
+    placeholders = ", ".join(f":s{i}" for i in range(len(kept)))
+    params = {f"s{i}": sid for i, sid in enumerate(kept)}
+    with engine.begin() as conn:
+        conn.execute(text(f"DELETE FROM strategy WHERE strategy_id NOT IN ({placeholders})"), params)
+        conn.execute(text(
+            f"UPDATE app_config SET value = 'momentum_breakout' "
+            f"WHERE key = 'active_strategy_id' AND value NOT IN ({placeholders})"
+        ), params)
 
 
 def _cleanup_legacy_llm() -> None:

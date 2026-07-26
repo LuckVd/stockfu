@@ -241,6 +241,7 @@ def resolve_base_codes(spec: str | list[str] | None) -> list[str]:
     """解析回测/诊断标的池。
 
     - None / "" / watchlist → 自选 Asset(cn)
+    - historical_indices → 沪深300+中证500历史并集(回测每日再按成分期过滤)
     - all / stocks / market / pool → quote_snapshot 去重(大盘候选池)
     - "600519,000858" 或 list → 显式
     """
@@ -254,6 +255,9 @@ def resolve_base_codes(spec: str | list[str] | None) -> list[str]:
             )
     s = str(spec).strip()
     low = s.lower()
+    if low in ("historical_indices", "historical_index", "csi300_csi500"):
+        from stockfu.services.index_universe import historical_member_codes
+        return historical_member_codes()
     if low in ("all", "stocks", "market", "pool", "cn_large", UNIVERSE_ID):
         with session_scope() as s:
             codes = [
