@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import unittest
 from datetime import date
-from unittest.mock import MagicMock
+import sys
+from unittest.mock import MagicMock, patch
 
 from stockfu.services.universe import (
     DayFlags, UniverseContext, UniverseRules, board_of_code, limit_pct_for,
 )
 from stockfu.services.index_universe import (
     HISTORICAL_INDEX_CODES, _month_starts, member_on, normalize_code,
-    parse_sina_corp_index_history,
+    fetch_baostock_index_snapshot, parse_sina_corp_index_history,
 )
 from stockfu.ai.rebalancers.top_n_picker import TopNPicker
 
@@ -105,6 +106,34 @@ class TestIndexMembershipIntervals(unittest.TestCase):
         self.assertEqual({normalize_code(v) for v in ("688001", 688002.0)},
                          {"688001", "688002"})
 
+    def test_import_snapshot_strips_blacklisted_index_codes(self):
+        """baostock 早期快照会把指数代码误录为成分；import 必须剔除，
+        且不能误伤与上证综指撞号的 000001（平安银行）。"""
+        from contextlib import contextmanager
+        from sqlmodel import Session, create_engine, select
+        import stockfu.services.index_universe as iu
+        from stockfu.models import IndexConstituent
+
+        engine = create_engine("sqlite://")
+        IndexConstituent.__table__.create(engine)
+
+        @contextmanager
+        def fake_session():
+            with Session(engine) as s:
+                yield s
+
+        members = ["600000", "000905", "000016", "000852", "000688", "000001"]
+        with patch.object(iu, "session_scope", fake_session):
+            iu.import_snapshot("000905", members, effective_from=date(2010, 1, 1),
+                               source="test", source_ref="t")
+            with Session(engine) as s:
+                codes = set(s.exec(select(IndexConstituent.asset_code)).all())
+
+        for idx in ("000905", "000016", "000852", "000688"):
+            self.assertNotIn(idx, codes)
+        self.assertIn("000001", codes)   # 平安银行，与上证综指撞号但合法个股
+        self.assertIn("600000", codes)
+
     def test_sina_corp_page_keeps_removed_index_memberships(self):
         html = """
         <table><tr><th>名称</th></tr>
@@ -117,6 +146,22 @@ class TestIndexMembershipIntervals(unittest.TestCase):
         self.assertEqual(parse_sina_corp_index_history(html), [
             (date(2014, 10, 17), date(2019, 12, 16)),
         ])
+
+    def test_baostock_index_query_relogs_and_retries_same_day(self):
+        failed = MagicMock(error_code="10001001", error_msg="用户未登录")
+        succeeded = MagicMock(error_code="0", fields=["code"])
+        succeeded.next.side_effect = [True] * 500 + [False]
+        succeeded.get_row_data.side_effect = [
+            [f"sh.{600000 + n:06d}"] for n in range(500)
+        ]
+        fake_bs = MagicMock(query_zz500_stocks=MagicMock(side_effect=[failed, succeeded]))
+        with patch.dict(sys.modules, {"baostock": fake_bs}), patch(
+            "stockfu.data.baostock_proxy.ensure_baostock_login", return_value=True,
+        ) as login:
+            self.assertEqual(fetch_baostock_index_snapshot("000905", date(2009, 5, 14)),
+                             {f"{600000 + n:06d}" for n in range(500)})
+        self.assertEqual(login.call_args_list[0].args, ())
+        self.assertEqual(login.call_args_list[1].kwargs, {"force": True})
 
 
 class TestExitOnlyRebalancing(unittest.TestCase):
