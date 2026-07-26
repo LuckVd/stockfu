@@ -33,6 +33,14 @@
 
 ## 0. 进行中任务 / 冷启动接棒（2026-07-22）
 
+> **【2026-07-26 · 历史指数世界模型收口 + 策略精简 / 回测进行中】** 分支 `feat/historical-universe-strategy-prune`。
+> **策略与回测口径**：按最近可比的收益率、夏普率并按策略族去重，仅保留 `cn_momentum_cross_section`、`dividend_cross_section#sl30`、`momentum_breakout`、`dual_bollinger`；其余 15 条策略已删，`operator_result` 已清空 16,719,397 条缓存。全周期目录与直接 `--backtest` 的省略 `--codes` 默认均改用 `historical_indices`：沪深300（000300）+ 中证500（000905）的时点成分；调出持仓为 `exit_only`，可退出但不可新买/加仓。
+> **后台回测（脱离会话）**：按用户优先级先跑 `dividend_cross_section#sl30`，PID `1215030`（PPID=1），区间 `2007-01-01→2026-07-24`，log=`data/backtest/dividend_sl30_historical_2007_rerun.log`。截至 19:25 已进入首轮冷缓存计算、进程存活；完成标志为 `=== 完成: 成功 1 / 失败 0 / 共 1 ===`。完成后再串行运行其余三项。
+
+> **【2026-07-26 · universe 收口确认 + 数据卫生 + 2007 起成分股行情回补（进行中）】** 分支 `feat/historical-index-universe`。
+> **做了什么**：① 审计确认 DB 已收口为 300+500 并集——`asset` 45 只纯 A 股、`quote_snapshot` 0 ETF 孤儿、`security_master` 801 只全在并集内、行情 2006-01-04→2026-07-24；并集 2023 个历史 code（HS300 累计939/2006-01-04起、ZZ500 累计1799/2007-01-15起）。② 数据卫生-A：清 `index_constituent` baostock 早期 `unverified` 快照污染 96 行（4 个宽基指数代码 000905/000852/000016/000688 被误录为成分），备份 `data/index_constituent_pollution_backup.csv`，并集 2027→2023；`import_snapshot` 加 `INDEX_MEMBER_CODE_BLACKLIST` 守卫拒绝指数代码成分（不误伤与上证综指撞号的 000001 平安银行），新测 `test_import_snapshot_strips_blacklisted_index_codes`，`tests.test_universe` 14 项全绿。② 数据卫生-B：删 `quote_snapshot` 里 000016/000852/000905 三个指数代码的错位假行情各 4993 行共 14979 行（备份 `data/quote_snapshot_index_pollution_backup.csv` + DB 整体备份 `data/stockfu.db.bak-preindexclean`，distinct 1619→1616）。
+> **行情回补已完成**：对 800 个待补代码完成三复权回补，`ok=793`、`fail=7`、写入 2,052,285 行；7 个空集代码均仅在 2006 年早期成分期出现，2007 年后不再是成分，属预期结果。**接下来**：① 补 `security_master`（并集仍缺约 1,222 个 master）；② 录入两段核验的 499 过渡窗口及恢复500只快照；③ 在新世界模型下审计并解读四个策略的 2007 起回测。
+
 > **【2026-07-24 · 邮件生图数据正确性修复】** 三件事，均在分支 `fix/dividend-ttm-corruption`：
 > ① **股息率虚高**（commit `ca056b9`）：baostock 抓分红结果集串行 bleed 产生 stale 行（2017 标签配 2026 ex_date/28 元）+ TTM 计算只有下界无上界（future ex_date 计入）+ 持仓/自选股息率分母误用 qfq `close`。修：`dividend.metric_from_db`/`baostock.get_dividend_metric` TTM 加上界 `≤today`；baostock 解析丢弃 `|ex_date年−财年|≥2` 的 stale 行；`persist_dividends` 同批去重；`snapshot.LatestSnapshot` 加 `close_raw`、`portfolio` 两处分母改 `close_raw`。五粮液 48%→6.89%。本机 `dividend_event` 清 44 行（5 stale+38 重复+1 phantom）。
 > ② **ETF 显示陈旧数据**：`snapshot._read_latest` 与 `share.perf` 硬编码读 `QuoteSnapshot`、没按 `quote_model_for` 路由 → 7 只自选 ETF 读到 `QuoteSnapshot` 里停在 07-21 的孤儿行（ETF 行情实际在 `EtfQuoteDaily`），卡片显示旧价（588870 曾显示 07-21 的 1.941/+10.85%）。已改这两处路由，全 52 holdings 现 07-23（588870 科创50ETF 1.819/-3.24%）。**⚠️ 仅修了卡片两条路径；其余 reader 未修见 §8.6。**

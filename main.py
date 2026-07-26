@@ -519,7 +519,7 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     """回测：算子→策略→逐日 T+1 执行，输出绩效指标。
 
     策略由 app_config('active_strategy_id') 决定;此处 --backtest STRATEGY 设置它。
-    --codes: 省略=自选; all/pool=大盘候选池(~800); 或逗号列表。
+    --codes: 省略=沪深300+中证500时点成分宇宙；all/pool=大盘候选池；或逗号列表。
     strict(默认 True): 时点宇宙 + 涨跌停/滑点; --no-strict 对齐旧「有价即成交」。
     详见 docs/BACKTEST.md。
     """
@@ -541,17 +541,24 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     from stockfu.ai.operators.registry import discover_and_register
     discover_and_register()
     from stockfu.backtest.scheduler import run as _run
-    from stockfu.services.universe import resolve_base_codes
+    from stockfu.services.index_universe import HISTORICAL_INDEX_CODES, HISTORICAL_UNIVERSE_ID
+    from stockfu.services.universe import UniverseRules, resolve_base_codes
 
     end_d = end or date.today().isoformat()
     start_d = start or (date.today() - timedelta(days=365)).isoformat()
-    code_list = resolve_base_codes(codes)
+    use_historical_universe = codes is None
+    code_list = resolve_base_codes("historical_indices" if use_historical_universe else codes)
 
     scope = f"{len(code_list)}只票" + (" strict" if strict else " no-strict")
     print(f"回测 {strategy}  {start_d} → {end_d}  初始资金 {cash:,.0f}  ({scope}) …")
     universe_rules = None
-    if min_amount is not None:
-        from stockfu.services.universe import UniverseRules
+    if use_historical_universe:
+        universe_rules = UniverseRules(
+            universe_id=HISTORICAL_UNIVERSE_ID,
+            index_codes=HISTORICAL_INDEX_CODES,
+            min_amount_ma20=min_amount,
+        )
+    elif min_amount is not None:
         universe_rules = UniverseRules(min_amount_ma20=min_amount)
     r = _run(code_list, start_d, end_d, initial_cash=cash, strict=strict,
              universe_rules=universe_rules)

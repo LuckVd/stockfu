@@ -43,98 +43,30 @@ class StrategyRunSpec:
     strategy_id: str
     rebalancer_id: str
     rebalancer_params: dict = field(default_factory=dict)
-    universe: str = "all"       # all | etf | universe_788 | historical_indices
+    universe: str = "historical_indices"  # historical_indices | all | etf | universe_788
     strict: bool = True
-    min_amount: float | None = MIN_AMOUNT  # 仅 universe=all 时生效; etf/788 为 None
+    min_amount: float | None = MIN_AMOUNT
     tier: str = "warm"          # hot / warm / cold — 批跑顺序
 
 
-# 目录顺序: 先 hot(池小/缓存热) → warm → cold(布林冷补), 与历史批跑习惯一致。
-# 覆盖 seed 全量策略 + 全周期验收表口径;新增策略请同步登记。
+# 仅保留收益/夏普前列且按策略族去重后的四项；所有正式回测都使用
+# 沪深300+中证500的时点成分宇宙。
 FULL_CYCLE_CATALOG: list[StrategyRunSpec] = [
-    # ── HOT ──────────────────────────────────────────────────────
-    StrategyRunSpec(
-        "etf_momentum_cross_section", "cap_and_rank", dict(_CS),
-        universe="etf", strict=False, min_amount=None, tier="hot",
-    ),
-    StrategyRunSpec(
-        "etf_momentum_rotation", "top_n_picker", dict(_TOP_N_ETF),
-        universe="etf", strict=False, min_amount=None, tier="hot",
-    ),
     StrategyRunSpec(
         "cn_momentum_cross_section", "cap_and_rank", dict(_CS),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
+        universe="historical_indices", strict=True, min_amount=MIN_AMOUNT, tier="hot",
     ),
-    StrategyRunSpec(
-        "reversal_cross_section", "cap_and_rank", dict(_CS),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
-    ),
-    StrategyRunSpec(
-        "cross_section_factor", "cap_and_rank", dict(_CS),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
-    ),
-    StrategyRunSpec(
-        "dividend_cross_section", "cap_and_rank", dict(_CS),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
-    ),
-    # 变体:同一 base 不同参数并存(strategy_id=base#key,见 seed._expand_variants)。
-    # sl30 = dividend_cross_section 止损 8%→30%(实证更优),与 base 并列全周期验收。
     StrategyRunSpec(
         "dividend_cross_section#sl30", "cap_and_rank", dict(_CS),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
-    ),
-    # sl30w10 = sl30 的单股上限从 5% 提高到 10%，保留为独立对照变体。
-    StrategyRunSpec(
-        "dividend_cross_section#sl30w10", "cap_and_rank", dict(_CS),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
-    ),
-    # sl30w20 = sl30 的单股上限从 5% 提高到 20%，保留为独立对照变体。
-    StrategyRunSpec(
-        "dividend_cross_section#sl30w20", "cap_and_rank", dict(_CS),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
-    ),
-    StrategyRunSpec(
-        "macd_cross", "top_n_picker", dict(_TOP_N_STD),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="hot",
-    ),
-    # ── WARM ─────────────────────────────────────────────────────
-    StrategyRunSpec(
-        "momentum_breakout_cross_section", "cap_and_rank", dict(_CS),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="warm",
+        universe="historical_indices", strict=True, min_amount=MIN_AMOUNT, tier="hot",
     ),
     StrategyRunSpec(
         "momentum_breakout", "top_n_picker", dict(_TOP_N_MOM),
-        universe="universe_788", strict=False, min_amount=None, tier="warm",
-    ),
-    StrategyRunSpec(
-        "reversal_strategy", "top_n_picker", dict(_TOP_N_STD),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="warm",
-    ),
-    StrategyRunSpec(
-        "dividend_low_vol", "top_n_picker", dict(_TOP_N_STD),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="warm",
-    ),
-    StrategyRunSpec(
-        "cn_momentum_rotation", "top_n_picker",
-        {"top_n": 8, "lock_days": 20, "max_replace": 1, "max_w": 0.12, "max_gross": 0.90},
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="warm",
-    ),
-    StrategyRunSpec(
-        "pure_factor", "top_n_picker", dict(_TOP_N_STD),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="warm",
+        universe="historical_indices", strict=True, min_amount=MIN_AMOUNT, tier="warm",
     ),
     StrategyRunSpec(
         "dual_bollinger", "top_n_picker", dict(_TOP_N_BOLL),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="warm",
-    ),
-    # ── COLD(布林日/周常冷补) ────────────────────────────────────
-    StrategyRunSpec(
-        "bollinger_reversion", "top_n_picker", dict(_TOP_N_BOLL),
-        universe="universe_788", strict=False, min_amount=None, tier="cold",
-    ),
-    StrategyRunSpec(
-        "bollinger_reversion_cross_section", "cap_and_rank", dict(_CS),
-        universe="all", strict=True, min_amount=MIN_AMOUNT, tier="cold",
+        universe="historical_indices", strict=True, min_amount=MIN_AMOUNT, tier="warm",
     ),
 ]
 
