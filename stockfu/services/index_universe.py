@@ -30,6 +30,14 @@ INDEX_INCEPTION = {
     "000852": date(2014, 10, 17),
     "399006": date(2010, 6, 1), "000688": date(2020, 7, 23),
 }
+# 这些 6 位代码是宽基/主题指数代码，A 股没有对应个股，绝不应作为成分出现。
+# baostock 早期 ``unverified`` 成分快照曾把它们误录为成员（000905 自指、000852/
+# 000016/000688 混入中证500），污染选股域；import 时强制剔除。注意 000001 是平安
+# 银行（合法个股），与上证综指代码撞号，故不在黑名单。
+INDEX_MEMBER_CODE_BLACKLIST = frozenset({
+    "000300", "000905", "000852", "000688", "000016",
+    "399006", "399001", "399005",
+})
 SSE_STAR50_INITIAL_URL = (
     "https://www.sse.com.cn/market/sseindex/diclosure/c/10077925/"
     "files/1e710951ab8d4f0997e3737eee6ebc86.xlsx"
@@ -146,8 +154,12 @@ def import_snapshot(index_code: str, members: Iterable[str], *, effective_from: 
     """
     index_code = normalize_code(index_code)
     member_set = {normalize_code(c) for c in members if normalize_code(c)}
+    polluted = member_set & INDEX_MEMBER_CODE_BLACKLIST
+    if polluted:
+        print(f"  [universe] 过滤指数代码作为成分: {sorted(polluted)}", flush=True)
+        member_set -= polluted
     if not member_set:
-        raise ValueError(f"{index_code} 的成分快照为空，拒绝写入")
+        raise ValueError(f"{index_code} 的成分快照过滤指数代码后为空，拒绝写入")
     with session_scope() as s:
         same_date = s.exec(select(IndexConstituent).where(
             IndexConstituent.index_code == index_code,
@@ -294,22 +306,42 @@ def fetch_baostock_index_snapshot(index_code: str, as_of: date) -> set[str]:
         raise ValueError(f"{code} 在 {as_of} 尚未成立")
     if not ensure_baostock_login():
         raise RuntimeError("baostock 登录失败")
-    result = getattr(bs, method_name)(date=as_of.isoformat())
-    if result.error_code != "0":
-        raise RuntimeError(f"baostock {method_name}: {result.error_code} {result.error_msg}")
-    fields = {name: i for i, name in enumerate(result.fields)}
-    code_pos = fields.get("code")
-    if code_pos is None:
-        raise RuntimeError(f"baostock 字段异常: {result.fields}")
-    members: set[str] = set()
-    while result.next():
-        raw = result.get_row_data()[code_pos]
-        members.add(normalize_code(raw.rsplit(".", 1)[-1]))
-    if len(members) != expected_size:
-        raise RuntimeError(
-            f"baostock {source_key} {as_of} 返回成员数 {len(members)}，期望 {expected_size}"
-        )
-    return members
+
+    # BaoStock 的会话会在长扫描途中失效。此前这里直接向上抛错，调用方只会
+    # 记录错误并跳过该交易日，导致一次掉线留下连续多年的历史缺口。查询失败时
+    # 必须在同一日期内强制重登后重试，才能让代理层有机会切换连接。
+    last_error = ""
+    for attempt in range(1, 4):
+        try:
+            result = getattr(bs, method_name)(date=as_of.isoformat())
+            error_code = str(getattr(result, "error_code", "1"))
+            if error_code != "0":
+                last_error = f"{error_code} {getattr(result, 'error_msg', '')}".strip()
+            else:
+                fields = {name: i for i, name in enumerate(result.fields)}
+                code_pos = fields.get("code")
+                if code_pos is None:
+                    raise RuntimeError(f"baostock 字段异常: {result.fields}")
+                members: set[str] = set()
+                while result.next():
+                    raw = result.get_row_data()[code_pos]
+                    members.add(normalize_code(raw.rsplit(".", 1)[-1]))
+                if len(members) == expected_size:
+                    return members
+                last_error = f"返回成员数 {len(members)}，期望 {expected_size}"
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{type(exc).__name__}: {exc}"
+        if attempt < 3:
+            print(
+                f"  [baostock retry] {code} {as_of} attempt={attempt} "
+                f"error={last_error}",
+                flush=True,
+            )
+            if not ensure_baostock_login(force=True):
+                raise RuntimeError(f"baostock 重登失败: {last_error}")
+            time.sleep(1.0)
+    else:
+        raise RuntimeError(f"baostock {method_name}: {last_error}")
 
 
 def fetch_baostock_hs300_snapshot(as_of: date) -> set[str]:
@@ -361,6 +393,13 @@ def backfill_baostock_index(index_code: str, *, start: date, end: date) -> dict:
             out["errors"].append({"date": as_of.isoformat(), "error": f"{type(exc).__name__}: {exc}"})
         # BaoStock 明确不允许并发；串行扫描也保留请求间隔，避免被服务端限流。
         time.sleep(0.3)
+        if out["scanned"] % 100 == 0:
+            print(
+                f"  [{code}] scanned={out['scanned']}/{len(trade_dates)} "
+                f"imported={out['imported']} unchanged={out['unchanged']} "
+                f"errors={len(out['errors'])}",
+                flush=True,
+            )
     return out
 
 
