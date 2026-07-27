@@ -30,16 +30,17 @@ class TestStrategyResolve(unittest.TestCase):
             resolve_strategy_specs(["not_a_real_strategy"])
         msg = str(cm.exception)
         self.assertIn("未知", msg)
-        self.assertIn("cross_section_factor", msg)
+        self.assertIn("可选", msg)          # 必须列出当前可用策略(随目录裁剪变化,故只断言"列出")
 
     def test_known_ok(self):
-        specs = resolve_strategy_specs(["cross_section_factor", "reversal_cross_section"])
+        specs = resolve_strategy_specs(["cn_momentum_cross_section", "momentum_breakout"])
         ids = [s.strategy_id for s in specs]
-        self.assertEqual(set(ids), {"cross_section_factor", "reversal_cross_section"})
+        self.assertEqual(set(ids), {"cn_momentum_cross_section", "momentum_breakout"})
         self.assertTrue(all(s.rebalancer_id for s in specs))
 
     def test_catalog_nonempty(self):
-        self.assertGreater(len(available_strategies()), 5)
+        # 目录经裁剪后仅保留按收益/夏普去重的策略族代表;断言非空即可(不再固定下限)。
+        self.assertGreater(len(available_strategies()), 0)
 
 
 class TestExecPrices(unittest.TestCase):

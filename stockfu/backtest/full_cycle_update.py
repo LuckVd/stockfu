@@ -1,7 +1,7 @@
 """全周期策略回测更新(固化能力)。
 
 补完行情后,用与验收一致的口径整段重跑 start→数据末日:
-  - 默认 start=2021-01-01(与 PROJECT_STATE §0.3 全周期表一致)
+  - 当前默认 start=2021-01-01；正式长周期准入与目标区间见 docs/BACKTEST.md
   - end 默认取库内个股/ETF 行情 max(quote_date)
   - 策略目录含 rebalancer/宇宙/strict(CLI --backtest 传不了 rebalancer 的缺口在此补齐)
   - 可选只跑部分 strategy_id;不选 = 目录全部
@@ -274,7 +274,7 @@ def run_one(
         "win_rate": m.get("win_rate"),
         "total_fee": m.get("total_fee"),
         "final_equity": m.get("final_equity"),
-        # 对比指标(引擎原生产出,见 engine _metrics/Stage B);1:1 映射 PROJECT_STATE §0.6 表。
+        # 对比指标由引擎原生产出；正式指标口径与准入要求见 docs/BACKTEST.md。
         "max_drawdown_recovery_days": m.get("max_drawdown_recovery_days"),
         "max_drawdown_recovered": m.get("max_drawdown_recovered"),
         "distinct_stocks_bought": m.get("distinct_stocks_bought"),

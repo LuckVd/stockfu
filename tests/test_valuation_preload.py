@@ -2,7 +2,24 @@
 from __future__ import annotations
 
 import unittest
+from array import array
 from datetime import date, timedelta
+
+
+def _sctx_with_pe_pb(code, start, n_days):
+    """构造列式 _SeriesCtx:code 在 n_days 个连续历日上有 close/pe/pb。"""
+    from stockfu.backtest.engine import _COL_KEYS, _SeriesCtx
+    NAN = float("nan")
+    dates = [start + timedelta(days=i) for i in range(n_days)]
+    series = {code: {k: array("d", [NAN] * n_days) for k in _COL_KEYS}}
+    valid = {code: array("b", [0] * n_days)}
+    for i in range(n_days):
+        series[code]["c"][i] = 10.0          # close(qfq) —— valuation 读取
+        series[code]["pe"][i] = float(i + 1)
+        series[code]["pb"][i] = float(i + 2)
+        valid[code][i] = 1
+    return _SeriesCtx(series=series, dates=dates,
+                      date_idx={d: i for i, d in enumerate(dates)}, valid=valid)
 
 
 class TestValuationPreload(unittest.TestCase):
@@ -12,14 +29,9 @@ class TestValuationPreload(unittest.TestCase):
 
         code = "600001"
         start = date(2024, 1, 2)
-        cache = {}
-        for i in range(10):
-            day = start + timedelta(days=i)
-            # (open, high, low, close, pct, st, trade_status, amount, close_raw, pe, pb)
-            cache[day] = {code: (10.0, 10.0, 10.0, 10.0, 0.0, 0, 1,
-                                 1_000_000.0, 10.0, float(i + 1), float(i + 2))}
+        sctx = _sctx_with_pe_pb(code, start, 10)
 
-        with _backtest_series_ctx(cache):
+        with _backtest_series_ctx(sctx):
             snap = valuation_snapshot(code, start + timedelta(days=9), years=1)
 
         self.assertEqual(snap["pe"], 10.0)

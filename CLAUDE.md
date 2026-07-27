@@ -4,9 +4,7 @@
 
 ## 冷启动(新会话先读)
 - **`.local/WORKSTATE.md`** — 当前任务的短交接状态（不存在则按 `docs/WORKSTATE_TEMPLATE.md` 创建）；先确认 `pwd` / 分支 / 未提交改动。Git 分支规矩与跨工具通用规则见 `AGENTS.md`。
-- **`docs/PROJECT_STATE.md`** — 工作日志/冷启动手册。**先读 §0**（进行中任务），再读 §1。
-- `docs/ROADMAP.md` — 项目路线图
-- `docs/BACKTEST.md` — 回测引擎(四层架构 + scheduler + 算子缓存 + metrics)
+- **`docs/BACKTEST.md`** — 回测系统唯一权威文档：当前基线、准确性缺口、目标架构、实施阶段与验收门禁。
 - `docs/AI_ADVISORS.md` — 实盘 AI 4 顾问
 
 ## 运行命令
@@ -38,10 +36,7 @@ ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 - **baostock** 是裸 TCP(不认 HTTP_PROXY);三复权回补默认免费代理池(`--proxy-mode free`，HTTP CONNECT/SOCKS，需 `PySocks`)，失败剔除换 IP;**查询超时也强制换 IP**(`BAOSTOCK_FETCH_TIMEOUT` 默认 60s，防 login 通过却卡在内部接收循环的坏代理);池自愈(耗尽重拉 `BAOSTOCK_REBOOTSTRAP_*`、死IP TTL `BAOSTOCK_DEAD_TTL`、常驻刷新 `BAOSTOCK_MAX_AGE`/`BAOSTOCK_MIN_ALIVE`);**代理池+rebootstrap 耗尽→直连兜底**(`BAOSTOCK_DIRECT_FALLBACK` 默认 on,IP 解封可用;`_MAX`/`_COOLDOWN` 限流,长通道 `maybe_refresh` 池回血后切回);源经 clash 拉、可外置 `data/proxy_sources.json`(`BAOSTOCK_SOURCE_PROXY`)
 - **数据**在 `data/stockfu.db`(WAL);回测产物 `data/backtest/`(gitignore)
 - **回测防未来函数**:取数 `<= as_of`
-- **价格口径**(`quote_snapshot`):
-  - 成交/动量/低波等:**前复权** `*_qfq`(遗留 open/high/low/close ≡ qfq)
-  - 股息率分母:**不复权** `close_raw`(禁止用 qfq 当分母)
-  - 后复权 `*_hfq` 备用
+- **正式回测价格口径**(`quote_snapshot`)：raw成交/盯市 + 公司行为账本；qfq仅限经白名单验证的尺度不变信号；hfq只作数据对账，不得用于正式账户。完整迁移见 `docs/BACKTEST.md`。
 - **量化四层**:算子(math 连续 score)+策略 yaml+rebalancer+engine;算子缓存 fingerprint 含源码 hash
 - **行情拆表**:QuoteSnapshot / EtfQuoteDaily / IndexQuoteDaily;`quote_model_for` 路由
 - **入库统一收口 + 日期驱动**(`stockfu/services/quote_writer.py`):三张行情表各 1 个 canonical writer(`upsert_quote_snapshot`/`upsert_etf_daily`/`upsert_index_daily`),**严禁别处 `s.add(QuoteSnapshot...)`**;writer 硬保证 `quote_date <= cap_date`(超 cap 的源 bar 一律丢弃)。`--fetch` **必带 `--date YYYY-MM-DD`**,非法(未来/当日未收盘[北京16:00]/非交易日)→ `validate_ingest_date` 报错退出(凌晨不再误判为未开盘的今天);`--schedule` 自动取已收盘最近交易日。stamp 表(资金流/三层情绪/板块资金流)与读窗(composite/fundflow series)统一 `as_of=target_date`
@@ -50,4 +45,4 @@ ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 
 ## 状态
 🚧 MVP。代码:数据层(qfq 硬化)+回测四层+横截面策略族+全周期 CLI+荐股+三复权字段。  
-**干净回测 19 产物已完成**（§0.6 全表，07-21 口径，带回撤/卡玛/水下分布）。本会话修了两处性能坑：bollinger 算子 N+1（改预载，提速~20-27x）、value 指纹分裂（params 对齐）——排查见 `docs/PROJECT_STATE.md` §0.8。旧混复权表已作废删除。
+历史回测产物只作探索记录；在 `docs/BACKTEST.md` 的正式准入门禁通过前，不得据此判断策略优劣。
