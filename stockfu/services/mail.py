@@ -52,6 +52,11 @@ def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str |
                         if (document.querySelectorAll('#share-card .sc-page').length) { clearInterval(t); r(); }
                     }, 50);
                 });
+                // 邮件只要「大盘情绪 + 行业全景/明细」：删掉末尾的个股持仓页。
+                // 多图模式下仅个股页含 .sc-tbl 表格；行业总览=热力网格、明细=.sc-sgrid 卡片网格，均无 table。
+                document.querySelectorAll('#share-card .sc-page').forEach(p => {
+                    if (p.querySelector('.sc-tbl')) p.remove();
+                });
                 // 将卡片移出遮罩层放到 body，避免 shadow-dom 合成导致底部混杂遮罩背景色
                 const card = document.getElementById('share-card');
                 document.body.innerHTML = '';
