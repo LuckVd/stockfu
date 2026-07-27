@@ -82,6 +82,22 @@ def _migrate() -> None:
                     "close_qfq = COALESCE(close_qfq, close) "
                     "WHERE close IS NOT NULL OR close_qfq IS NOT NULL"
                 ))
+    # 公司行为：create_all 不会修改已有 dividend_event；送转须与现金同事件存储。
+    if insp.has_table("dividend_event"):
+        cols = [c["name"] for c in insp.get_columns("dividend_event")]
+        if "per_share_stock" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE dividend_event ADD COLUMN per_share_stock FLOAT NOT NULL DEFAULT 0"
+                ))
+    # 公司行为正式账本的退市终止结算价。没有该字段的旧库只补 nullable 槽位，
+    # 绝不从最后行情或交易所名单推断数值。
+    for table in ("corporate_action_source_record", "corporate_action_event"):
+        if insp.has_table(table):
+            cols = [c["name"] for c in insp.get_columns(table)]
+            if "terminal_price" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN terminal_price FLOAT"))
     if insp.has_table("sector_flow_snapshot"):
         cols = [c["name"] for c in insp.get_columns("sector_flow_snapshot")]
         if "net_inflow_pct" not in cols:

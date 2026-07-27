@@ -328,17 +328,23 @@ class BaostockSource(DataSource):
             while rs.next():
                 row = rs.get_row_data()
                 ex = _parse_date(row[6]) if len(row) > 6 else None
-                cash = _f(row[9]) if len(row) > 9 else None
-                if ex is None or not cash or cash <= 0:
-                    continue   # 送转股无现金 / 未实施 / 字段缺失
+                cash = _f(row[9]) if len(row) > 9 else 0.0
+                stocks = _f(row[11]) if len(row) > 11 else 0.0
+                reserve = _f(row[13]) if len(row) > 13 else 0.0
+                cash = cash or 0.0
+                stock = (stocks or 0.0) + (reserve or 0.0)
+                if ex is None or (cash <= 0 and stock <= 0):
+                    continue   # 未实施 / 字段缺失；纯送转也必须保留
                 # 防 baostock 结果集串行 bleed：某财年查询返回了别年的陈旧行（实测出现过 2017 标签配 2026 ex_date / 28元）。
                 # 正常分红 ex_date 年与财年相差 0~1；偏差 ≥2 视为脏数据丢弃，否则陈旧行会灌进 TTM 虚高股息率。
                 if abs(ex.year - y) > 1:
                     continue
                 events.append(DividendEventDTO(
-                    ex_date=ex, per_share_cash=cash,
+                    ex_date=ex, per_share_cash=cash, per_share_stock=stock,
                     record_date=_parse_date(row[5]) if len(row) > 5 else None,
                     announce_date=_parse_date(row[3]) if len(row) > 3 else None,
+                    pay_date=_parse_date(row[7]) if len(row) > 7 else None,
+                    stock_mkt_date=_parse_date(row[8]) if len(row) > 8 else None,
                     currency="CNY",
                     source=f"baostock:dividend/{y}",
                 ))

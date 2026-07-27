@@ -1,0 +1,85 @@
+"""hfq实验口径单测；正式回测禁用原因与迁移计划见 docs/BACKTEST.md。"""
+from __future__ import annotations
+
+import unittest
+from array import array
+from datetime import date
+
+
+def _sctx(series_map, dates):
+    """series_map: {code: {col_key: [vals]}};dates: 升序列表。返回 _SeriesCtx(valid 全 1)。"""
+    from stockfu.backtest.engine import _COL_KEYS, _SeriesCtx
+    n = len(dates)
+    series, valid = {}, {}
+    for code, cols in series_map.items():
+        full = {k: array("d", cols.get(k, [float("nan")] * n)) for k in _COL_KEYS}
+        series[code] = full
+        valid[code] = array("b", [1] * n)
+    return _SeriesCtx(series=series, dates=dates,
+                      date_idx={d: i for i, d in enumerate(dates)}, valid=valid)
+
+
+class TestPickPx(unittest.TestCase):
+    def setUp(self):
+        self.bar = {"close_hfq": 11425.0, "open_hfq": 11400.0,
+                    "close_raw": 1639.0, "open_raw": 1630.0,
+                    "close": 1490.0, "open": 1485.0}
+
+    def test_hfq_picks_hfq(self):
+        from stockfu.backtest.engine import _pick_px
+        self.assertEqual(_pick_px(self.bar, "close_hfq", "close_raw", "close", "hfq"), 11425.0)
+        self.assertEqual(_pick_px(self.bar, "open_hfq", "open_raw", "open", "hfq"), 11400.0)
+
+    def test_raw_picks_raw(self):
+        from stockfu.backtest.engine import _pick_px
+        self.assertEqual(_pick_px(self.bar, "close_hfq", "close_raw", "close", "raw"), 1639.0)
+
+    def test_hfq_missing_falls_back_to_raw_then_qfq(self):
+        from stockfu.backtest.engine import _pick_px
+        bar = {"close_hfq": None, "open_hfq": None,
+               "close_raw": 1639.0, "open_raw": None, "close": 1490.0, "open": 1485.0}
+        # ETF/指数无 hfq → 回落 raw
+        self.assertEqual(_pick_px(bar, "close_hfq", "close_raw", "close", "hfq"), 1639.0)
+        # raw 也缺 → 回落 qfq
+        self.assertEqual(_pick_px(bar, "open_hfq", "open_raw", "open", "hfq"), 1485.0)
+
+
+class TestHfqCoverageGate(unittest.TestCase):
+    def test_etf_like_excluded_from_denominator(self):
+        from stockfu.backtest.engine import _hfq_coverage
+        dates = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+        sctx = _sctx({
+            "600001": {"c_hfq": [10.0, 11.0, 12.0]},          # 股票:全 hfq
+            "510300": {"c_hfq": [float("nan")] * 3},          # ETF:无 hfq → 排除
+        }, dates)
+        cov, hit, tot = _hfq_coverage(sctx, dates[0], dates[-1])
+        self.assertAlmostEqual(cov, 1.0)
+        self.assertEqual((hit, tot), (3, 3))
+
+    def test_partial_coverage_below_threshold(self):
+        from stockfu.backtest.engine import _hfq_coverage
+        dates = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+        sctx = _sctx({
+            "600001": {"c_hfq": [10.0, float("nan"), 12.0]},  # 3 天缺 1
+        }, dates)
+        cov, hit, tot = _hfq_coverage(sctx, dates[0], dates[-1])
+        self.assertAlmostEqual(cov, 2 / 3, places=3)
+        self.assertEqual((hit, tot), (2, 3))
+
+
+class TestRunBacktestBasisValidation(unittest.TestCase):
+    def test_invalid_basis_raises_before_any_io(self):
+        from stockfu.backtest.engine import run_backtest
+        with self.assertRaises(ValueError) as cm:
+            run_backtest([], date(2024, 1, 1), date(2024, 1, 2), valuation_basis="bogus")
+        self.assertIn("valuation_basis", str(cm.exception))
+
+    def test_strict_rejects_hfq_before_any_io(self):
+        from stockfu.backtest.engine import run_backtest
+        with self.assertRaises(ValueError) as cm:
+            run_backtest([], date(2024, 1, 1), date(2024, 1, 2), valuation_basis="hfq")
+        self.assertIn("strict", str(cm.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

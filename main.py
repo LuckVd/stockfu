@@ -19,9 +19,16 @@
     python main.py --backtest STRATEGY [--start --end --cash --codes --save]  # 回测（见 docs/BACKTEST.md）
     python main.py --update-backtests [--strategies a,b] [--start --end] [--dry-run] [--list-strategies]
         # 全周期重跑更新到最新(固化验收口径;不选策略=目录全部)
-    python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md §11）
+    python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md）
     python main.py --recommend --strategies a,b [--as-of] [--cash]  # 空仓重建荐股(次日开盘执行参考)
     python main.py --backfill-universe  # 回补 security_master(list_date/board, baostock)
+    python main.py --audit-corporate-actions  # 只读审计公司行为覆盖/重复/异常（正式回测前置）
+    python main.py --stage-corporate-actions --corporate-action-codes 600519 --corporate-action-start-year 2007
+        # 受控抓取公司行为到来源证据表；不写 dividend_event、不改变回测
+    python main.py --stage-legacy-corporate-actions --corporate-action-codes 600519
+        # 将旧 dividend_event 作为第二条来源证据导入新表；不提升为正式事件
+    python main.py --stage-akshare-corporate-actions --corporate-action-codes 300024
+        # 按除权前旧股口径抓取 AkShare 送转/现金事件到来源证据表
     python main.py --backfill-quote-status  # 补历史状态 + 最新交易日全量(baostock)
     python main.py --backfill-adj-prices [--start] [--end]   # baostock 串行三复权(默认 Clash SOCKS)
     python main.py --clear-dividend-cache  # 清错误口径 dividend_yield 的 operator_result
@@ -260,6 +267,145 @@ def run_backfill_universe() -> None:
           f"first_quote兜底={r.get('from_first_quote')}  skipped={r.get('skipped')}")
     if r.get("error"):
         print(f"  警告: {r['error']}")
+
+
+def run_audit_corporate_actions(start_year: int, end_year: int | None) -> None:
+    """输出正式回测前的公司行为覆盖与冲突报告；不联网、不写库。"""
+    import json
+
+    from stockfu.services.dividend import audit_corporate_actions
+
+    print(json.dumps(
+        audit_corporate_actions(start_year=start_year, end_year=end_year),
+        ensure_ascii=False, indent=2, sort_keys=True,
+    ))
+
+
+def run_stage_corporate_actions(codes_arg: str | None, start_year: int) -> None:
+    """受控抓取并暂存公司行为来源记录；禁止隐式全市场写入。"""
+    from datetime import date
+
+    from stockfu.data.manager import get_manager
+    from stockfu.services.corporate_actions import stage_dividend_metric
+
+    if not codes_arg:
+        raise ValueError("--stage-corporate-actions 必须带 --corporate-action-codes，例如 600519")
+    if start_year < 1990 or start_year > date.today().year:
+        raise ValueError("--corporate-action-start-year 非法")
+    codes = [code.strip() for code in codes_arg.split(",") if code.strip()]
+    if not codes:
+        raise ValueError("--corporate-action-codes 不能为空")
+    years = date.today().year - start_year + 1
+    manager = get_manager()
+    summary = {
+        "codes": len(codes), "with_events": 0, "added": 0, "skipped": 0,
+        "empty": [], "errors": {},
+    }
+    for code in codes:
+        try:
+            metric = manager.get_dividend_metric(
+                code, force_network=True, years=years, timeout=60.0,
+            )
+        except Exception as exc:  # 单证券源失败只记录；其余候选仍可形成审计材料。
+            summary["errors"][code] = f"{type(exc).__name__}: {exc}"
+            continue
+        if not metric or not metric.events:
+            summary["empty"].append(code)
+            continue
+        try:
+            report = stage_dividend_metric(code, metric)
+        except Exception as exc:
+            summary["errors"][code] = f"stage {type(exc).__name__}: {exc}"
+            continue
+        summary["with_events"] += 1
+        summary["added"] += report["added"]
+        summary["skipped"] += report["skipped"]
+    print(summary)
+
+
+def run_stage_legacy_corporate_actions(codes_arg: str | None, start_year: int) -> None:
+    """将显式证券的旧公司行为导入新来源表；不联网、不写旧表。"""
+    from datetime import date
+
+    from stockfu.services.corporate_actions import stage_legacy_dividend_events
+
+    if not codes_arg:
+        raise ValueError("--stage-legacy-corporate-actions 必须带 --corporate-action-codes")
+    codes = [code.strip() for code in codes_arg.split(",") if code.strip()]
+    print(stage_legacy_dividend_events(
+        codes, start=date(start_year, 1, 1), end=date.today(),
+    ))
+
+
+def run_stage_akshare_corporate_actions(codes_arg: str | None, start_year: int) -> None:
+    """抓取 AkShare 的除权前旧股口径事件，暂存为独立来源证据。"""
+    from stockfu.data.akshare_source import AkshareSource
+    from stockfu.data.base import DividendMetric
+    from stockfu.services.corporate_actions import stage_dividend_metric
+
+    if not codes_arg:
+        raise ValueError("--stage-akshare-corporate-actions 必须带 --corporate-action-codes")
+    source = AkshareSource()
+    summary = {"codes": 0, "with_events": 0, "added": 0, "skipped": 0, "empty": [], "errors": {}}
+    for code in [code.strip() for code in codes_arg.split(",") if code.strip()]:
+        summary["codes"] += 1
+        try:
+            events = [event for event in source.get_corporate_action_events(code)
+                      if event.ex_date.year >= start_year]
+            if not events:
+                summary["empty"].append(code)
+                continue
+            report = stage_dividend_metric(code, DividendMetric(code=code, events=events))
+            summary["with_events"] += 1
+            summary["added"] += report["added"]
+            summary["skipped"] += report["skipped"]
+        except Exception as exc:
+            summary["errors"][code] = f"{type(exc).__name__}: {exc}"
+    print(summary)
+
+
+def run_stage_akshare_rights_issues(codes_arg: str | None, start_year: int) -> None:
+    """抓取显式证券的巨潮配股实施方案到来源证据表。"""
+    from stockfu.data.akshare_source import AkshareSource
+    from stockfu.services.corporate_actions import stage_rights_issue_events
+
+    if not codes_arg:
+        raise ValueError("--stage-akshare-rights-issues 必须带 --corporate-action-codes")
+    source = AkshareSource()
+    summary = {"codes": 0, "with_events": 0, "added": 0, "skipped": 0, "empty": [], "errors": {}}
+    for code in [code.strip() for code in codes_arg.split(",") if code.strip()]:
+        summary["codes"] += 1
+        try:
+            events = [event for event in source.get_rights_issue_events(code)
+                      if event.ex_date.year >= start_year]
+            if not events:
+                summary["empty"].append(code)
+                continue
+            report = stage_rights_issue_events(events)
+            summary["with_events"] += 1
+            summary["added"] += report["added"]
+            summary["skipped"] += report["skipped"]
+        except Exception as exc:
+            summary["errors"][code] = f"{type(exc).__name__}: {exc}"
+    print(summary)
+
+
+def run_materialize_corporate_actions() -> None:
+    """将已暂存的来源证据仲裁为 append-only 正式事件版本。"""
+    from stockfu.services.corporate_actions import materialize_arbitration_proposals
+
+    print(materialize_arbitration_proposals())
+
+
+def run_stage_exchange_delistings() -> None:
+    """读取沪深交易所名单，暂存暂停/终止上市来源证据。"""
+    from stockfu.data.akshare_source import AkshareSource
+    from stockfu.services.corporate_actions import stage_delisting_events
+
+    events = AkshareSource().get_exchange_delisting_events()
+    if not events:
+        raise RuntimeError("未取得交易所退市名单，拒绝写入空覆盖结论")
+    print({"events": len(events), **stage_delisting_events(events)})
 
 
 def run_backfill_index_universe(index_codes: str | None) -> None:
@@ -515,7 +661,8 @@ def run_recommend(
 
 def run_backtest(strategy: str, start: str | None, end: str | None,
                  cash: float, codes: str | None, save: bool,
-                 strict: bool = True, min_amount: float | None = None) -> None:
+                 strict: bool = True, min_amount: float | None = None,
+                 valuation_basis: str = "raw") -> None:
     """回测：算子→策略→逐日 T+1 执行，输出绩效指标。
 
     策略由 app_config('active_strategy_id') 决定;此处 --backtest STRATEGY 设置它。
@@ -550,7 +697,7 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     code_list = resolve_base_codes("historical_indices" if use_historical_universe else codes)
 
     scope = f"{len(code_list)}只票" + (" strict" if strict else " no-strict")
-    print(f"回测 {strategy}  {start_d} → {end_d}  初始资金 {cash:,.0f}  ({scope}) …")
+    print(f"回测 {strategy}  {start_d} → {end_d}  初始资金 {cash:,.0f}  ({scope}, 估值 {valuation_basis}) …")
     universe_rules = None
     if use_historical_universe:
         universe_rules = UniverseRules(
@@ -561,7 +708,7 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     elif min_amount is not None:
         universe_rules = UniverseRules(min_amount_ma20=min_amount)
     r = _run(code_list, start_d, end_d, initial_cash=cash, strict=strict,
-             universe_rules=universe_rules)
+             universe_rules=universe_rules, valuation_basis=valuation_basis)
     m = r["metrics"]
     bench_ret = m.get("benchmark_return")
     window = m.get("benchmark_window")
@@ -610,7 +757,7 @@ def run_factor_diag(operator: str, start: str | None, end: str | None,
     """因子诊断：单算子连续 score 的 IC / 分位收益 / 换手 / 衰减（alphalens 思路）。
 
     不搭策略管道，直接量化单个因子在全市场横截面上对前向收益的预测力。
-    score 走回测算子缓存(operator_result)，与回测互通复用。详见 docs/BACKTEST.md §11。
+    score 走回测算子缓存(operator_result)，与回测互通复用。详见 docs/BACKTEST.md。
     """
     import json
     import os
@@ -761,6 +908,26 @@ def build_parser() -> argparse.ArgumentParser:
                    help="清空 ETF 表后全量重灌前复权日线(INDEX+行业+SECTOR+自选;东财qfq→腾讯qfq)")
     p.add_argument("--backfill-universe", action="store_true",
                    help="回补 security_master(list_date/board, baostock;时点宇宙前置)")
+    p.add_argument("--audit-corporate-actions", action="store_true",
+                   help="只读审计公司行为：按年覆盖、重复和金额/来源异常（正式回测前置）")
+    p.add_argument("--stage-corporate-actions", action="store_true",
+                   help="抓取显式指定证券的公司行为到来源证据表；不写旧 dividend_event")
+    p.add_argument("--stage-legacy-corporate-actions", action="store_true",
+                   help="将显式证券的旧 dividend_event 导入来源证据表；不写旧表、不自动仲裁")
+    p.add_argument("--stage-akshare-corporate-actions", action="store_true",
+                   help="按除权前旧股口径抓 AkShare 公司行为到来源证据表；不写旧表")
+    p.add_argument("--stage-akshare-rights-issues", action="store_true",
+                   help="抓取显式证券的巨潮配股实施方案到来源证据表；不自动仲裁")
+    p.add_argument("--materialize-corporate-actions", action="store_true",
+                   help="仲裁来源证据并追加正式公司行为版本；不改写历史版本")
+    p.add_argument("--stage-exchange-delistings", action="store_true",
+                   help="暂存沪深交易所暂停/终止上市名单；不写 security_master、不自动仲裁")
+    p.add_argument("--corporate-action-codes", default=None,
+                   help="配合 --stage-corporate-actions：逗号分隔证券代码（必填，禁止隐式全市场）")
+    p.add_argument("--corporate-action-start-year", type=int, default=2007,
+                   help="配合 --audit-corporate-actions：起始年（默认2007）")
+    p.add_argument("--corporate-action-end-year", type=int, default=None,
+                   help="配合 --audit-corporate-actions：结束年（默认当年）")
     p.add_argument("--backfill-index-universe", action="store_true",
                    help="导入默认指数当前成分快照(只按文件日期写入；不伪造历史)")
     p.add_argument("--backfill-index-universe-history", action="store_true",
@@ -814,7 +981,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true",
                    help="配合 --update-backtests:只打印计划不实际跑回测")
     p.add_argument("--factor-diag", metavar="OPERATOR", default=None,
-                   help="因子诊断算子ID（如 momentum / macd_cross）；单算子 IC/分位收益/换手/衰减，见 docs/BACKTEST.md §11")
+                   help="因子诊断算子ID（如 momentum / macd_cross）；单算子 IC/分位收益/换手/衰减，见 docs/BACKTEST.md")
     p.add_argument("--recommend", action="store_true",
                    help="空仓重建荐股(必填 --strategies;可选 --as-of/--cash)")
     p.add_argument("--as-of", default=None, metavar="YYYY-MM-DD",
@@ -844,6 +1011,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="严谨模式(默认):时点宇宙+涨跌停/滑点")
     p.add_argument("--no-strict", dest="strict", action="store_false",
                    help="关闭宇宙/涨跌停/滑点(旧行为对照)")
+    p.add_argument("--valuation-basis", dest="valuation_basis",
+                   choices=("hfq", "raw"), default="raw",
+                   help="账户估值口径:raw=不复权+现金分红入账(默认);"
+                        "hfq=后复权实验口径(不可用于正式账户回测，见 docs/BACKTEST.md)")
     p.add_argument("--save", action="store_true", help="结果落盘（回测→data/backtest/ 诊断→data/factor_diag/）")
     p.add_argument("--periods", default=None,
                    help="因子诊断前向收益周期(交易日)，逗号分隔，默认 1,5,10,21")
@@ -908,6 +1079,25 @@ def main() -> None:
         run_backfill_etf()
     elif args.backfill_universe:
         run_backfill_universe()
+    elif args.audit_corporate_actions:
+        run_audit_corporate_actions(args.corporate_action_start_year,
+                                    args.corporate_action_end_year)
+    elif args.stage_corporate_actions:
+        run_stage_corporate_actions(args.corporate_action_codes,
+                                    args.corporate_action_start_year)
+    elif args.stage_legacy_corporate_actions:
+        run_stage_legacy_corporate_actions(args.corporate_action_codes,
+                                           args.corporate_action_start_year)
+    elif args.stage_akshare_corporate_actions:
+        run_stage_akshare_corporate_actions(args.corporate_action_codes,
+                                            args.corporate_action_start_year)
+    elif args.stage_akshare_rights_issues:
+        run_stage_akshare_rights_issues(args.corporate_action_codes,
+                                        args.corporate_action_start_year)
+    elif args.materialize_corporate_actions:
+        run_materialize_corporate_actions()
+    elif args.stage_exchange_delistings:
+        run_stage_exchange_delistings()
     elif args.backfill_index_universe:
         run_backfill_index_universe(args.index_codes)
     elif args.backfill_index_universe_history:
@@ -948,7 +1138,8 @@ def main() -> None:
         )
     elif args.backtest:
         run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save,
-                     strict=args.strict, min_amount=args.min_amount)
+                     strict=args.strict, min_amount=args.min_amount,
+                     valuation_basis=args.valuation_basis)
     elif args.factor_diag:
         run_factor_diag(args.factor_diag, args.start, args.end, args.codes, args.params,
                         _parse_periods(args.periods), args.quantiles,

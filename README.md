@@ -37,7 +37,7 @@ stockfu/
 │   ├── api/             # FastAPI 路由 + 静态前端
 │   ├── scheduler/       # 每日抓取/落库/推送
 │   ├── ai/              # AI 4顾问 + operators算子平台 + rebalancers选股层
-│   └── backtest/        # 回测引擎(四层架构,见 docs/BACKTEST.md)
+│   └── backtest/        # 回测引擎（唯一权威设计与实施计划见 docs/BACKTEST.md）
 ├── frontend/            # Vue3 Web 看板
 └── data/stockfu.db      # SQLite（运行时生成）
 ```
@@ -54,5 +54,5 @@ python3 main.py --fetch --date 2026-07-22   # 日更抓取（必带 --date；未
 
 ## 状态
 
-🚧 MVP 开发中。已完成：数据层(多源 fallback) → 存储 → 持仓/股息业务 → Web/API → 三层情绪指数 → 历史回补 → AI 4 顾问 → 四层架构回测引擎(算子缓存+选股+真实费用)。  
-TUI 终端看板已移除，交互统一走 Web。详见 `docs/PROJECT_STATE.md`。
+🚧 MVP 开发中。已完成：数据层(多源 fallback) → 存储 → 持仓/股息业务 → Web/API → 三层情绪指数 → 历史回补 → AI 4 顾问 → 四层架构回测引擎。
+TUI 终端看板已移除，交互统一走 Web。回测当前能力、准确性缺口、目标架构、实施顺序和验收门禁统一见 [`docs/BACKTEST.md`](docs/BACKTEST.md)；在该文档的正式准入门禁通过前，长周期回测结果均为探索性结果。

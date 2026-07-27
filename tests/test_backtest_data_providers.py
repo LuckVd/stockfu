@@ -2,8 +2,27 @@
 from __future__ import annotations
 
 import unittest
+from array import array
 from datetime import date
 from unittest.mock import patch
+
+
+def _sctx_with_close(code, close_by_day, *, raw_too=True):
+    """构造列式 _SeriesCtx:code 在指定日期上有 close(qfq),可选同步写 close_raw。"""
+    from stockfu.backtest.engine import _COL_KEYS, _SeriesCtx
+    NAN = float("nan")
+    dates = sorted(close_by_day)
+    n = len(dates)
+    series = {code: {k: array("d", [NAN] * n) for k in _COL_KEYS}}
+    valid = {code: array("b", [0] * n)}
+    for i, d in enumerate(dates):
+        v = float(close_by_day[d])
+        series[code]["c"][i] = v
+        if raw_too:
+            series[code]["c_raw"][i] = v
+        valid[code][i] = 1
+    return _SeriesCtx(series=series, dates=dates,
+                      date_idx={d: i for i, d in enumerate(dates)}, valid=valid)
 
 
 class TestBacktestDataProviders(unittest.TestCase):
@@ -13,13 +32,11 @@ class TestBacktestDataProviders(unittest.TestCase):
 
         code = "600001"
         # 周五收盘应覆盖同周前面的交易日。
-        cache = {
-            date(2024, 1, 4): {code: (1, 1, 1, 10, 0, 0, 1, 1, 1, 1, 1, 10, None, None)},
-            date(2024, 1, 5): {code: (1, 1, 1, 11, 0, 0, 1, 1, 1, 1, 1, 11, None, None)},
-            date(2024, 1, 8): {code: (1, 1, 1, 12, 0, 0, 1, 1, 1, 1, 1, 12, None, None)},
-            date(2024, 1, 12): {code: (1, 1, 1, 13, 0, 0, 1, 1, 1, 1, 1, 13, None, None)},
-        }
-        with _backtest_series_ctx(cache):
+        sctx = _sctx_with_close(code, {
+            date(2024, 1, 4): 10, date(2024, 1, 5): 11,
+            date(2024, 1, 8): 12, date(2024, 1, 12): 13,
+        }, raw_too=False)
+        with _backtest_series_ctx(sctx):
             self.assertEqual(_weekly_closes(code, date(2024, 1, 12), 30), [11, 13])
 
     def test_dividend_yield_uses_injected_events(self):
@@ -44,9 +61,9 @@ class TestBacktestDataProviders(unittest.TestCase):
 
         code = "600001"
         as_of = date(2024, 6, 1)
-        cache = {as_of: {code: (1, 1, 1, 9, 0, 0, 1, 1, 1, 1, 1, 10, None, None)}}
+        sctx = _sctx_with_close(code, {as_of: 10})   # close_raw=10 → 分母
         dividends = {code: [(date(2024, 1, 10), 0.5)]}
-        with _backtest_series_ctx(cache, dividends):
+        with _backtest_series_ctx(sctx, dividends):
             self.assertEqual(dividend_yield_ttm(code, as_of), (5.0, 0.5))
 
 

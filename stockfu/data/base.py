@@ -227,9 +227,46 @@ class Quote:
 class DividendEventDTO:
     ex_date: date
     per_share_cash: float = 0.0
+    # 每旧股新增股数：送股(stocksPs)+转增(reserveToStock)，不是"每10股"。
+    # 现金与送转必须同一事件保存，回测在除权日先派现、后调股数。
+    per_share_stock: float = 0.0
     record_date: date | None = None
     announce_date: date | None = None
+    # 现金实际到账日与送转股上市（可卖）日。两者不能默认等同于除权日。
+    pay_date: date | None = None
+    stock_mkt_date: date | None = None
     currency: str = "CNY"
+    source: str = ""
+
+
+@dataclass
+class RightsIssueDTO:
+    """配股实施事件；比例为每旧股可认购股数。"""
+    code: str
+    ex_date: date
+    rights_ratio: float
+    rights_price: float
+    record_date: date | None = None
+    announce_date: date | None = None
+    pay_date: date | None = None
+    stock_mkt_date: date | None = None
+    currency: str = "CNY"
+    source: str = ""
+
+
+@dataclass
+class DelistingEventDTO:
+    """交易所披露的暂停上市或终止上市事件。
+
+    ``terminal_price`` 只能填经独立来源核验的每股终止结算现金；未知必须为
+    ``None``，strict账户不得把最后一根行情价当作替代。
+    """
+    code: str
+    event_date: date
+    action_type: str
+    list_date: date | None = None
+    terminal_price: float | None = None
+    name: str = ""
     source: str = ""
 
 

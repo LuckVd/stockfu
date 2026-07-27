@@ -17,7 +17,10 @@ analyze_fn 由调用方注入(scheduler: temp=0 + prefetch 批量缓存 + 算子
 """
 from __future__ import annotations
 
+import math
+from array import array
 from bisect import bisect_left, bisect_right
+from collections import defaultdict, namedtuple
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -47,13 +50,13 @@ def stamp_duty_rate(as_of: date | None) -> float:
         return STAMP_DUTY_RATE
     return STAMP_DUTY_RATE_OLD
 
-# 资金分配 / 风控默认值(对标 rqalpha order_target_portfolio_smart + backtrader Margin 思路,
-# 详见 docs/ARCHITECTURE_REVIEW.md):
+# 资金分配 / 风控默认值；当前能力、已知偏差与目标模型统一见 docs/BACKTEST.md。
 #   - 总仓安全阀留 cash sleeve,保证 Σ目标 ≤ max_gross → 执行层现金够、不夹断丢目标
 #   - 规则止损补文档承诺(旧 BACKTEST.md 写"-3%止损"但代码缺失;此处参数化,A股 -3% 太敏感)
 DEFAULT_MAX_GROSS = 0.90      # Σ目标权重上限(留 10% 现金;对所有 rebalancer 生效)
 DEFAULT_STOP_LOSS = 0.08      # 个股成本止损:浮亏达此比例 → 强制清仓
 DEFAULT_PORTFOLIO_BRAKE = 0.10  # 组合回撤刹车:equity 较峰值回撤达此值 → 全局临时降仓一半
+HFQ_COVERAGE_MIN = 0.995      # hfq 口径门禁:回测窗口内有 hfq 数据的股票,close_hfq 非空率下限
 
 
 @dataclass
@@ -61,6 +64,8 @@ class Position:
     shares: int = 0
     avg_cost: float = 0.0
     lots: list[tuple[int, date]] = field(default_factory=list)  # (shares, buy_date), FIFO for dividend tax
+    # 已除权但尚未上市的送转股。它们计入经济权益，但在上市日前不得卖出。
+    receivable_shares: int = 0
 
 
 class VirtualAccount:
@@ -68,6 +73,8 @@ class VirtualAccount:
 
     def __init__(self, initial_cash: float = INITIAL_CASH):
         self.cash: float = float(initial_cash)
+        # 已除息但尚未支付的现金。应收属于权益，不属于可用于买入的现金。
+        self.cash_receivable: float = 0.0
         self.initial: float = float(initial_cash)
         self.positions: dict[str, Position] = {}
         self.fee_paid: float = 0.0
@@ -75,8 +82,9 @@ class VirtualAccount:
         self.dividend_tax_paid: float = 0.0
 
     def equity(self, prices: dict[str, float]) -> float:
-        return self.cash + sum(
-            p.shares * prices.get(c, 0.0) for c, p in self.positions.items() if p.shares > 0
+        return self.cash + self.cash_receivable + sum(
+            (p.shares + p.receivable_shares) * prices.get(c, 0.0)
+            for c, p in self.positions.items() if p.shares > 0 or p.receivable_shares > 0
         )
 
     def weight(self, code: str, prices: dict[str, float]) -> float:
@@ -84,9 +92,9 @@ class VirtualAccount:
         if total <= 0:
             return 0.0
         pos = self.positions.get(code)
-        if not pos or pos.shares <= 0:
+        if not pos or (pos.shares <= 0 and pos.receivable_shares <= 0):
             return 0.0
-        return pos.shares * prices.get(code, 0.0) / total
+        return (pos.shares + pos.receivable_shares) * prices.get(code, 0.0) / total
 
     def apply_action(self, code: str, action: str, target_weight: float,
                      price: float, prices: dict[str, float],
@@ -104,7 +112,8 @@ class VirtualAccount:
             return None
         target_value = target_weight * total
         pos = self.positions.setdefault(code, Position())
-        current_value = pos.shares * price
+        # 应收股属于经济权益，目标权重必须看见它；但实际卖出仍只会取 settled shares。
+        current_value = (pos.shares + pos.receivable_shares) * price
         delta = target_value - current_value  # 正=买,负=卖
         if abs(delta) < total * 0.001:        # 调仓量太小,不动
             return None
@@ -192,6 +201,170 @@ class VirtualAccount:
                 "gross": round(gross, 2), "tax": round(tax, 2), "net": round(net, 2),
                 "per_share_cash": per_share_cash}
 
+    def accrue_cash_dividend(self, code: str, per_share_cash: float,
+                              record_date: date | None = None) -> dict | None:
+        """在除权日确认现金应收，但绝不让它提前参与买入。
+
+        税务的最终补扣属于独立的 lot/tax schedule 阶段；这里故意只记录税前应收，
+        以免把“支付日”偷换成“除权日”。
+        """
+        pos = self.positions.get(code)
+        if not pos or pos.shares <= 0 or per_share_cash <= 0:
+            return None
+        gross = pos.shares * per_share_cash
+        self.cash_receivable += gross
+        return {"kind": "cash_dividend_receivable", "code": code,
+                "shares": pos.shares, "gross": round(gross, 2),
+                "per_share_cash": per_share_cash,
+                "record_date": record_date.isoformat() if record_date else None}
+
+    def settle_cash_dividend(self, code: str, gross: float, as_of: date) -> dict | None:
+        """在已知支付日将此前确认的应收现金转为可用现金。"""
+        if gross <= 0:
+            return None
+        # 同一事件只能由预载日程调用一次；此处仍防止异常输入造出负应收。
+        if gross > self.cash_receivable + 1e-8:
+            raise ValueError(f"{code} {as_of}: 待结算分红超过现金应收")
+        self.cash_receivable -= gross
+        self.cash += gross
+        self.dividend_received += gross
+        return {"kind": "cash_dividend_settled", "code": code,
+                "gross": round(gross, 2), "net": round(gross, 2)}
+
+    def accrue_stock_dividend(self, code: str, per_share_stock: float,
+                              as_of: date) -> dict | None:
+        """除权日确认送转应收股；上市日前既不能卖出，也不改变 settled shares。"""
+        pos = self.positions.get(code)
+        if not pos or pos.shares <= 0 or per_share_stock <= 0:
+            return None
+        shares = int(round(pos.shares * per_share_stock))
+        if shares <= 0:
+            return None
+        pos.receivable_shares += shares
+        return {"kind": "stock_dividend_receivable", "code": code,
+                "shares": shares, "per_share_stock": per_share_stock,
+                "as_of": as_of.isoformat()}
+
+    def settle_stock_dividend(self, code: str, shares: int, as_of: date) -> dict | None:
+        """在新增股份上市日转为可卖股份，并保持 lot 与平均成本不变量。"""
+        pos = self.positions.get(code)
+        if not pos or shares <= 0:
+            return None
+        if shares > pos.receivable_shares:
+            raise ValueError(f"{code} {as_of}: 待结算送转股超过股份应收")
+        old_shares = pos.shares
+        if old_shares <= 0:
+            raise ValueError(f"{code} {as_of}: 无 settled shares 却试图结算送转股")
+        pos.receivable_shares -= shares
+        new_shares = old_shares + shares
+        factor = new_shares / old_shares
+        if pos.lots:
+            lots = [(int(round(lot_shares * factor)), buy_date)
+                    for lot_shares, buy_date in pos.lots]
+            diff = new_shares - sum(lot_shares for lot_shares, _ in lots)
+            lots[0] = (lots[0][0] + diff, lots[0][1])
+            pos.lots = lots
+        else:
+            pos.lots = [(new_shares, as_of)]
+        pos.shares = new_shares
+        pos.avg_cost /= factor
+        return {"kind": "stock_dividend_settled", "code": code,
+                "shares_before": old_shares, "shares_after": new_shares,
+                "shares_settled": shares}
+
+    def settle_delisting(self, code: str, terminal_price: float, as_of: date) -> dict | None:
+        """按已仲裁的官方终止结算现金关闭该证券，绝不沿用最后行情价。"""
+        pos = self.positions.get(code)
+        if not pos or (pos.shares <= 0 and pos.receivable_shares <= 0):
+            return None
+        if terminal_price <= 0:
+            raise ValueError(f"{code} {as_of}: 退市终止结算价必须为正")
+        shares = pos.shares + pos.receivable_shares
+        proceeds = shares * terminal_price
+        self.cash += proceeds
+        self.positions.pop(code, None)
+        return {"kind": "delisting_settlement", "code": code, "shares": -shares,
+                "price": terminal_price, "proceeds": round(proceeds, 2)}
+
+    def exercise_rights(self, code: str, rights_ratio: float, rights_price: float,
+                        policy: str, as_of: date) -> dict | None:
+        """按显式配股策略冻结现金并生成待上市股份。
+
+        未行权权利的市场价值不能凭空推断；``ignore`` 只留下审计记录。对于
+        ``exercise_if_cash_available``，不足现金时仅认购买得起的整数股。
+        """
+        pos = self.positions.get(code)
+        if not pos or pos.shares <= 0:
+            return None
+        if rights_ratio <= 0 or rights_price <= 0:
+            raise ValueError(f"{code} {as_of}: 配股比例和价格必须为正")
+        entitlement_raw = pos.shares * rights_ratio
+        entitlement = int(entitlement_raw + 1e-9)
+        if abs(entitlement_raw - entitlement) > 1e-8:
+            raise ValueError(
+                f"{code} {as_of}: 配股权利产生非整数股，需官方零股/现金替代规则")
+        if policy == "ignore":
+            return {"kind": "rights_ignored", "code": code, "shares": entitlement,
+                    "rights_price": rights_price}
+        if policy != "exercise_if_cash_available":
+            raise ValueError(f"未知配股策略: {policy}")
+        shares = min(entitlement, int(self.cash / rights_price + 1e-9))
+        cost = shares * rights_price
+        self.cash -= cost
+        pos.receivable_shares += shares
+        return {"kind": "rights_exercised", "code": code, "shares": shares,
+                "unexercised_shares": entitlement - shares, "rights_price": rights_price,
+                "cost": round(cost, 2)}
+
+    def settle_rights(self, code: str, shares: int, cost: float, as_of: date) -> dict | None:
+        """配股上市日转为可卖股份；认购成本进入新 lot，不套用送转除权因子。"""
+        pos = self.positions.get(code)
+        if not pos or shares <= 0:
+            return None
+        if shares > pos.receivable_shares:
+            raise ValueError(f"{code} {as_of}: 配股待上市数量超过股份应收")
+        old_shares = pos.shares
+        pos.receivable_shares -= shares
+        pos.shares += shares
+        pos.avg_cost = ((pos.avg_cost * old_shares + cost) / pos.shares
+                        if pos.shares else 0.0)
+        pos.lots.append((shares, as_of))
+        return {"kind": "rights_settled", "code": code, "shares_before": old_shares,
+                "shares_after": pos.shares, "shares_settled": shares,
+                "cost": round(cost, 2)}
+
+    def adjust_for_stock_dividend(self, code: str, per_share_stock: float,
+                                  as_of: date) -> dict | None:
+        """除权日前收市的持仓获送股/转增：调股数、成本及 FIFO lots，不动现金。
+
+        ``per_share_stock`` 是每旧股新增股数（10转10=1.0）。正常 A 股整手和
+        每10股方案会保持整数；仍显式 round + lot 对账，避免浮点使后续整百股卖出失真。
+        调用者须在同日现金分红之后、开盘挂单之前调用。
+        """
+        pos = self.positions.get(code)
+        if not pos or pos.shares <= 0 or per_share_stock <= 0:
+            return None
+        factor = 1.0 + per_share_stock
+        old_shares = pos.shares
+        new_shares = int(round(old_shares * factor))
+        if new_shares <= old_shares:
+            return None
+        if pos.lots:
+            lots = [(int(round(shares * factor)), buy_date)
+                    for shares, buy_date in pos.lots]
+            # 逐 lot round 后与总仓位的差额归到最老 lot，保持 FIFO 总和不变量。
+            diff = new_shares - sum(shares for shares, _d in lots)
+            shares0, date0 = lots[0]
+            lots[0] = (shares0 + diff, date0)
+            pos.lots = lots
+        else:
+            pos.lots = [(new_shares, as_of)]
+        pos.shares = new_shares
+        pos.avg_cost /= factor
+        return {"kind": "stock_dividend", "code": code,
+                "shares_before": old_shares, "shares_after": new_shares,
+                "per_share_stock": per_share_stock, "factor": factor}
+
 
 # =====================================================================
 # 内部辅助
@@ -238,69 +411,219 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
     return 0.0, "unavailable"
 
 
-# 紧凑 bar 下标:(qfq OHLC, pct, st, status, amount, raw OHLC, pe, pb)。
-# 信号使用 qfq；账户成交/估值使用 raw，并以现金分红补回总回报，避免重复计息。
+# 紧凑 bar 下标:(qfq OHLC, pct, st, status, amount, raw OHLC, pe, pb, hfq close/open)。
+# 信号使用 qfq；成交现实层(涨跌停/费用/整手)用 raw；账户估值层默认 hfq(总收益)，
+# raw 口径下另以公司行为账本补回总回报；正式迁移计划见 docs/BACKTEST.md。
 (_BI_O, _BI_H, _BI_L, _BI_C, _BI_PCT, _BI_ST, _BI_TS, _BI_AMT,
- _BI_O_RAW, _BI_H_RAW, _BI_L_RAW, _BI_C_RAW, _BI_PE, _BI_PB) = range(14)
+ _BI_O_RAW, _BI_H_RAW, _BI_L_RAW, _BI_C_RAW, _BI_PE, _BI_PB,
+ _BI_C_HFQ, _BI_O_HFQ) = range(16)
 
-# quote_series 字段 → 紧凑 bar 下标(供回测内存供给器切片)
-_QS_FIELD_IDX = {
-    "open": _BI_O, "high": _BI_H, "low": _BI_L, "close": _BI_C,
-    "close_raw": _BI_C_RAW,
+# quote_series 字段 → 列式 array key(供回测内存供给器切片)
+_QS_FIELD_KEY = {
+    "open": "o", "high": "h", "low": "l", "close": "c", "close_raw": "c_raw",
+    "close_hfq": "c_hfq", "open_hfq": "o_hfq",
 }
+
+# 列式 array 的 16 字段 key(顺序对应 _BI_* 下标);预载时按此填充 array('d')。
+_COL_KEYS = (
+    "o", "h", "l", "c", "pct", "st", "ts", "amt",
+    "o_raw", "h_raw", "l_raw", "c_raw", "pe", "pb",
+    "c_hfq", "o_hfq",
+)
+
+# 列式预载结构:series={code: {col_key: array('d', len(dates))}}(缺失=nan),
+# dates=升序交易日历,date_idx={date:int} 整数索引,valid={code: array('b')}(1=当日有 SQL 行)。
+# 替代旧 {date:{code:tuple}} 双层 dict —— 用全局整数索引替代 dict，降低预载内存。
+_SeriesCtx = namedtuple("_SeriesCtx", ["series", "dates", "date_idx", "valid"])
 # 回测预载需覆盖 value 的 5 年估值窗口(约 1840 历日)，并留少量边界余量。
 # 这也覆盖 low_volatility 的 3 年窗口；不足时 value 会回落 DB，重新引入 N+1。
 _PRELOAD_LOOKBACK_DAYS = 1900
 
 
-def _preload_dividend_events(codes: list[str], start: date, end: date) -> dict[str, list[tuple[date, float | None]]]:
-    """一次 SQL 预载回测宇宙的分红事件，供 TTM 股息率按日切片。"""
+def _canonical_dividend_rows(rows) -> list[tuple[str, object]]:
+    """将库内事件按证券、除权日规范化，禁止重复事件在回测中双记。
+
+    写入路径本就拒绝同证券同除权日的冲突；历史库可能已含旧重复行，故读取路径
+    也必须执行同一规则。完全相同的行可安全折叠，任何金额或日期冲突立即失败，
+    不能以“最后一行覆盖”伪造一个可运行的长期回测。
+    """
+    from stockfu.data.base import DividendEventDTO
+    from stockfu.services.dividend import _canonical_events
+
+    grouped: dict[str, list[object]] = {}
+    for row in rows:
+        grouped.setdefault(row.asset_code, []).append(row)
+    out: list[tuple[str, object]] = []
+    for code, code_rows in grouped.items():
+        events = [
+            DividendEventDTO(
+                ex_date=row.ex_date,
+                per_share_cash=float(row.per_share_cash or 0.0),
+                per_share_stock=float(row.per_share_stock or 0.0),
+                record_date=row.record_date,
+                announce_date=row.announce_date,
+                currency=row.currency or "CNY",
+                source=row.source or "db:dividend_event",
+            )
+            for row in code_rows
+        ]
+        for event in _canonical_events(events):
+            out.append((code, event))
+    return sorted(out, key=lambda item: (item[0], item[1].ex_date))
+
+
+def _load_canonical_dividend_rows(codes: list[str], start: date, end: date) -> list[tuple[str, object]]:
+    """读取回测窗口事件，并在进入任何账户/因子路径前完成规范化。"""
     from stockfu.models import DividendEvent
 
-    out: dict[str, list[tuple[date, float | None]]] = {code: [] for code in codes}
     if not codes:
-        return out
+        return []
     with session_scope() as s:
         rows = s.exec(select(DividendEvent).where(
             DividendEvent.asset_code.in_(codes),
             DividendEvent.ex_date >= start,
             DividendEvent.ex_date <= end,
         ).order_by(DividendEvent.asset_code, DividendEvent.ex_date)).all()
-    for event in rows:
-        out.setdefault(event.asset_code, []).append((event.ex_date, event.per_share_cash))
+    return _canonical_dividend_rows(rows)
+
+
+def _preload_dividend_events(codes: list[str], start: date, end: date) -> dict[str, list[tuple[date, float | None]]]:
+    """一次 SQL 预载回测宇宙的分红事件，供 TTM 股息率按日切片。"""
+    out: dict[str, list[tuple[date, float | None]]] = {code: [] for code in codes}
+    for code, event in _load_canonical_dividend_rows(codes, start, end):
+        out.setdefault(code, []).append((event.ex_date, event.per_share_cash))
     return out
 
 
 def _preload_cash_dividends(codes: list[str], start: date, end: date) -> dict[date, list[tuple[str, float, date | None]]]:
     """预载除息日现金流；与因子用 TTM 索引分开，避免改变其供给接口。"""
-    from stockfu.models import DividendEvent
-
     out: dict[date, list[tuple[str, float, date | None]]] = {}
+    for code, event in _load_canonical_dividend_rows(codes, start, end):
+        cash = float(event.per_share_cash or 0.0)
+        if cash > 0:
+            out.setdefault(event.ex_date, []).append((code, cash, event.record_date))
+    return out
+
+
+def _preload_stock_dividends(codes: list[str], start: date, end: date) -> dict[date, list[tuple[str, float]]]:
+    """预载除权日送股/转增，供账户结算；与现金流分开以强制现金先、送转后。"""
+    out: dict[date, list[tuple[str, float]]] = {}
+    for code, event in _load_canonical_dividend_rows(codes, start, end):
+        stock = float(event.per_share_stock or 0)
+        if stock > 0:
+            out.setdefault(event.ex_date, []).append((code, stock))
+    return out
+
+
+class CorporateActionCoverageError(RuntimeError):
+    """严格账户所需公司行为尚不可安全结算。"""
+
+
+def _preload_accepted_corporate_actions(
+    codes: list[str], start: date, end: date, *, rights_policy: str = "reject",
+) -> tuple[dict[date, list[object]], dict[str, object]]:
+    """读取每个逻辑事件的最新 accepted revision，并建立结算日程。
+
+    返回 ``(ex_date -> events, action_id -> event)``。这里不把旧 ``dividend_event``
+    当作正式输入；若某逻辑事件的最新 revision 不是 accepted，严格回测必须停止。
+    """
+    from stockfu.models import CorporateActionEvent, DividendEvent
+
     if not codes:
-        return out
+        return {}, {}
     with session_scope() as s:
-        rows = s.exec(select(DividendEvent).where(
+        rows = s.exec(select(CorporateActionEvent).where(
+            CorporateActionEvent.asset_code.in_(codes),
+            CorporateActionEvent.ex_date >= start,
+            CorporateActionEvent.ex_date <= end,
+        ).order_by(CorporateActionEvent.action_id, CorporateActionEvent.revision)).all()
+        legacy_rows = s.exec(select(DividendEvent).where(
             DividendEvent.asset_code.in_(codes),
             DividendEvent.ex_date >= start,
             DividendEvent.ex_date <= end,
         )).all()
-    for event in rows:
-        cash = float(event.per_share_cash or 0.0)
-        if cash > 0:
-            out.setdefault(event.ex_date, []).append((event.asset_code, cash, event.record_date))
-    return out
+
+    latest: dict[str, object] = {}
+    for row in rows:
+        latest[row.action_id] = row
+    for action_id, row in latest.items():
+        if row.status != "accepted":
+            raise CorporateActionCoverageError(
+                f"{action_id} 最新仲裁状态为 {row.status}，strict 回测禁止忽略")
+        if row.action_type not in {"distribution", "rights", "delisting", "delisting_warning"}:
+            raise CorporateActionCoverageError(
+                f"{action_id} 为未建模的 {row.action_type} 事件，strict 回测禁止继续")
+        if row.action_type == "delisting" and (row.terminal_price is None or row.terminal_price <= 0):
+            raise CorporateActionCoverageError(
+                f"{action_id} 缺少独立核验的终止结算价，strict 回测禁止沿用最后行情价")
+        if row.action_type == "rights":
+            if rights_policy == "reject":
+                raise CorporateActionCoverageError(
+                    f"{action_id} 出现配股但未显式选择行权策略，strict 回测禁止猜测")
+            if row.rights_ratio <= 0 or row.rights_price is None or row.rights_price <= 0:
+                raise CorporateActionCoverageError(f"{action_id} 缺少完整配股比例或价格")
+            if row.stock_mkt_date is None:
+                raise CorporateActionCoverageError(f"{action_id} 缺少配股上市日")
+        if row.per_share_cash > 0 and row.pay_date is None:
+            raise CorporateActionCoverageError(
+                f"{action_id} 缺少支付日，现金不得在除权日提前可用")
+        if row.per_share_stock > 0 and row.stock_mkt_date is None:
+            raise CorporateActionCoverageError(
+                f"{action_id} 缺少新增股份上市日，送转股不得提前可卖")
+
+    accepted_ids = set(latest)
+    missing_legacy = [row for row in legacy_rows if
+                      f"{row.asset_code}:{row.ex_date.isoformat()}:distribution" not in accepted_ids]
+    if missing_legacy:
+        example = missing_legacy[0]
+        raise CorporateActionCoverageError(
+            f"{example.asset_code}:{example.ex_date.isoformat()} 仅存在旧 dividend_event，"
+            "未有 accepted 正式事件，strict 回测禁止使用遗留账本")
+
+    by_ex: dict[date, list[object]] = defaultdict(list)
+    for row in latest.values():
+        by_ex[row.ex_date].append(row)
+    return dict(by_ex), latest
+
+
+def _hfq_coverage(sctx: _SeriesCtx, start: date, end: date) -> tuple[float, int, int]:
+    """回测窗口 [start,end] 内,有 hfq 数据的股票的 close_hfq 非空率。
+
+    ETF/指数/未回补 hfq 的票全程 nan → 排除出分母(它们按 raw 回落,属设计而非缺口)。
+    返回 (覆盖率, 命中数, 总数)。窗口内无有效行 → (1.0, 0, 0)。
+    """
+    series, dates, _date_idx, valid = sctx
+    lo = bisect_left(dates, start)
+    hi = bisect_right(dates, end)
+    if hi <= lo:
+        return 1.0, 0, 0
+    has_hfq = [c for c, cols in series.items()
+               if any(not math.isnan(v) for v in cols["c_hfq"])]
+    if not has_hfq:
+        return 1.0, 0, 0
+    hit = tot = 0
+    for c in has_hfq:
+        cols = series[c]
+        vb = valid[c]
+        arr = cols["c_hfq"]
+        for di in range(lo, hi):
+            if vb[di]:
+                tot += 1
+                if not math.isnan(arr[di]):
+                    hit += 1
+    return (hit / tot if tot else 1.0), hit, tot
 
 
 @contextmanager
 def _backtest_series_ctx(
-    market_cache: dict,
+    sctx: _SeriesCtx | None,
     dividend_index: dict[str, list[tuple[date, float | None]]] | None = None,
 ):
-    """挂载 factors.quote_series 的内存供给器:从预载 market_cache 切片,零 DB。
+    """挂载 factors.quote_series 的内存供给器:从列式预载 sctx 切片,零 DB。
 
-    market_cache = {quote_date: {code: (o,h,l,c,pct,st,ts,amt,c_raw,pe,pb)}}(紧凑 D)。重排为
-    {code: ([(date, tuple)], [dates])} 升序,供 bisect 切窗口 [start, ref_date]。
-    与 DB quote_series 逐值一致:同一行集、同窗口、同 None 过滤、同升序(窗口左溢出时
+    sctx 为列式结构(series/dates/date_idx/valid)。provide 用 bisect 在全局 dates 上
+    切窗口 [start, ref_date],从对应 array 取值,nan 过滤(等价旧 None 过滤)。
+    与 DB quote_series 逐值一致:同一行集、同窗口、同升序、同缺失过滤(窗口左溢出时
     两者都返回库内最早日起的部分序列,行为相同)。code/字段不在预载 → 返回 None 回落查库
     (保正确)。结束自动摘除 → live 路径与未预载调用方不受影响。
     """
@@ -312,72 +635,74 @@ def _backtest_series_ctx(
                                            set_backtest_dividend_provider)
     from stockfu.services.valuation import (clear_backtest_valuation_provider,
                                             set_backtest_valuation_provider)
-    if not market_cache:
+    if not sctx or not sctx.series:
         yield
         return
-    per_code: dict[str, list] = {}
-    for _d, _cmap in market_cache.items():
-        for _code, _t in _cmap.items():
-            per_code.setdefault(_code, []).append((_d, _t))
-    index: dict[str, tuple] = {}
-    for _code, _lst in per_code.items():
-        _lst.sort(key=lambda x: x[0])
-        index[_code] = (_lst, [_d for _d, _ in _lst])
 
+    series, dates, _date_idx, _valid = sctx
     dividend_index = dividend_index or {}
 
     def provide(code, field, start, ref_date):
-        entry = index.get(code)
-        if entry is None:
+        cols = series.get(code)
+        if cols is None:
             return None                       # code 不在预载宇宙 → 回落
-        idx = _QS_FIELD_IDX.get(field)
-        if idx is None:
+        key = _QS_FIELD_KEY.get(field)
+        if key is None:
             return None                       # 未知字段 → 回落
-        lst, dates = entry
+        arr = cols[key]
         lo = bisect_left(dates, start)
         hi = bisect_right(dates, ref_date)
-        out = []
-        for i in range(lo, hi):
-            v = lst[i][1][idx]
-            if v is not None:
-                out.append(v)
-        return out
+        return [v for v in arr[lo:hi] if not math.isnan(v)]
 
     def provide_bars(code, field, start, ref_date):
         """同 provide 但同时返回日期(供 monthly/weekly_bollinger 按日聚合;零额外查库)。"""
-        entry = index.get(code)
-        if entry is None:
+        cols = series.get(code)
+        if cols is None:
             return None
-        idx = _QS_FIELD_IDX.get(field)
-        if idx is None:
+        key = _QS_FIELD_KEY.get(field)
+        if key is None:
             return None
-        lst, dates = entry
+        arr = cols[key]
         lo = bisect_left(dates, start)
         hi = bisect_right(dates, ref_date)
         d_out: list = []
         v_out: list = []
         for i in range(lo, hi):
-            v = lst[i][1][idx]
-            if v is not None:
-                d_out.append(lst[i][0])
+            v = arr[i]
+            if not math.isnan(v):
+                d_out.append(dates[i])
                 v_out.append(v)
         return d_out, v_out
 
     def provide_valuation(code, start, ref_date):
-        """返回 PE/PB 估值窗口，供 value 算子零 DB 计算历史分位。"""
-        entry = index.get(code)
-        if entry is None:
+        """返回 PE/PB 估值窗口,供 value 算子零 DB 计算历史分位。
+
+        close/pe/pb 出口把 nan 还原成 None(与旧 tuple 路径逐值一致),value 算子末端
+        的 >0 守卫对 None/nan 同样过滤。
+        """
+        cols = series.get(code)
+        if cols is None:
             return None
-        lst, dates = entry
         lo = bisect_left(dates, start)
         hi = bisect_right(dates, ref_date)
-        out = [
-            (lst[i][0], lst[i][1][_BI_C], lst[i][1][_BI_PE], lst[i][1][_BI_PB])
-            for i in range(lo, hi)
-        ]
-        # ETF/指数预载行没有 PE/PB；valuation_snapshot 原路径只查
-        # QuoteSnapshot，故此处回退 DB，避免把非个股 bar 误当估值样本。
-        if out and not any(pe is not None or pb is not None for _d, _c, pe, pb in out):
+        pe_arr, pb_arr, c_arr = cols["pe"], cols["pb"], cols["c"]
+        out = []
+        any_pe_pb = False
+        for i in range(lo, hi):
+            pe = pe_arr[i]
+            pb = pb_arr[i]
+            if not (math.isnan(pe) and math.isnan(pb)):
+                any_pe_pb = True
+            cv = c_arr[i]
+            out.append((
+                dates[i],
+                None if math.isnan(cv) else cv,
+                None if math.isnan(pe) else pe,
+                None if math.isnan(pb) else pb,
+            ))
+        # ETF/指数预载行没有 PE/PB(全 nan);valuation_snapshot 原路径只查
+        # QuoteSnapshot,故此处回退 DB,避免把非个股 bar 误当估值样本。
+        if out and not any_pe_pb:
             return None
         return out
 
@@ -427,6 +752,7 @@ def _pack_bar_row(r) -> tuple:
         _f("amount"),
         _f("open_raw"), _f("high_raw"), _f("low_raw"), _f("close_raw"),
         _f("pe"), _f("pb"),
+        _f("close_hfq"), _f("open_hfq"),
     )
 
 
@@ -440,6 +766,28 @@ def _bar_from_tuple(t: tuple) -> dict:
         "is_st": bool(t[_BI_ST]),
         "trade_status": int(t[_BI_TS]) if t[_BI_TS] is not None else 1,
         "amount": t[_BI_AMT],
+        "close_hfq": t[_BI_C_HFQ], "open_hfq": t[_BI_O_HFQ],
+    }
+
+
+def _bar_from_cols(cols: dict, di: int) -> dict:
+    """列式当日切片 → bar dict(nan→None);字段名/语义与 _bar_from_tuple 完全一致。
+
+    供列式预载路径的 _get_day_market 用;出口已把 nan 还原 None,下游的
+    ``a or b`` coalesce 与 ``is not None`` 判断无需改动。
+    """
+    def _f(k):
+        v = cols[k][di]
+        return None if math.isnan(v) else v
+    return {
+        "open": _f("o"), "high": _f("h"), "low": _f("l"), "close": _f("c"),
+        "open_raw": _f("o_raw"), "high_raw": _f("h_raw"),
+        "low_raw": _f("l_raw"), "close_raw": _f("c_raw"),
+        "pct_chg": _f("pct"),
+        "is_st": bool(cols["st"][di]),         # st 预载填 0.0/1.0,永不为 nan
+        "trade_status": int(cols["ts"][di]),   # ts 预载填 1.0,永不为 nan
+        "amount": _f("amt"),
+        "close_hfq": _f("c_hfq"), "open_hfq": _f("o_hfq"),
     }
 
 
@@ -458,11 +806,15 @@ def _get_day_bars(codes: list[str], as_of: date) -> dict[str, dict]:
     return bars
 
 
-def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
-    """区间 raw SQL 预载行情 → {quote_date: {code: bar_tuple}}(紧凑 D)。
+def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCtx | None:
+    """区间 raw SQL 列式预载行情 → _SeriesCtx(series, dates, date_idx, valid)。
 
-    不经 ORM 全量物化(95 万行 ORM 峰值过高);只 SELECT 必要列 + fetchmany。
-    按 quote_model_for 分表(个股/ETF/指数)。
+    全局交易日历 dates(升序)+ date_idx(date→int);每个 code 的 14 字段各一个
+    array('d')(按 dates 对齐,缺失=nan)+ valid array('b')(1=当日有 SQL 行)。
+    不经 ORM 全量物化(峰值过高);只 SELECT 必要列 + fetchmany,按 quote_model_for 分表。
+    两遍扫描:第一遍只收集全局 date + code 集合(不存行,省下 ~1.5G 临时 rows 峰值),
+    建日历后预分配 array;第二遍重查填值。列式 + 整数索引替代旧 {date:{code:tuple}}
+    双层 dict,内存从 ~3.4G 降到 ~0.9G(19 年窗口)。
     """
     from sqlalchemy import text
 
@@ -470,7 +822,7 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
     from stockfu.services.factors import quote_model_for
 
     if not codes:
-        return {}
+        return None
     # 表名: SQLModel/SQLAlchemy __tablename__
     groups: dict[str, list[str]] = {}
     for c in codes:
@@ -485,18 +837,20 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
             "asset_code, quote_date, "
             "COALESCE(open_qfq, open), COALESCE(high_qfq, high), "
             "COALESCE(low_qfq, low), COALESCE(close_qfq, close), pct_chg, "
-            "is_st, trade_status, amount, open_raw, high_raw, low_raw, close_raw, pe, pb"
+            "is_st, trade_status, amount, open_raw, high_raw, low_raw, close_raw, pe, pb, "
+            "close_hfq, open_hfq"
         ),
         "etf_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
-            "NULL as is_st, 1 as trade_status, amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb"
+            "NULL as is_st, 1 as trade_status, amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb, "
+            "NULL as close_hfq, NULL as open_hfq"
         ),
         "index_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
-            "NULL as is_st, 1 as trade_status, NULL as amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb"
+            "NULL as is_st, 1 as trade_status, NULL as amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb, "
+            "NULL as close_hfq, NULL as open_hfq"
         ),
     }
-    cache: dict = {}
     start_s = start.isoformat()
     end_s = end.isoformat()
 
@@ -504,11 +858,11 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
         for i in range(0, len(xs), n):
             yield xs[i:i + n]
 
-    with db_engine.connect() as conn:
+    def _run_query(conn):
+        """生成器:依次 yield 各分表分块的 result(两遍扫描共用 SQL 文本)。"""
         for table, cs in groups.items():
             cols = col_sets.get(table)
             if not cols:
-                # 未知表回退 ORM 单表(少见)
                 continue
             for chunk in _chunks(cs, 400):
                 ph = ", ".join(f":c{i}" for i in range(len(chunk)))
@@ -520,70 +874,120 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> dict:
                     f"WHERE quote_date >= :start AND quote_date <= :end "
                     f"AND asset_code IN ({ph})"
                 )
-                result = conn.execute(sql, params)
-                while True:
-                    rows = result.fetchmany(5000)
-                    if not rows:
-                        break
-                    for row in rows:
-                        (asset_code, qdate, o, h, l, c, pct,
-                         is_st, trade_status, amount, o_raw, h_raw, l_raw, close_raw, pe, pb) = row
-                        if isinstance(qdate, str):
-                            qdate = date.fromisoformat(qdate[:10])
-                        packed = (
-                            float(o) if o is not None else None,
-                            float(h) if h is not None else None,
-                            float(l) if l is not None else None,
-                            float(c) if c is not None else None,
-                            float(pct) if pct is not None else None,
-                            1 if is_st else 0,
-                            int(trade_status) if trade_status is not None else 1,
-                            float(amount) if amount is not None else None,
-                            float(o_raw) if o_raw is not None else None,
-                            float(h_raw) if h_raw is not None else None,
-                            float(l_raw) if l_raw is not None else None,
-                            float(close_raw) if close_raw is not None else None,
-                            float(pe) if pe is not None else None,
-                            float(pb) if pb is not None else None,
-                        )
-                        bucket = cache.get(qdate)
-                        if bucket is None:
-                            bucket = {}
-                            cache[qdate] = bucket
-                        bucket[asset_code] = packed
-    return cache
+                yield conn.execute(sql, params)
+
+    NAN = float("nan")
+    # 第一遍:收集全局交易日 + code 集合(不存行,避免 770 万行临时 list 的内存峰值)
+    all_dates: set = set()
+    codes_seen: set = set()
+    with db_engine.connect() as conn:
+        for result in _run_query(conn):
+            while True:
+                batch = result.fetchmany(5000)
+                if not batch:
+                    break
+                for row in batch:
+                    asset_code, qdate = row[0], row[1]
+                    if isinstance(qdate, str):
+                        qdate = date.fromisoformat(qdate[:10])
+                    all_dates.add(qdate)
+                    codes_seen.add(asset_code)
+    if not all_dates:
+        return None
+
+    g_dates = sorted(all_dates)
+    g_date_idx = {d: i for i, d in enumerate(g_dates)}
+    n = len(g_dates)
+    # 预分配列式 array:per code 14 字段 array('d')(全 nan)+ valid array('b')(全 0)
+    series: dict[str, dict[str, array]] = {
+        code: {k: array("d", [NAN] * n) for k in _COL_KEYS}
+        for code in codes_seen
+    }
+    valid: dict[str, array] = {code: array("b", [0] * n) for code in codes_seen}
+    # 第二遍:重查填值
+    with db_engine.connect() as conn:
+        for result in _run_query(conn):
+            while True:
+                batch = result.fetchmany(5000)
+                if not batch:
+                    break
+                for row in batch:
+                    (asset_code, qdate, o, h, l, c, pct,
+                     is_st, trade_status, amount, o_raw, h_raw, l_raw, close_raw, pe, pb,
+                     close_hfq, open_hfq) = row
+                    if isinstance(qdate, str):
+                        qdate = date.fromisoformat(qdate[:10])
+                    di = g_date_idx[qdate]
+                    colsd = series[asset_code]
+                    colsd["o"][di] = float(o) if o is not None else NAN
+                    colsd["h"][di] = float(h) if h is not None else NAN
+                    colsd["l"][di] = float(l) if l is not None else NAN
+                    colsd["c"][di] = float(c) if c is not None else NAN
+                    colsd["pct"][di] = float(pct) if pct is not None else NAN
+                    colsd["st"][di] = 1.0 if is_st else 0.0
+                    colsd["ts"][di] = float(int(trade_status) if trade_status is not None else 1)
+                    colsd["amt"][di] = float(amount) if amount is not None else NAN
+                    colsd["o_raw"][di] = float(o_raw) if o_raw is not None else NAN
+                    colsd["h_raw"][di] = float(h_raw) if h_raw is not None else NAN
+                    colsd["l_raw"][di] = float(l_raw) if l_raw is not None else NAN
+                    colsd["c_raw"][di] = float(close_raw) if close_raw is not None else NAN
+                    colsd["pe"][di] = float(pe) if pe is not None else NAN
+                    colsd["pb"][di] = float(pb) if pb is not None else NAN
+                    colsd["c_hfq"][di] = float(close_hfq) if close_hfq is not None else NAN
+                    colsd["o_hfq"][di] = float(open_hfq) if open_hfq is not None else NAN
+                    valid[asset_code][di] = 1
+    return _SeriesCtx(series=series, dates=g_dates, date_idx=g_date_idx, valid=valid)
 
 
-def _day_market_from_pack(
-    pack: dict[str, tuple] | None,
-) -> tuple[dict[str, float], dict[str, float], dict[str, dict]]:
-    """紧凑日包 → (close, open, bars dict)。bars 仍为字段 dict 以兼容 check_fill/宇宙。"""
-    if not pack:
-        return {}, {}, {}
-    close_prices: dict[str, float] = {}
-    open_prices: dict[str, float] = {}
-    day_bars: dict[str, dict] = {}
-    for code, t in pack.items():
-        bar = _bar_from_tuple(t)
-        day_bars[code] = bar
-        # 账户收益走 raw，分红在除息日另行入账；旧行没有 raw 时兼容回落 qfq。
-        if (bar["close_raw"] or bar["close"]) is not None:
-            close_prices[code] = bar["close_raw"] or bar["close"]
-        if (bar["open_raw"] or bar["open"]) is not None:
-            open_prices[code] = bar["open_raw"] or bar["open"]
-    return close_prices, open_prices, day_bars
+def _pick_px(bar: dict, hfq_key: str, raw_key: str, qfq_key: str,
+             basis: str) -> float | None:
+    """按估值口径选价:hfq→后复权(回落 raw→qfq);raw→raw(回落 qfq)。
+
+    显式 ``is not None`` 判断(_bar_from_cols 出口已 nan→None;不用 ``or`` 以免
+    对 0.0/极端值误判)。day_bars 内的 raw OHLC 不经此函数,check_fill 永远吃 raw。
+    """
+    if basis == "hfq":
+        for k in (hfq_key, raw_key, qfq_key):
+            v = bar.get(k)
+            if v is not None:
+                return v
+        return None
+    v = bar.get(raw_key)
+    return v if v is not None else bar.get(qfq_key)
 
 
 def _get_day_market(codes: list[str], as_of: date,
-                    market_cache: dict | None = None,
+                    sctx: _SeriesCtx | None = None,
+                    valuation_basis: str = "raw",
                     ) -> tuple[dict[str, float], dict[str, float], dict[str, dict]]:
     """单日行情 → (close_prices, open_prices, day_bars)。
 
-    market_cache 命中则零 SQL;否则按表分组一次 SELECT(兼容未预载/单测)。
-    字段语义与旧路径一致 → 信号/成交不变。
+    sctx(列式预载)命中则零 SQL;否则按表分组一次 SELECT(兼容未预载/单测)。
+    close_prices/open_prices 按估值口径选价(hfq=后复权总收益,raw=不复权);
+    day_bars 内 raw/qfq/hfq 齐全 → 信号用 qfq、check_fill 用 raw、估值用 hfq/raw。
     """
-    if market_cache is not None:
-        return _day_market_from_pack(market_cache.get(as_of))
+    if sctx is not None and sctx.series:
+        di = sctx.date_idx.get(as_of)
+        if di is None:
+            return {}, {}, {}
+        series, _dates, _date_idx, valid = sctx
+        close_prices: dict[str, float] = {}
+        open_prices: dict[str, float] = {}
+        day_bars: dict[str, dict] = {}
+        for code in codes:
+            vb = valid.get(code)
+            if vb is None or not vb[di]:
+                continue                  # 当日无 SQL 行(停牌/未上市/退市)→ 跳过
+            bar = _bar_from_cols(series[code], di)
+            day_bars[code] = bar
+            cv = _pick_px(bar, "close_hfq", "close_raw", "close", valuation_basis)
+            if cv is not None:
+                close_prices[code] = cv
+            ov = _pick_px(bar, "open_hfq", "open_raw", "open", valuation_basis)
+            if ov is not None:
+                open_prices[code] = ov
+        return close_prices, open_prices, day_bars
+    # DB 回落路径(未预载/单测):沿用 ORM + _bar_from_row,语义与列式路径一致。
     from stockfu.services.factors import quote_model_for
     if not codes:
         return {}, {}, {}
@@ -603,10 +1007,12 @@ def _get_day_market(codes: list[str], as_of: date,
             for r in rows:
                 bar = _bar_from_row(r)
                 day_bars[r.asset_code] = bar
-                if (bar["close_raw"] or bar["close"]) is not None:
-                    close_prices[r.asset_code] = bar["close_raw"] or bar["close"]
-                if (bar["open_raw"] or bar["open"]) is not None:
-                    open_prices[r.asset_code] = bar["open_raw"] or bar["open"]
+                cv = _pick_px(bar, "close_hfq", "close_raw", "close", valuation_basis)
+                if cv is not None:
+                    close_prices[r.asset_code] = cv
+                ov = _pick_px(bar, "open_hfq", "open_raw", "open", valuation_basis)
+                if ov is not None:
+                    open_prices[r.asset_code] = ov
     return close_prices, open_prices, day_bars
 
 
@@ -796,7 +1202,9 @@ def run_backtest(codes: list[str], start: date, end: date,
                  portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE,
                  universe_rules=None,
                  execution_rules=None,
-                 strict: bool = True) -> dict:
+                 strict: bool = True,
+                 valuation_basis: str = "raw",
+                 rights_policy: str = "reject") -> dict:
     """回测主循环:T+1开盘执行 + 三层架构(信号→仓位→执行)。
 
     每个交易日 as_of 内:
@@ -823,6 +1231,16 @@ def run_backtest(codes: list[str], start: date, end: date,
       debounce: StrategyDebounce(CompiledStrategy.debounce_params);传入时优先于各裸 kwargs,
                 类型安全取代字符串 dict 耦合。scheduler 传它,旧调用方仍可用裸 kwargs(双入口)。
     """
+    if valuation_basis not in ("hfq", "raw"):
+        raise ValueError(f"valuation_basis 必须是 hfq 或 raw,Got {valuation_basis!r}")
+    if strict and valuation_basis == "hfq":
+        raise ValueError(
+            "strict 回测禁止 valuation_basis=hfq；正式账户只能以 raw 成交和盯市，"
+            "连续信号须由 raw+accepted 公司行为构造"
+        )
+    if rights_policy not in {"reject", "ignore", "exercise_if_cash_available"}:
+        raise ValueError(f"未知 rights_policy: {rights_policy!r}")
+    credit_dividends = valuation_basis == "raw"   # hfq 已含分红,再入账=重复计息
     if debounce is not None:   # dataclass 覆盖各裸 kwargs(双入口向后兼容)
         buy_cool_down_days = debounce.buy_cool_down_days
         max_target_step = debounce.max_target_step
@@ -888,16 +1306,41 @@ def run_backtest(codes: list[str], start: date, end: date,
     peak_equity: float = float(initial_cash)  # 组合回撤刹车:追踪回测内权益峰值
     cash_constraint_hits: int = 0             # 当日买单触发现金缩放的天数(可观测,对标 backtrader Margin)
 
-    # D: 区间行情紧凑预载(一次 SQL → {date: {code: tuple}});日循环零扫库。
+    # D: 区间行情列式预载(一次 SQL → _SeriesCtx:全局日历 + per-code array);日循环零扫库。
     # 预载起点提前 _PRELOAD_LOOKBACK_DAYS,覆盖算子最大回看(low_volatility ~1160 历日),
     # 使 _backtest_series_ctx 能从内存零查库喂给 quote_series(与 DB 逐值一致)。
     _pre_start = start - timedelta(days=_PRELOAD_LOOKBACK_DAYS)
-    market_cache = _preload_market_range(list(codes), _pre_start, end) if days else {}
-    dividend_index = (
-        _preload_dividend_events(list(codes), _pre_start, end)
-        if market_cache else {}
+    sctx = _preload_market_range(list(codes), _pre_start, end) if days else None
+    # strict 只读取已仲裁的正式账本；探索模式保留旧表兼容路径，但不得被标记为
+    # validated。正式事件缺支付/上市日或仍 needs_review 时，预载阶段立即失败。
+    accepted_actions_by_ex: dict[date, list[object]] = {}
+    if strict:
+        accepted_actions_by_ex, accepted_action_index = _preload_accepted_corporate_actions(
+            list(codes), start, end, rights_policy=rights_policy)
+        dividend_index = {code: [] for code in codes}
+        for event in accepted_action_index.values():
+            dividend_index.setdefault(event.asset_code, []).append(
+                (event.ex_date, event.per_share_cash))
+    else:
+        dividend_index = (_preload_dividend_events(list(codes), _pre_start, end)
+                          if sctx else {})
+    cash_dividends = (
+        _preload_cash_dividends(list(codes), start, end)
+        if sctx and credit_dividends and not strict else {}
     )
-    cash_dividends = _preload_cash_dividends(list(codes), start, end) if market_cache else {}
+    stock_dividends = (_preload_stock_dividends(list(codes), start, end)
+                       if sctx and not strict else {})
+    pending_cash_settlements: dict[date, list[tuple[str, float]]] = defaultdict(list)
+    pending_stock_settlements: dict[date, list[tuple[str, int]]] = defaultdict(list)
+    pending_rights_settlements: dict[date, list[tuple[str, int, float]]] = defaultdict(list)
+    if valuation_basis == "hfq" and sctx:
+        cov, hit, tot = _hfq_coverage(sctx, start, end)
+        if tot and cov < HFQ_COVERAGE_MIN:
+            raise RuntimeError(
+                f"hfq 口径门禁未过:close_hfq 覆盖率 {cov*100:.2f}% ({hit}/{tot}) < "
+                f"{HFQ_COVERAGE_MIN*100:.1f}%。请先 backfill 三复权(close_hfq)或改用 "
+                f"--valuation-basis raw 兜底(注意 raw 不含送转调整)。"
+            )
 
     # 整段回测复用一个线程池(旧:每天 with 创建/销毁;冷 miss 并行在 prefetch 内,
     # analyze 热路径有 prefill 时串行,池仅兜底无 prefill 路径)。
@@ -910,7 +1353,7 @@ def run_backtest(codes: list[str], start: date, end: date,
     _prog_i = 0
     _prog_last = -1
     _prog_t0 = time.time()
-    with _backtest_series_ctx(market_cache, dividend_index), ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+    with _backtest_series_ctx(sctx, dividend_index), ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
       for as_of in days:
         _prog_i += 1
         if _prog_on and _prog_i % _prog_step == 0:
@@ -921,15 +1364,92 @@ def run_backtest(codes: list[str], start: date, end: date,
                 _prog_t0 = _now
                 _prog_last = _pct
         close_prices, open_prices_day, day_bars = _get_day_market(
-            list(codes), as_of, market_cache=market_cache)
+            list(codes), as_of, sctx=sctx, valuation_basis=valuation_basis)
         if not close_prices:
             continue
-        # 除息现金流属于隔夜持仓权益，必须先于当日开盘卖单入账。
-        for code, cash, record_date in cash_dividends.get(as_of, []):
-            rec = acct.credit_dividend(code, cash, as_of, record_date)
-            if rec:
-                rec.update(date=as_of.isoformat(), status="credited")
-                trades.append(rec)
+        # 支付/上市日先解锁此前已确认的应收，随后才处理当日除权。严格路径绝不
+        # 把 payDate / stockMktDate 缺失回退成 ex_date。
+        if strict:
+            for code, gross in pending_cash_settlements.pop(as_of, []):
+                rec = acct.settle_cash_dividend(code, gross, as_of)
+                if rec:
+                    rec.update(date=as_of.isoformat(), status="settled")
+                    trades.append(rec)
+            for code, shares in pending_stock_settlements.pop(as_of, []):
+                rec = acct.settle_stock_dividend(code, shares, as_of)
+                if rec:
+                    rec.update(date=as_of.isoformat(), status="settled")
+                    trades.append(rec)
+            for code, shares, cost in pending_rights_settlements.pop(as_of, []):
+                rec = acct.settle_rights(code, shares, cost, as_of)
+                if rec:
+                    rec.update(date=as_of.isoformat(), status="settled")
+                    trades.append(rec)
+            for event in accepted_actions_by_ex.get(as_of, []):
+                if event.action_type == "delisting_warning":
+                    # 警告日禁止扩大风险敞口；仅取消待执行的买入/加仓，卖出意图保留。
+                    target = pending_target.get(event.asset_code)
+                    current = acct.weight(event.asset_code, close_prices)
+                    if target is not None and target > current + 1e-12:
+                        pending_target.pop(event.asset_code, None)
+                        pending_signal.pop(event.asset_code, None)
+                        trades.append({"kind": "order_cancelled_delisting_warning",
+                                       "code": event.asset_code, "date": as_of.isoformat(),
+                                       "status": "cancelled", "action_id": event.action_id})
+                    continue
+                if event.action_type == "delisting":
+                    # 终止结算优先于正常开盘订单；所有遗留普通订单无条件失效。
+                    pending_target.pop(event.asset_code, None)
+                    pending_signal.pop(event.asset_code, None)
+                    rec = acct.settle_delisting(event.asset_code, event.terminal_price, as_of)
+                    if rec:
+                        rec.update(date=as_of.isoformat(), status="settled",
+                                   action_id=event.action_id)
+                        trades.append(rec)
+                    continue
+                if event.action_type == "rights":
+                    rec = acct.exercise_rights(
+                        event.asset_code, event.rights_ratio, event.rights_price,
+                        rights_policy, as_of)
+                    if rec:
+                        rec.update(date=as_of.isoformat(), status="receivable",
+                                   action_id=event.action_id)
+                        trades.append(rec)
+                        if rec["kind"] == "rights_exercised" and rec["shares"]:
+                            pending_rights_settlements[event.stock_mkt_date].append(
+                                (event.asset_code, rec["shares"], rec["cost"]))
+                    continue
+                if event.per_share_cash > 0:
+                    rec = acct.accrue_cash_dividend(
+                        event.asset_code, event.per_share_cash, event.record_date)
+                    if rec:
+                        rec.update(date=as_of.isoformat(), status="receivable",
+                                   action_id=event.action_id)
+                        trades.append(rec)
+                        pending_cash_settlements[event.pay_date].append(
+                            (event.asset_code, rec["gross"]))
+                if event.per_share_stock > 0:
+                    rec = acct.accrue_stock_dividend(
+                        event.asset_code, event.per_share_stock, as_of)
+                    if rec:
+                        rec.update(date=as_of.isoformat(), status="receivable",
+                                   action_id=event.action_id)
+                        trades.append(rec)
+                        pending_stock_settlements[event.stock_mkt_date].append(
+                            (event.asset_code, rec["shares"]))
+        else:
+            # 探索兼容路径：遗留表没有完整结算日期，保留旧语义但不能用于正式结果。
+            if credit_dividends:
+                for code, cash, record_date in cash_dividends.get(as_of, []):
+                    rec = acct.credit_dividend(code, cash, as_of, record_date)
+                    if rec:
+                        rec.update(date=as_of.isoformat(), status="credited")
+                        trades.append(rec)
+            for code, stock in stock_dividends.get(as_of, []):
+                rec = acct.adjust_for_stock_dividend(code, stock, as_of)
+                if rec:
+                    rec.update(date=as_of.isoformat(), status="credited")
+                    trades.append(rec)
         last_close.update(close_prices)   # 停牌日 close 缺失时,沿用上一交易日价估值(不记 0)
 
         # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌/涨跌停顺延或拒绝)----
@@ -1228,13 +1748,14 @@ def run_backtest(codes: list[str], start: date, end: date,
         eq_total = acct.equity(last_close)
         day_pos = []
         for c, p in acct.positions.items():
-            if p.shares <= 0:
+            if p.shares <= 0 and p.receivable_shares <= 0:
                 continue
             px = close_prices.get(c) or last_close.get(c, 0.0)
-            mv = p.shares * px
+            mv = (p.shares + p.receivable_shares) * px
             day_pos.append({
                 "code": c,
                 "shares": p.shares,
+                "receivable_shares": p.receivable_shares,
                 "avg_cost": round(p.avg_cost, 4),
                 "close": round(px, 4),
                 "mkt_val": round(mv, 2),
@@ -1245,6 +1766,7 @@ def run_backtest(codes: list[str], start: date, end: date,
         holdings_curve.append({
             "date": as_of.isoformat(),
             "cash": round(acct.cash, 2),
+            "cash_receivable": round(acct.cash_receivable, 2),
             "equity": round(eq_total, 2),
             "positions": day_pos,
         })
@@ -1276,6 +1798,7 @@ def run_backtest(codes: list[str], start: date, end: date,
     metrics["cash_dividend_gross"] = round(acct.dividend_received, 2)
     metrics["dividend_tax_paid"] = round(acct.dividend_tax_paid, 2)
     metrics["cash_dividend_net"] = round(acct.dividend_received - acct.dividend_tax_paid, 2)
+    metrics["cash_dividend_receivable"] = round(acct.cash_receivable, 2)
     # 组合层指标(从 holdings_curve 算,对标 zipline ledger gross leverage + 单仓集中度):
     _gross = [sum(p["weight"] for p in d.get("positions", [])) for d in holdings_curve]
     metrics["avg_gross_leverage"] = round(sum(_gross) / len(_gross) * 100, 1) if _gross else None
@@ -1326,6 +1849,8 @@ def run_backtest(codes: list[str], start: date, end: date,
         "strict": strict,
         "universe": uni_ctx.summary(universe_sizes),
         "execution_rules": execution_rules.to_dict(),
+        "valuation_basis": valuation_basis,
+        "rights_policy": rights_policy,
     }
 
     return {
@@ -1340,4 +1865,5 @@ def run_backtest(codes: list[str], start: date, end: date,
         "initial_cash": initial_cash,
         "days": len(days),
         "universe": uni_ctx.summary(universe_sizes),
+        "valuation_basis": valuation_basis,
     }
