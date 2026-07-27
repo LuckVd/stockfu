@@ -37,7 +37,7 @@ ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 - **baostock** 是裸 TCP(不认 HTTP_PROXY);三复权回补默认免费代理池(`--proxy-mode free`，HTTP CONNECT/SOCKS，需 `PySocks`)，失败剔除换 IP;**查询超时也强制换 IP**(`BAOSTOCK_FETCH_TIMEOUT` 默认 60s，防 login 通过却卡在内部接收循环的坏代理);池自愈(耗尽重拉 `BAOSTOCK_REBOOTSTRAP_*`、死IP TTL `BAOSTOCK_DEAD_TTL`、常驻刷新 `BAOSTOCK_MAX_AGE`/`BAOSTOCK_MIN_ALIVE`);**代理池+rebootstrap 耗尽→直连兜底**(`BAOSTOCK_DIRECT_FALLBACK` 默认 on,IP 解封可用;`_MAX`/`_COOLDOWN` 限流,长通道 `maybe_refresh` 池回血后切回);源经 clash 拉、可外置 `data/proxy_sources.json`(`BAOSTOCK_SOURCE_PROXY`)
 - **数据**在 `data/stockfu.db`(WAL);回测产物 `data/backtest/`(gitignore)
 - **回测防未来函数**:取数 `<= as_of`
-- **正式回测价格口径**(`quote_snapshot`)：raw成交/盯市 + 公司行为账本；qfq仅限经白名单验证的尺度不变信号；hfq只作数据对账，不得用于正式账户。完整迁移见 `docs/BACKTEST.md`。
+- **回测价格口径(研究模式,2026-07-27 反转)**(`docs/BACKTEST.md` §0):收益/净值走 **qfq**(涨跌幅复权法,已含分红再投,接受基准漂移);**绝对值逻辑**(股息率分母/PE/PB)坚持 **raw** + 税前分红;红利税用 baostock `dividCashPsAfterTax` 近似,不自建持有期 FIFO 账本;直接用 `dividend_event` 表,**不自建多源仲裁账本**(旧 `corporate_action_source_record`/`corporate_action_event` 搁置不删,仅作诊断对照);hfq 只作数据对账。引擎 `valuation_basis` 当前仅 `raw`/`hfq` 二态,qfq 主线口径落地见 §0.4 步骤4。
 - **量化四层**:算子(math 连续 score)+策略 yaml+rebalancer+engine;算子缓存 fingerprint 含源码 hash
 - **行情拆表**:QuoteSnapshot / EtfQuoteDaily / IndexQuoteDaily;`quote_model_for` 路由
 - **入库统一收口 + 日期驱动**(`stockfu/services/quote_writer.py`):三张行情表各 1 个 canonical writer(`upsert_quote_snapshot`/`upsert_etf_daily`/`upsert_index_daily`),**严禁别处 `s.add(QuoteSnapshot...)`**;writer 硬保证 `quote_date <= cap_date`(超 cap 的源 bar 一律丢弃)。`--fetch` **必带 `--date YYYY-MM-DD`**,非法(未来/当日未收盘[北京16:00]/非交易日)→ `validate_ingest_date` 报错退出(凌晨不再误判为未开盘的今天);`--schedule` 自动取已收盘最近交易日。stamp 表(资金流/三层情绪/板块资金流)与读窗(composite/fundflow series)统一 `as_of=target_date`

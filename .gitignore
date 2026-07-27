@@ -23,3 +23,5 @@ data/adj_audit_*.json
 data/*.pid
 # 免费代理池外部源（用户私有/付费镜像，勿入库）
 data/proxy_sources.json
+# baostock 官方 API 文档副本（第三方,仅作本地参考,勿入库）
+docs/baostock-api/
