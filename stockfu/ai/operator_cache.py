@@ -16,11 +16,33 @@ import hashlib
 import json
 from datetime import datetime
 
-from sqlmodel import select
+from contextlib import contextmanager
+
+from sqlalchemy import event, text
+from sqlmodel import Session, create_engine, select
 
 from stockfu.ai.operators.base import OpResult
-from stockfu.db import session_scope
+from stockfu.config import settings
 from stockfu.models import OperatorResult
+
+cache_engine = create_engine(settings.operator_cache_db_url, echo=False,
+                             connect_args={"check_same_thread": False})
+
+
+@event.listens_for(cache_engine, "connect")
+def _cache_pragmas(conn, _record):
+    cur = conn.cursor(); cur.execute("PRAGMA busy_timeout=5000"); cur.execute("PRAGMA journal_mode=WAL"); cur.close()
+
+
+def _ensure_cache_table() -> None:
+    OperatorResult.__table__.create(cache_engine, checkfirst=True)
+
+
+@contextmanager
+def cache_session_scope():
+    _ensure_cache_table()
+    with Session(cache_engine) as s:
+        yield s
 
 
 def compute_fingerprint(*, version: int = 1, params: dict | None = None,
@@ -74,7 +96,7 @@ def get_operator_result(code: str, as_of, operator_id: str,
     """命中缓存 → 重建 OpResult;否则 None。weight 由 runner 汇总时按策略 YAML 赋,不入库。
 
     行存在即命中(核心数据在独立列;math 行 detail=NULL 也算命中)。"""
-    with session_scope() as s:
+    with cache_session_scope() as s:
         row = s.exec(select(OperatorResult).where(
             OperatorResult.asset_code == code,
             OperatorResult.as_of == as_of,
@@ -107,7 +129,7 @@ def get_operator_results_batch(
     fps = [fp for _, fp in op_fps]
     valid_pairs = set(op_fps)
     out: dict[tuple[str, str], OpResult] = {}
-    with session_scope() as s:
+    with cache_session_scope() as s:
         rows = s.exec(select(OperatorResult).where(
             OperatorResult.as_of == as_of,
             OperatorResult.asset_code.in_(codes),
@@ -162,7 +184,7 @@ def load_operator_results_range(
 
     from sqlalchemy import text
 
-    from stockfu.db import engine as db_engine
+    _ensure_cache_table()
 
     codes = list(codes or [])
     op_fps = list(op_fps or [])
@@ -188,7 +210,7 @@ def load_operator_results_range(
     base_params["start"] = start_s
     base_params["end"] = end_s
 
-    with db_engine.connect() as conn:
+    with cache_engine.connect() as conn:
         for code_chunk in _chunks(codes, 400):
             c_ph = ", ".join(f":c{i}" for i in range(len(code_chunk)))
             params = dict(base_params)
@@ -276,7 +298,7 @@ def save_operator_result(code: str, as_of, operator_id: str, fingerprint: str,
     """
     if _is_failure(result):
         return False
-    with session_scope() as s:
+    with cache_session_scope() as s:
         row = s.exec(select(OperatorResult).where(
             OperatorResult.asset_code == code,
             OperatorResult.as_of == as_of,
@@ -336,7 +358,7 @@ def save_operator_results_batch(as_of, entries: list) -> int:
     codes = list({e[0] for e in valid})
     op_ids = list({e[1] for e in valid})
     fps = list({e[2] for e in valid})
-    with session_scope() as s:
+    with cache_session_scope() as s:
         existing = {
             (r.asset_code, r.operator_id, r.fingerprint): r
             for r in s.exec(select(OperatorResult).where(
@@ -367,3 +389,13 @@ def save_operator_results_batch(as_of, entries: list) -> int:
                 existing[key] = row  # 防 entries 内同 key 重复 add
         s.commit()
     return len(valid)
+
+
+def clear_operator_cache(operator_id: str | None = None) -> int:
+    _ensure_cache_table()
+    with cache_engine.begin() as conn:
+        sql = "DELETE FROM operator_result"
+        params = {}
+        if operator_id:
+            sql += " WHERE operator_id = :operator_id"; params["operator_id"] = operator_id
+        return int(conn.execute(text(sql), params).rowcount or 0)

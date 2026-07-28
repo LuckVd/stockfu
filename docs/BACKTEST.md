@@ -66,7 +66,7 @@
 4. **简化回测引擎**：删除 strict Raw 账户路径与多源仲裁账本，主线切到 qfq Adjustment + 红利税近似；
 5. **冻结一次 baostock 快照**作为回测基准，缓解复权基准漂移。
 
-> **实施状态（2026-07-28）**：步骤 1/3/4 已完成；步骤 2 已遍历 2,023 只历史宇宙证券，分红 checkpoint 为 `success=2023`、`failed=0`。BaoStock 同日多笔分红的 13 个已审计冲突由显式裁决表按 `(证券, 除权日)` 合并，其中 `300315/2012-10-22` 合并为 0.15、`300760/2026-05-28` 合并为 1.56、`600989/2021-05-20` 合并为 0.58563；未知新冲突仍应拒绝静默写入。已执行 `--repair-known-dividend-conflicts` 与 `--backfill-dividend`，公司行为审计为 `duplicate_groups=[]`、`invalid_rows=[]`、`zero_event_years=[]`，`ready_for_formal_backtest=true`。步骤 5 冻结快照未做（defer）。
+> **实施状态（2026-07-28）**：步骤 1/3/4 已完成；步骤 2 已遍历 2,023 只历史宇宙证券，分红 checkpoint 为 `success=2023`、`failed=0`。BaoStock 同日多笔分红的 13 个已审计冲突由显式裁决表按 `(证券, 除权日)` 合并，其中 `300315/2012-10-22` 合并为 0.15、`300760/2026-05-28` 合并为 1.56、`600989/2021-05-20` 合并为 0.58563；未知新冲突仍应拒绝静默写入。已执行 `--repair-known-dividend-conflicts` 与 `--backfill-dividend`，公司行为审计为 `duplicate_groups=[]`、`invalid_rows=[]`、`zero_event_years=[]`，`ready_for_formal_backtest=true`。经新浪不复权日线核验，`600472` 的 2007-12-18～20 三日真实成交及 12-21～26 停牌价已修复。研究主库 `data/stockfu.db` 是唯一数据源；`operator_result` 为可再生算子缓存，已物理迁至独立 `data/operator_cache.db`，回测不得写入行情、分红和历史宇宙表。
 > 引擎 `valuation_basis` 已是 `raw`/`qfq`/`hfq` 三态、默认 `qfq`；strict 账户/账本代码（`engine` strict 分支、`VirtualAccount` 应收/行权方法、`corporate_actions.py`）及对应 CLI（`--strict`/`--stage-corporate-*`/`--materialize-corporate-actions`）已全部移除，交易约束（涨跌停/ST/list_date）解耦为 `universe_rules`/`execution_rules` 默认严格。
 > 遗留：raw 诊断口径的 `credit_dividend` 仍按持有期 FIFO 扣红利税（§0.3 规划改用 afterTax 近似，未替换；qfq 主线 `credit_dividends=False` 不受影响）。
 
