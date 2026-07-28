@@ -294,7 +294,7 @@ def fetch_baostock_index_snapshot(index_code: str, as_of: date) -> set[str]:
     这是可复现的历史接口，但不是指数公司正式档案。因此写入时会明确标记为
     ``unverified``；正式中证样本文件到位后可进行逐期交叉核验，而不会混淆来源。
     """
-    from stockfu.data.baostock_proxy import ensure_baostock_login
+    from stockfu.data.baostock_proxy import ensure_baostock_login, run_baostock_query
     import baostock as bs
 
     code = normalize_code(index_code)
@@ -313,22 +313,22 @@ def fetch_baostock_index_snapshot(index_code: str, as_of: date) -> set[str]:
     last_error = ""
     for attempt in range(1, 4):
         try:
-            result = getattr(bs, method_name)(date=as_of.isoformat())
-            error_code = str(getattr(result, "error_code", "1"))
-            if error_code != "0":
-                last_error = f"{error_code} {getattr(result, 'error_msg', '')}".strip()
-            else:
-                fields = {name: i for i, name in enumerate(result.fields)}
-                code_pos = fields.get("code")
-                if code_pos is None:
-                    raise RuntimeError(f"baostock 字段异常: {result.fields}")
-                members: set[str] = set()
-                while result.next():
-                    raw = result.get_row_data()[code_pos]
-                    members.add(normalize_code(raw.rsplit(".", 1)[-1]))
-                if len(members) == expected_size:
-                    return members
-                last_error = f"返回成员数 {len(members)}，期望 {expected_size}"
+            result = run_baostock_query(
+                lambda: getattr(bs, method_name)(date=as_of.isoformat()),
+                label=f"index-members:{code}:{as_of.isoformat()}",
+                ensure_login=False,
+            )
+            fields = {name: i for i, name in enumerate(result.fields)}
+            code_pos = fields.get("code")
+            if code_pos is None:
+                raise RuntimeError(f"baostock 字段异常: {result.fields}")
+            members: set[str] = set()
+            while result.next():
+                raw = result.get_row_data()[code_pos]
+                members.add(normalize_code(raw.rsplit(".", 1)[-1]))
+            if len(members) == expected_size:
+                return members
+            last_error = f"返回成员数 {len(members)}，期望 {expected_size}"
         except Exception as exc:  # noqa: BLE001
             last_error = f"{type(exc).__name__}: {exc}"
         if attempt < 3:
@@ -354,7 +354,8 @@ def fetch_baostock_zz500_snapshot(as_of: date) -> set[str]:
     return fetch_baostock_index_snapshot("000905", as_of)
 
 
-def backfill_baostock_index(index_code: str, *, start: date, end: date) -> dict:
+def backfill_baostock_index(index_code: str, *, start: date, end: date,
+                            refresh: bool = False) -> dict:
     """按交易日串行扫描 BaoStock 指数，仅在成员变化日落完整快照。"""
     from stockfu.models import IndexQuoteDaily
 
@@ -374,9 +375,20 @@ def backfill_baostock_index(index_code: str, *, start: date, end: date) -> dict:
     if not trade_dates:
         raise RuntimeError("缺少 sh000001 交易日历；请先运行 --backfill-benchmark")
     source_key, method_name, _ = _BAOSTOCK_INDEX_QUERIES[code]
-    out = {"index_code": code, "scanned": 0, "imported": 0, "unchanged": 0, "errors": []}
+    from stockfu.services.backfill_checkpoint import mark_item, pending_items
+    scope = f"v1:{code}:{start.isoformat()}:{end.isoformat()}"
+    date_keys = [as_of.isoformat() for as_of in trade_dates]
+    pending_keys, skipped = pending_items("index_constituent", scope, date_keys,
+                                          refresh=refresh)
+    pending_dates = {date.fromisoformat(key) for key in pending_keys}
+    out = {"index_code": code, "scanned": 0, "imported": 0, "unchanged": 0,
+           "skipped": skipped, "errors": []}
+    print(f"  [{code}] checkpoint 跳过={skipped};待补={len(pending_keys)};refresh={refresh}",
+          flush=True)
     known: set[str] | None = None
     for as_of in trade_dates:
+        if as_of not in pending_dates:
+            continue
         out["scanned"] += 1
         try:
             members = fetch_baostock_index_snapshot(code, as_of)
@@ -389,13 +401,16 @@ def backfill_baostock_index(index_code: str, *, start: date, end: date) -> dict:
                                 source_ref=f"baostock://{method_name}?date={as_of.isoformat()}")
                 out["imported"] += 1
             known = members
+            mark_item("index_constituent", scope, as_of.isoformat(), success=True)
         except Exception as exc:  # noqa: BLE001
             out["errors"].append({"date": as_of.isoformat(), "error": f"{type(exc).__name__}: {exc}"})
+            mark_item("index_constituent", scope, as_of.isoformat(), success=False,
+                      error=f"{type(exc).__name__}: {exc}")
         # BaoStock 明确不允许并发；串行扫描也保留请求间隔，避免被服务端限流。
         time.sleep(0.3)
         if out["scanned"] % 100 == 0:
             print(
-                f"  [{code}] scanned={out['scanned']}/{len(trade_dates)} "
+                f"  [{code}] scanned={out['scanned']}/{len(pending_keys)} "
                 f"imported={out['imported']} unchanged={out['unchanged']} "
                 f"errors={len(out['errors'])}",
                 flush=True,
@@ -409,13 +424,15 @@ def backfill_baostock_hs300(*, start: date, end: date) -> dict:
 
 
 def backfill_baostock_historical_indices(*, start: date, end: date,
-                                         index_codes: Iterable[str] | None = None) -> dict:
+                                         index_codes: Iterable[str] | None = None,
+                                         refresh: bool = False) -> dict:
     """按默认 300+500 依次回补；严格串行，避免 BaoStock 并发封禁。"""
     codes = normalize_index_codes(index_codes)
     unsupported = set(codes) - set(_BAOSTOCK_INDEX_QUERIES)
     if unsupported:
         raise ValueError(f"BaoStock 不支持: {sorted(unsupported)}")
-    return {code: backfill_baostock_index(code, start=start, end=end) for code in codes}
+    return {code: backfill_baostock_index(code, start=start, end=end, refresh=refresh)
+            for code in codes}
 
 
 def _month_starts(start: date, end: date) -> list[date]:

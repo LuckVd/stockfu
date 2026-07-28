@@ -63,12 +63,16 @@
 1. **实测 baostock 早期分红**：跑 `query_dividend_data` 查 2007–2012 某老股（如 `sh.600000`），确认源端数据真实存在与质量——唯一未坐实的未知；
 2. **全量回补分红**：全市场 2007–2026 按 year 批量灌 `dividend_event`，填补早期空白；
 3. **`dividend_event` 加列**：`pay_date` / `stock_mkt_date` / `per_share_cash_after_tax`，并改 wrapper 落库（DTO 已取，只差 schema + 写入）；
-4. **简化回测引擎**：strict Raw 账户路径降级为可选诊断，主线切到 qfq Adjustment + 红利税近似；
+4. **简化回测引擎**：删除 strict Raw 账户路径与多源仲裁账本，主线切到 qfq Adjustment + 红利税近似；
 5. **冻结一次 baostock 快照**作为回测基准，缓解复权基准漂移。
+
+> **实施状态（2026-07-28）**：步骤 1/3/4 已完成；步骤 2 全量回补运行中（2007→2026 全市场，早期 `<2013` 已从 0 填至 5000+ 行）；步骤 5 冻结快照未做（defer）。
+> 引擎 `valuation_basis` 已是 `raw`/`qfq`/`hfq` 三态、默认 `qfq`；strict 账户/账本代码（`engine` strict 分支、`VirtualAccount` 应收/行权方法、`corporate_actions.py`）及对应 CLI（`--strict`/`--stage-corporate-*`/`--materialize-corporate-actions`）已全部移除，交易约束（涨跌停/ST/list_date）解耦为 `universe_rules`/`execution_rules` 默认严格。
+> 遗留：raw 诊断口径的 `credit_dividend` 仍按持有期 FIFO 扣红利税（§0.3 规划改用 afterTax 近似，未替换；qfq 主线 `credit_dividends=False` 不受影响）。
 
 ### 0.5 旧账本表处置
 
-DB 已建的 `corporate_action_source_record` / `corporate_action_event`（旧账本路线产物）：**搁置不删**。停止灌数据与仲裁，保留作偶尔的交叉验证/诊断对照，不再作为正式事件来源。
+旧账本表 `corporate_action_source_record` / `corporate_action_event`（旧账本路线产物）已于 2026-07-28 **删除**：模型类移除 + `db.py:_migrate` DROP 回收空间（`init-db` 后实测 DROP，`dividend_event` 8632 行无损）。研究模式唯一公司行为来源是 `dividend_event`（baostock 直用），不再保留账本作诊断对照——多源仲裁能力随 strict 路径一并退役。
 
 ### 0.6 当前结果地位
 

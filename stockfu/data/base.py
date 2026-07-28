@@ -235,6 +235,9 @@ class DividendEventDTO:
     # 现金实际到账日与送转股上市（可卖）日。两者不能默认等同于除权日。
     pay_date: date | None = None
     stock_mkt_date: date | None = None
+    # 税后每股现金(baostock dividCashPsAfterTax):仅落库供诊断,不进 qfq 收益主线
+    # (qfq 涨跌幅复权已含分红再投;红利税用此值近似,不自建持有期 FIFO 账本)。
+    per_share_cash_after_tax: float | None = None
     currency: str = "CNY"
     source: str = ""
 

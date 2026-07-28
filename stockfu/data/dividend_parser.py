@@ -244,46 +244,6 @@ def build_metric_from_history(
     )
 
 
-def extract_corporate_actions_from_history(
-    df: pd.DataFrame,
-    code: str,
-    *,
-    currency: str = "CNY",
-    source: str = "akshare:stock_history_dividend_detail",
-) -> list[DividendEventDTO]:
-    """解析实施分配为账户事件，所有比率均以**除权前一股旧股**为分母。
-
-    ``build_metric_from_history`` 服务于旧股息率展示，曾把现金按送转后股数摊薄；
-    那个口径不能用于账户结算。本函数保留 ``10派X`` 的 ``X/10`` 现金，并把
-    ``送股``/``转增`` 分别合并为每旧股新增股数 ``(送+转)/10``。
-    """
-    if df is None or df.empty:
-        return []
-    events: list[DividendEventDTO] = []
-    for _, row in df.iterrows():
-        if not isinstance(row, pd.Series):
-            continue
-        progress = safe_str(row.get("进度"))
-        if progress and progress != "实施":
-            continue
-        ex_date = _to_date(row.get("除权除息日"))
-        if not ex_date:
-            continue
-        cash_per10 = safe_float(row.get("派息")) or 0.0
-        stock_per10 = (safe_float(row.get("送股")) or 0.0) + (safe_float(row.get("转增")) or 0.0)
-        cash, stock = cash_per10 / 10.0, stock_per10 / 10.0
-        if cash <= 0 and stock <= 0:
-            continue
-        events.append(DividendEventDTO(
-            ex_date=ex_date, per_share_cash=round(cash, 6),
-            per_share_stock=round(stock, 6),
-            record_date=_to_date(row.get("股权登记日")),
-            announce_date=_to_date(row.get("公告日期")),
-            currency=currency, source=source,
-        ))
-    return sorted(events, key=lambda event: event.ex_date)
-
-
 def build_metric_from_fhps(
     df: pd.DataFrame,
     code: str,

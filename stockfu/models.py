@@ -66,68 +66,40 @@ class DividendEvent(SQLModel, table=True):
     per_share_cash: float = 0.0
     # 每旧股新增股数(送股+转增)。0=纯现金事件；保留在同一除权事件中。
     per_share_stock: float = 0.0
+    # 派息日 / 红股上市日(baostock payDate/stockMktDate)。研究模式落库供诊断;
+    # non-strict 主线收益用 qfq(已含分红),这两日仅作交叉校验/展示。
+    pay_date: date | None = None
+    stock_mkt_date: date | None = None
+    # baostock dividCashPsAfterTax(税后每股股利)。源端固定扣税近似、非持有期分档;
+    # 研究模式仅落库供诊断,不据此宣称税后精确(见 docs/BACKTEST.md §0.3/§0.6)。
+    per_share_cash_after_tax: float | None = None
     currency: str = "CNY"
     source: str = ""
 
 
-class CorporateActionSourceRecord(SQLModel, table=True):
-    """公司行为的不可变来源记录。
+class BackfillCheckpoint(SQLModel, table=True):
+    """逐项网络回补的持久化进度。
 
-    该表是回灌的落点，不供策略或账户直接读取。相同供应商记录用
-    ``(source, source_event_key)`` 幂等，供应商修订则必须使用新的 event key 或
-    content hash；绝不覆盖已保存的原始证据。
+    ``task_key + scope_key + item_key`` 唯一标识一次可复用的成功结果。scope_key
+    必须包含数据范围和实现版本；范围或解析口径改变时自然形成新任务，而不是把
+    旧的“成功”误当作新任务已完成。
     """
-    __tablename__ = "corporate_action_source_record"
+    __tablename__ = "backfill_checkpoint"
     id: int | None = Field(default=None, primary_key=True)
-    asset_code: str = Field(foreign_key="asset.code", index=True)
-    source: str = Field(index=True)               # baostock / exchange / vendor:...
-    source_event_key: str = Field(index=True)     # 源端稳定键；无键时由抓取器构造
-    source_revision: str = ""
-    action_type: str = "distribution"            # distribution / rights / merger / delisting
-    ex_date: date = Field(index=True)
-    record_date: date | None = None
-    announce_date: date | None = None
-    pay_date: date | None = None
-    stock_mkt_date: date | None = None
-    per_share_cash: float = 0.0
-    per_share_stock: float = 0.0
-    rights_ratio: float = 0.0
-    rights_price: float | None = None
-    terminal_price: float | None = None
-    currency: str = "CNY"
-    payload_sha256: str = ""
-    raw_payload: str = ""                         # 原响应的规范 JSON；保留审计证据
-    ingested_at: datetime = Field(default_factory=_now, index=True)
+    task_key: str = Field(index=True)
+    scope_key: str = Field(index=True)
+    item_key: str = Field(index=True)
+    status: str = Field(default="failed", index=True)  # success / failed
+    attempts: int = 0
+    last_error: str = ""
+    updated_at: datetime = Field(default_factory=_now)
     __table_args__ = (UniqueConstraint(
-        "source", "source_event_key", name="uq_corporate_action_source_key"),)
+        "task_key", "scope_key", "item_key", name="uq_backfill_checkpoint_item",
+    ),)
 
 
-class CorporateActionEvent(SQLModel, table=True):
-    """仲裁后的正式公司行为事件；按 revision append-only 保存。"""
-    __tablename__ = "corporate_action_event"
-    id: int | None = Field(default=None, primary_key=True)
-    action_id: str = Field(index=True)             # 稳定逻辑键，如 600519:2018-06-15:distribution
-    revision: int = 1
-    asset_code: str = Field(foreign_key="asset.code", index=True)
-    action_type: str = "distribution"
-    ex_date: date = Field(index=True)
-    record_date: date | None = None
-    announce_date: date | None = None
-    pay_date: date | None = None
-    stock_mkt_date: date | None = None
-    per_share_cash: float = 0.0
-    per_share_stock: float = 0.0
-    rights_ratio: float = 0.0
-    rights_price: float | None = None
-    terminal_price: float | None = None
-    currency: str = "CNY"
-    status: str = Field(default="needs_review", index=True)  # accepted / rejected / superseded
-    source_record_ids: str = "[]"                  # JSON，来源记录主键列表
-    decision_note: str = ""
-    supersedes_event_id: int | None = Field(default=None, foreign_key="corporate_action_event.id")
-    created_at: datetime = Field(default_factory=_now, index=True)
-    __table_args__ = (UniqueConstraint(
-        "action_id", "revision", name="uq_corporate_action_revision"),)
+# 方案A 账本表(corporate_action_source_record/event)随 2026-07-27 研究模式反转移除。
+# 研究模式直接用 dividend_event(baostock 落库),不自建多源仲裁账本(见 docs/BACKTEST.md §0)。
 
 
 class QuoteSnapshot(SQLModel, table=True):

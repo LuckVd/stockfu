@@ -90,14 +90,18 @@ def _migrate() -> None:
                 conn.execute(text(
                     "ALTER TABLE dividend_event ADD COLUMN per_share_stock FLOAT NOT NULL DEFAULT 0"
                 ))
-    # 公司行为正式账本的退市终止结算价。没有该字段的旧库只补 nullable 槽位，
-    # 绝不从最后行情或交易所名单推断数值。
-    for table in ("corporate_action_source_record", "corporate_action_event"):
-        if insp.has_table(table):
-            cols = [c["name"] for c in insp.get_columns(table)]
-            if "terminal_price" not in cols:
+        # 研究模式(§0.4 步骤3):落库 baostock payDate/stockMktDate/afterTax 供诊断。
+        for col, decl in [("pay_date", "DATE"), ("stock_mkt_date", "DATE"),
+                          ("per_share_cash_after_tax", "FLOAT")]:
+            if col not in cols:
                 with engine.begin() as conn:
-                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN terminal_price FLOAT"))
+                    conn.execute(text(f"ALTER TABLE dividend_event ADD COLUMN {col} {decl}"))
+    # 方案A 账本表随 2026-07-27 研究模式反转弃用 → DROP 回收空间(模型类已删,create_all 不重建)。
+    # 幂等:存在才 DROP。dividend_event 是研究模式唯一公司行为来源(baostock 直用)。
+    for _drop in ("corporate_action_source_record", "corporate_action_event"):
+        if insp.has_table(_drop):
+            with engine.begin() as conn:
+                conn.execute(text(f"DROP TABLE IF EXISTS {_drop}"))
     if insp.has_table("sector_flow_snapshot"):
         cols = [c["name"] for c in insp.get_columns("sector_flow_snapshot")]
         if "net_inflow_pct" not in cols:

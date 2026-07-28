@@ -44,7 +44,6 @@ class StrategyRunSpec:
     rebalancer_id: str
     rebalancer_params: dict = field(default_factory=dict)
     universe: str = "historical_indices"  # historical_indices | all | etf | universe_788
-    strict: bool = True
     min_amount: float | None = MIN_AMOUNT
     tier: str = "warm"          # hot / warm / cold — 批跑顺序
 
@@ -54,19 +53,19 @@ class StrategyRunSpec:
 FULL_CYCLE_CATALOG: list[StrategyRunSpec] = [
     StrategyRunSpec(
         "cn_momentum_cross_section", "cap_and_rank", dict(_CS),
-        universe="historical_indices", strict=True, min_amount=MIN_AMOUNT, tier="hot",
+        universe="historical_indices", min_amount=MIN_AMOUNT, tier="hot",
     ),
     StrategyRunSpec(
         "dividend_cross_section#sl30", "cap_and_rank", dict(_CS),
-        universe="historical_indices", strict=True, min_amount=MIN_AMOUNT, tier="hot",
+        universe="historical_indices", min_amount=MIN_AMOUNT, tier="hot",
     ),
     StrategyRunSpec(
         "momentum_breakout", "top_n_picker", dict(_TOP_N_MOM),
-        universe="historical_indices", strict=True, min_amount=MIN_AMOUNT, tier="warm",
+        universe="historical_indices", min_amount=MIN_AMOUNT, tier="warm",
     ),
     StrategyRunSpec(
         "dual_bollinger", "top_n_picker", dict(_TOP_N_BOLL),
-        universe="historical_indices", strict=True, min_amount=MIN_AMOUNT, tier="warm",
+        universe="historical_indices", min_amount=MIN_AMOUNT, tier="warm",
     ),
 ]
 
@@ -231,7 +230,6 @@ def run_one(
             codes, start, end,
             initial_cash=cash,
             run_id=rid,
-            strict=spec.strict,
             universe_rules=rules,
         )
     except Exception as e:
@@ -252,7 +250,6 @@ def run_one(
         "tier": spec.tier,
         "rebalancer_id": spec.rebalancer_id,
         "universe": spec.universe,
-        "strict": spec.strict,
         "n_codes": len(codes),
         "start": start,
         "end": end,
@@ -338,7 +335,6 @@ def update_backtests(
             "rebalancer_id": s.rebalancer_id,
             "rebalancer_params": s.rebalancer_params,
             "universe": s.universe,
-            "strict": s.strict,
             "min_amount": s.min_amount,
             "tier": s.tier,
         }
@@ -354,7 +350,7 @@ def update_backtests(
     for i, s in enumerate(specs, 1):
         print(
             f"  [{i}/{len(specs)}] {s.tier:4} {s.strategy_id:40} "
-            f"reb={s.rebalancer_id} uni={s.universe} strict={s.strict}",
+            f"reb={s.rebalancer_id} uni={s.universe}",
             flush=True,
         )
 
@@ -427,12 +423,12 @@ def update_backtests(
 
 def print_catalog() -> None:
     """打印可更新策略目录。"""
-    print(f"{'tier':4}  {'strategy_id':40}  {'rebalancer':16}  universe  strict")
+    print(f"{'tier':4}  {'strategy_id':40}  {'rebalancer':16}  universe")
     print("-" * 94)
     for s in FULL_CYCLE_CATALOG:
         print(
             f"{s.tier:4}  {s.strategy_id:40}  {s.rebalancer_id:16}  "
-            f"{s.universe:10}  {s.strict}"
+            f"{s.universe:10}"
         )
     print(f"\n共 {len(FULL_CYCLE_CATALOG)} 条 | 默认 start={DEFAULT_START} | "
           f"end=库内行情末日")

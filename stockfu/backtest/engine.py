@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 from array import array
 from bisect import bisect_left, bisect_right
-from collections import defaultdict, namedtuple
+from collections import namedtuple
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -200,138 +200,6 @@ class VirtualAccount:
         return {"kind": "cash_dividend", "code": code, "shares": pos.shares,
                 "gross": round(gross, 2), "tax": round(tax, 2), "net": round(net, 2),
                 "per_share_cash": per_share_cash}
-
-    def accrue_cash_dividend(self, code: str, per_share_cash: float,
-                              record_date: date | None = None) -> dict | None:
-        """在除权日确认现金应收，但绝不让它提前参与买入。
-
-        税务的最终补扣属于独立的 lot/tax schedule 阶段；这里故意只记录税前应收，
-        以免把“支付日”偷换成“除权日”。
-        """
-        pos = self.positions.get(code)
-        if not pos or pos.shares <= 0 or per_share_cash <= 0:
-            return None
-        gross = pos.shares * per_share_cash
-        self.cash_receivable += gross
-        return {"kind": "cash_dividend_receivable", "code": code,
-                "shares": pos.shares, "gross": round(gross, 2),
-                "per_share_cash": per_share_cash,
-                "record_date": record_date.isoformat() if record_date else None}
-
-    def settle_cash_dividend(self, code: str, gross: float, as_of: date) -> dict | None:
-        """在已知支付日将此前确认的应收现金转为可用现金。"""
-        if gross <= 0:
-            return None
-        # 同一事件只能由预载日程调用一次；此处仍防止异常输入造出负应收。
-        if gross > self.cash_receivable + 1e-8:
-            raise ValueError(f"{code} {as_of}: 待结算分红超过现金应收")
-        self.cash_receivable -= gross
-        self.cash += gross
-        self.dividend_received += gross
-        return {"kind": "cash_dividend_settled", "code": code,
-                "gross": round(gross, 2), "net": round(gross, 2)}
-
-    def accrue_stock_dividend(self, code: str, per_share_stock: float,
-                              as_of: date) -> dict | None:
-        """除权日确认送转应收股；上市日前既不能卖出，也不改变 settled shares。"""
-        pos = self.positions.get(code)
-        if not pos or pos.shares <= 0 or per_share_stock <= 0:
-            return None
-        shares = int(round(pos.shares * per_share_stock))
-        if shares <= 0:
-            return None
-        pos.receivable_shares += shares
-        return {"kind": "stock_dividend_receivable", "code": code,
-                "shares": shares, "per_share_stock": per_share_stock,
-                "as_of": as_of.isoformat()}
-
-    def settle_stock_dividend(self, code: str, shares: int, as_of: date) -> dict | None:
-        """在新增股份上市日转为可卖股份，并保持 lot 与平均成本不变量。"""
-        pos = self.positions.get(code)
-        if not pos or shares <= 0:
-            return None
-        if shares > pos.receivable_shares:
-            raise ValueError(f"{code} {as_of}: 待结算送转股超过股份应收")
-        old_shares = pos.shares
-        if old_shares <= 0:
-            raise ValueError(f"{code} {as_of}: 无 settled shares 却试图结算送转股")
-        pos.receivable_shares -= shares
-        new_shares = old_shares + shares
-        factor = new_shares / old_shares
-        if pos.lots:
-            lots = [(int(round(lot_shares * factor)), buy_date)
-                    for lot_shares, buy_date in pos.lots]
-            diff = new_shares - sum(lot_shares for lot_shares, _ in lots)
-            lots[0] = (lots[0][0] + diff, lots[0][1])
-            pos.lots = lots
-        else:
-            pos.lots = [(new_shares, as_of)]
-        pos.shares = new_shares
-        pos.avg_cost /= factor
-        return {"kind": "stock_dividend_settled", "code": code,
-                "shares_before": old_shares, "shares_after": new_shares,
-                "shares_settled": shares}
-
-    def settle_delisting(self, code: str, terminal_price: float, as_of: date) -> dict | None:
-        """按已仲裁的官方终止结算现金关闭该证券，绝不沿用最后行情价。"""
-        pos = self.positions.get(code)
-        if not pos or (pos.shares <= 0 and pos.receivable_shares <= 0):
-            return None
-        if terminal_price <= 0:
-            raise ValueError(f"{code} {as_of}: 退市终止结算价必须为正")
-        shares = pos.shares + pos.receivable_shares
-        proceeds = shares * terminal_price
-        self.cash += proceeds
-        self.positions.pop(code, None)
-        return {"kind": "delisting_settlement", "code": code, "shares": -shares,
-                "price": terminal_price, "proceeds": round(proceeds, 2)}
-
-    def exercise_rights(self, code: str, rights_ratio: float, rights_price: float,
-                        policy: str, as_of: date) -> dict | None:
-        """按显式配股策略冻结现金并生成待上市股份。
-
-        未行权权利的市场价值不能凭空推断；``ignore`` 只留下审计记录。对于
-        ``exercise_if_cash_available``，不足现金时仅认购买得起的整数股。
-        """
-        pos = self.positions.get(code)
-        if not pos or pos.shares <= 0:
-            return None
-        if rights_ratio <= 0 or rights_price <= 0:
-            raise ValueError(f"{code} {as_of}: 配股比例和价格必须为正")
-        entitlement_raw = pos.shares * rights_ratio
-        entitlement = int(entitlement_raw + 1e-9)
-        if abs(entitlement_raw - entitlement) > 1e-8:
-            raise ValueError(
-                f"{code} {as_of}: 配股权利产生非整数股，需官方零股/现金替代规则")
-        if policy == "ignore":
-            return {"kind": "rights_ignored", "code": code, "shares": entitlement,
-                    "rights_price": rights_price}
-        if policy != "exercise_if_cash_available":
-            raise ValueError(f"未知配股策略: {policy}")
-        shares = min(entitlement, int(self.cash / rights_price + 1e-9))
-        cost = shares * rights_price
-        self.cash -= cost
-        pos.receivable_shares += shares
-        return {"kind": "rights_exercised", "code": code, "shares": shares,
-                "unexercised_shares": entitlement - shares, "rights_price": rights_price,
-                "cost": round(cost, 2)}
-
-    def settle_rights(self, code: str, shares: int, cost: float, as_of: date) -> dict | None:
-        """配股上市日转为可卖股份；认购成本进入新 lot，不套用送转除权因子。"""
-        pos = self.positions.get(code)
-        if not pos or shares <= 0:
-            return None
-        if shares > pos.receivable_shares:
-            raise ValueError(f"{code} {as_of}: 配股待上市数量超过股份应收")
-        old_shares = pos.shares
-        pos.receivable_shares -= shares
-        pos.shares += shares
-        pos.avg_cost = ((pos.avg_cost * old_shares + cost) / pos.shares
-                        if pos.shares else 0.0)
-        pos.lots.append((shares, as_of))
-        return {"kind": "rights_settled", "code": code, "shares_before": old_shares,
-                "shares_after": pos.shares, "shares_settled": shares,
-                "cost": round(cost, 2)}
 
     def adjust_for_stock_dividend(self, code: str, per_share_stock: float,
                                   as_of: date) -> dict | None:
@@ -515,75 +383,8 @@ def _preload_stock_dividends(codes: list[str], start: date, end: date) -> dict[d
     return out
 
 
-class CorporateActionCoverageError(RuntimeError):
-    """严格账户所需公司行为尚不可安全结算。"""
-
-
-def _preload_accepted_corporate_actions(
-    codes: list[str], start: date, end: date, *, rights_policy: str = "reject",
-) -> tuple[dict[date, list[object]], dict[str, object]]:
-    """读取每个逻辑事件的最新 accepted revision，并建立结算日程。
-
-    返回 ``(ex_date -> events, action_id -> event)``。这里不把旧 ``dividend_event``
-    当作正式输入；若某逻辑事件的最新 revision 不是 accepted，严格回测必须停止。
-    """
-    from stockfu.models import CorporateActionEvent, DividendEvent
-
-    if not codes:
-        return {}, {}
-    with session_scope() as s:
-        rows = s.exec(select(CorporateActionEvent).where(
-            CorporateActionEvent.asset_code.in_(codes),
-            CorporateActionEvent.ex_date >= start,
-            CorporateActionEvent.ex_date <= end,
-        ).order_by(CorporateActionEvent.action_id, CorporateActionEvent.revision)).all()
-        legacy_rows = s.exec(select(DividendEvent).where(
-            DividendEvent.asset_code.in_(codes),
-            DividendEvent.ex_date >= start,
-            DividendEvent.ex_date <= end,
-        )).all()
-
-    latest: dict[str, object] = {}
-    for row in rows:
-        latest[row.action_id] = row
-    for action_id, row in latest.items():
-        if row.status != "accepted":
-            raise CorporateActionCoverageError(
-                f"{action_id} 最新仲裁状态为 {row.status}，strict 回测禁止忽略")
-        if row.action_type not in {"distribution", "rights", "delisting", "delisting_warning"}:
-            raise CorporateActionCoverageError(
-                f"{action_id} 为未建模的 {row.action_type} 事件，strict 回测禁止继续")
-        if row.action_type == "delisting" and (row.terminal_price is None or row.terminal_price <= 0):
-            raise CorporateActionCoverageError(
-                f"{action_id} 缺少独立核验的终止结算价，strict 回测禁止沿用最后行情价")
-        if row.action_type == "rights":
-            if rights_policy == "reject":
-                raise CorporateActionCoverageError(
-                    f"{action_id} 出现配股但未显式选择行权策略，strict 回测禁止猜测")
-            if row.rights_ratio <= 0 or row.rights_price is None or row.rights_price <= 0:
-                raise CorporateActionCoverageError(f"{action_id} 缺少完整配股比例或价格")
-            if row.stock_mkt_date is None:
-                raise CorporateActionCoverageError(f"{action_id} 缺少配股上市日")
-        if row.per_share_cash > 0 and row.pay_date is None:
-            raise CorporateActionCoverageError(
-                f"{action_id} 缺少支付日，现金不得在除权日提前可用")
-        if row.per_share_stock > 0 and row.stock_mkt_date is None:
-            raise CorporateActionCoverageError(
-                f"{action_id} 缺少新增股份上市日，送转股不得提前可卖")
-
-    accepted_ids = set(latest)
-    missing_legacy = [row for row in legacy_rows if
-                      f"{row.asset_code}:{row.ex_date.isoformat()}:distribution" not in accepted_ids]
-    if missing_legacy:
-        example = missing_legacy[0]
-        raise CorporateActionCoverageError(
-            f"{example.asset_code}:{example.ex_date.isoformat()} 仅存在旧 dividend_event，"
-            "未有 accepted 正式事件，strict 回测禁止使用遗留账本")
-
-    by_ex: dict[date, list[object]] = defaultdict(list)
-    for row in latest.values():
-        by_ex[row.ex_date].append(row)
-    return dict(by_ex), latest
+# 方案A strict 账本预载(CorporateActionCoverageError + _preload_accepted_corporate_actions)
+# 随 2026-07-27 研究模式反转移除:研究模式 non-strict 主线只读 dividend_event,不读仲裁账本。
 
 
 def _hfq_coverage(sctx: _SeriesCtx, start: date, end: date) -> tuple[float, int, int]:
@@ -941,10 +742,11 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCt
 
 def _pick_px(bar: dict, hfq_key: str, raw_key: str, qfq_key: str,
              basis: str) -> float | None:
-    """按估值口径选价:hfq→后复权(回落 raw→qfq);raw→raw(回落 qfq)。
+    """按估值口径选价:hfq→后复权(回落 raw→qfq);qfq→前复权(回落 raw);raw→raw(回落 qfq)。
 
     显式 ``is not None`` 判断(_bar_from_cols 出口已 nan→None;不用 ``or`` 以免
     对 0.0/极端值误判)。day_bars 内的 raw OHLC 不经此函数,check_fill 永远吃 raw。
+    qfq 为研究模式(§0.3)收益主线:已含分红再投,故 credit_dividends 关闭。
     """
     if basis == "hfq":
         for k in (hfq_key, raw_key, qfq_key):
@@ -952,13 +754,18 @@ def _pick_px(bar: dict, hfq_key: str, raw_key: str, qfq_key: str,
             if v is not None:
                 return v
         return None
+    if basis == "qfq":
+        v = bar.get(qfq_key)
+        if v is not None:
+            return v
+        return bar.get(raw_key)   # 极少:qfq 未回补时回落 raw(优于 None)
     v = bar.get(raw_key)
     return v if v is not None else bar.get(qfq_key)
 
 
 def _get_day_market(codes: list[str], as_of: date,
                     sctx: _SeriesCtx | None = None,
-                    valuation_basis: str = "raw",
+                    valuation_basis: str = "qfq",
                     ) -> tuple[dict[str, float], dict[str, float], dict[str, dict]]:
     """单日行情 → (close_prices, open_prices, day_bars)。
 
@@ -1202,9 +1009,7 @@ def run_backtest(codes: list[str], start: date, end: date,
                  portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE,
                  universe_rules=None,
                  execution_rules=None,
-                 strict: bool = True,
-                 valuation_basis: str = "raw",
-                 rights_policy: str = "reject") -> dict:
+                 valuation_basis: str = "qfq") -> dict:
     """回测主循环:T+1开盘执行 + 三层架构(信号→仓位→执行)。
 
     每个交易日 as_of 内:
@@ -1231,16 +1036,9 @@ def run_backtest(codes: list[str], start: date, end: date,
       debounce: StrategyDebounce(CompiledStrategy.debounce_params);传入时优先于各裸 kwargs,
                 类型安全取代字符串 dict 耦合。scheduler 传它,旧调用方仍可用裸 kwargs(双入口)。
     """
-    if valuation_basis not in ("hfq", "raw"):
-        raise ValueError(f"valuation_basis 必须是 hfq 或 raw,Got {valuation_basis!r}")
-    if strict and valuation_basis == "hfq":
-        raise ValueError(
-            "strict 回测禁止 valuation_basis=hfq；正式账户只能以 raw 成交和盯市，"
-            "连续信号须由 raw+accepted 公司行为构造"
-        )
-    if rights_policy not in {"reject", "ignore", "exercise_if_cash_available"}:
-        raise ValueError(f"未知 rights_policy: {rights_policy!r}")
-    credit_dividends = valuation_basis == "raw"   # hfq 已含分红,再入账=重复计息
+    if valuation_basis not in ("raw", "qfq", "hfq"):
+        raise ValueError(f"valuation_basis 必须是 raw/qfq/hfq,Got {valuation_basis!r}")
+    credit_dividends = valuation_basis == "raw"   # raw 需显式补分红;qfq/hfq 已含分红,再入账=重复计息
     if debounce is not None:   # dataclass 覆盖各裸 kwargs(双入口向后兼容)
         buy_cool_down_days = debounce.buy_cool_down_days
         max_target_step = debounce.max_target_step
@@ -1280,16 +1078,13 @@ def run_backtest(codes: list[str], start: date, end: date,
                          sell_cooldown_days=sell_cooldown_days)
     _risk_streak: dict[str, int] = {}  # code → risk 连续否决天数(确认棒状态)
 
-    # 宇宙 + 可成交(strict 默认 ON:涨跌停/ST/list_date;strict=False 对齐旧「有价即交易」)
+    # 宇宙 + 可成交:研究模式默认严格交易约束(涨跌停/ST/list_date),与旧 strict=True 对齐。
     from stockfu.services.universe import DayFlags, UniverseContext, UniverseRules
     from stockfu.services.tradeability import ExecutionRules, check_fill, infer_pre_close
     if universe_rules is None:
-        universe_rules = UniverseRules() if strict else UniverseRules(
-            exclude_st=False, require_trading=False, min_list_days=0, use_list_date=False,
-        )
+        universe_rules = UniverseRules()
     if execution_rules is None:
-        execution_rules = (ExecutionRules() if strict
-                           else ExecutionRules(limit_rule=False, slip_bps=0.0))
+        execution_rules = ExecutionRules()
     uni_ctx = UniverseContext.load(list(codes), universe_rules)
     universe_sizes: list[int] = []
     limit_reject_buys = 0
@@ -1311,28 +1106,16 @@ def run_backtest(codes: list[str], start: date, end: date,
     # 使 _backtest_series_ctx 能从内存零查库喂给 quote_series(与 DB 逐值一致)。
     _pre_start = start - timedelta(days=_PRELOAD_LOOKBACK_DAYS)
     sctx = _preload_market_range(list(codes), _pre_start, end) if days else None
-    # strict 只读取已仲裁的正式账本；探索模式保留旧表兼容路径，但不得被标记为
-    # validated。正式事件缺支付/上市日或仍 needs_review 时，预载阶段立即失败。
-    accepted_actions_by_ex: dict[date, list[object]] = {}
-    if strict:
-        accepted_actions_by_ex, accepted_action_index = _preload_accepted_corporate_actions(
-            list(codes), start, end, rights_policy=rights_policy)
-        dividend_index = {code: [] for code in codes}
-        for event in accepted_action_index.values():
-            dividend_index.setdefault(event.asset_code, []).append(
-                (event.ex_date, event.per_share_cash))
-    else:
-        dividend_index = (_preload_dividend_events(list(codes), _pre_start, end)
-                          if sctx else {})
+    # 分红预载:研究模式(non-strict 主线)只读 dividend_event。qfq/hfq 已含分红再投,
+    # 无需 credit_dividends;仅 raw 口径需把现金分红显式补进账户。
+    dividend_index = (_preload_dividend_events(list(codes), _pre_start, end)
+                      if sctx else {})
     cash_dividends = (
         _preload_cash_dividends(list(codes), start, end)
-        if sctx and credit_dividends and not strict else {}
+        if sctx and credit_dividends else {}
     )
     stock_dividends = (_preload_stock_dividends(list(codes), start, end)
-                       if sctx and not strict else {})
-    pending_cash_settlements: dict[date, list[tuple[str, float]]] = defaultdict(list)
-    pending_stock_settlements: dict[date, list[tuple[str, int]]] = defaultdict(list)
-    pending_rights_settlements: dict[date, list[tuple[str, int, float]]] = defaultdict(list)
+                       if sctx else {})
     if valuation_basis == "hfq" and sctx:
         cov, hit, tot = _hfq_coverage(sctx, start, end)
         if tot and cov < HFQ_COVERAGE_MIN:
@@ -1367,89 +1150,19 @@ def run_backtest(codes: list[str], start: date, end: date,
             list(codes), as_of, sctx=sctx, valuation_basis=valuation_basis)
         if not close_prices:
             continue
-        # 支付/上市日先解锁此前已确认的应收，随后才处理当日除权。严格路径绝不
-        # 把 payDate / stockMktDate 缺失回退成 ex_date。
-        if strict:
-            for code, gross in pending_cash_settlements.pop(as_of, []):
-                rec = acct.settle_cash_dividend(code, gross, as_of)
-                if rec:
-                    rec.update(date=as_of.isoformat(), status="settled")
-                    trades.append(rec)
-            for code, shares in pending_stock_settlements.pop(as_of, []):
-                rec = acct.settle_stock_dividend(code, shares, as_of)
-                if rec:
-                    rec.update(date=as_of.isoformat(), status="settled")
-                    trades.append(rec)
-            for code, shares, cost in pending_rights_settlements.pop(as_of, []):
-                rec = acct.settle_rights(code, shares, cost, as_of)
-                if rec:
-                    rec.update(date=as_of.isoformat(), status="settled")
-                    trades.append(rec)
-            for event in accepted_actions_by_ex.get(as_of, []):
-                if event.action_type == "delisting_warning":
-                    # 警告日禁止扩大风险敞口；仅取消待执行的买入/加仓，卖出意图保留。
-                    target = pending_target.get(event.asset_code)
-                    current = acct.weight(event.asset_code, close_prices)
-                    if target is not None and target > current + 1e-12:
-                        pending_target.pop(event.asset_code, None)
-                        pending_signal.pop(event.asset_code, None)
-                        trades.append({"kind": "order_cancelled_delisting_warning",
-                                       "code": event.asset_code, "date": as_of.isoformat(),
-                                       "status": "cancelled", "action_id": event.action_id})
-                    continue
-                if event.action_type == "delisting":
-                    # 终止结算优先于正常开盘订单；所有遗留普通订单无条件失效。
-                    pending_target.pop(event.asset_code, None)
-                    pending_signal.pop(event.asset_code, None)
-                    rec = acct.settle_delisting(event.asset_code, event.terminal_price, as_of)
-                    if rec:
-                        rec.update(date=as_of.isoformat(), status="settled",
-                                   action_id=event.action_id)
-                        trades.append(rec)
-                    continue
-                if event.action_type == "rights":
-                    rec = acct.exercise_rights(
-                        event.asset_code, event.rights_ratio, event.rights_price,
-                        rights_policy, as_of)
-                    if rec:
-                        rec.update(date=as_of.isoformat(), status="receivable",
-                                   action_id=event.action_id)
-                        trades.append(rec)
-                        if rec["kind"] == "rights_exercised" and rec["shares"]:
-                            pending_rights_settlements[event.stock_mkt_date].append(
-                                (event.asset_code, rec["shares"], rec["cost"]))
-                    continue
-                if event.per_share_cash > 0:
-                    rec = acct.accrue_cash_dividend(
-                        event.asset_code, event.per_share_cash, event.record_date)
-                    if rec:
-                        rec.update(date=as_of.isoformat(), status="receivable",
-                                   action_id=event.action_id)
-                        trades.append(rec)
-                        pending_cash_settlements[event.pay_date].append(
-                            (event.asset_code, rec["gross"]))
-                if event.per_share_stock > 0:
-                    rec = acct.accrue_stock_dividend(
-                        event.asset_code, event.per_share_stock, as_of)
-                    if rec:
-                        rec.update(date=as_of.isoformat(), status="receivable",
-                                   action_id=event.action_id)
-                        trades.append(rec)
-                        pending_stock_settlements[event.stock_mkt_date].append(
-                            (event.asset_code, rec["shares"]))
-        else:
-            # 探索兼容路径：遗留表没有完整结算日期，保留旧语义但不能用于正式结果。
-            if credit_dividends:
-                for code, cash, record_date in cash_dividends.get(as_of, []):
-                    rec = acct.credit_dividend(code, cash, as_of, record_date)
-                    if rec:
-                        rec.update(date=as_of.isoformat(), status="credited")
-                        trades.append(rec)
-            for code, stock in stock_dividends.get(as_of, []):
-                rec = acct.adjust_for_stock_dividend(code, stock, as_of)
+        # 公司行为结算(研究模式 non-strict 主线):除息日把现金分红直接计入账户现金
+        # (仅 raw 口径;qfq/hfq 已含分红再投,credit_dividends=False 跳过);送转调整持仓。
+        if credit_dividends:
+            for code, cash, record_date in cash_dividends.get(as_of, []):
+                rec = acct.credit_dividend(code, cash, as_of, record_date)
                 if rec:
                     rec.update(date=as_of.isoformat(), status="credited")
                     trades.append(rec)
+        for code, stock in stock_dividends.get(as_of, []):
+            rec = acct.adjust_for_stock_dividend(code, stock, as_of)
+            if rec:
+                rec.update(date=as_of.isoformat(), status="credited")
+                trades.append(rec)
         last_close.update(close_prices)   # 停牌日 close 缺失时,沿用上一交易日价估值(不记 0)
 
         # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌/涨跌停顺延或拒绝)----
@@ -1556,13 +1269,8 @@ def run_backtest(codes: list[str], start: date, end: date,
                 )
             else:
                 day_flags[c] = DayFlags(has_row=False)
-        # strict 宇宙;非 strict 时 rules 已放宽,eligible ≈ 当日有 close 的票
-        u = uni_ctx.eligible_on(as_of, day_flags)
-        if not strict:
-            u = set(close_prices.keys())
-        else:
-            # 必须当日有收盘价才能进截面
-            u = {c for c in u if c in close_prices}
+        # 宇宙:研究模式按 UniverseRules 过滤(默认严格:涨跌停/ST/list_date)+ 当日有收盘价才进截面
+        u = {c for c in uni_ctx.eligible_on(as_of, day_flags) if c in close_prices}
         universe_sizes.append(len(u))
 
         total0 = acct.equity(close_prices)
@@ -1846,11 +1554,9 @@ def run_backtest(codes: list[str], start: date, end: date,
         "portfolio_brake_dd": portfolio_brake_dd,
         "execution": "T+1_open_sell_first",
         "rebalancer": rebalancer.rebalancer_id,
-        "strict": strict,
         "universe": uni_ctx.summary(universe_sizes),
         "execution_rules": execution_rules.to_dict(),
         "valuation_basis": valuation_basis,
-        "rights_policy": rights_policy,
     }
 
     return {

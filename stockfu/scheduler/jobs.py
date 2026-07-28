@@ -253,7 +253,8 @@ def backfill_kline(code: str, days: int = 90) -> int:
     return n
 
 
-def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> dict:
+def backfill_quote_status(codes: list[str] | None = None, days: int = 2000,
+                          *, refresh: bool = False) -> dict:
     """补全 quote_snapshot:历史状态列 + **每只票最新交易日全量数据**。
 
     1) 历史已有行:仅补 is_st/trade_status 空值(修宇宙静默 no-op)
@@ -267,20 +268,28 @@ def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> d
 
     if codes is None:
         codes = resolve_base_codes("all")
+    from stockfu.services.backfill_checkpoint import mark_item, pending_items
+    scope = f"v1:{days}:{date.today().isoformat()}"
+    pending, skipped = pending_items("quote_status", scope, codes, refresh=refresh)
     src = BaostockSource()
     patched = 0
     latest_upserted = 0
     errors = 0
     latest_dates: list[date] = []
 
-    for i, code in enumerate(codes):
+    print(f"quote_status checkpoint 跳过:{skipped};待补:{len(pending)};refresh={refresh}",
+          flush=True)
+    for i, code in enumerate(pending):
         try:
             bars = src.get_kline(code, days)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             errors += 1
+            mark_item("quote_status", scope, code, success=False,
+                      error=f"{type(exc).__name__}: {exc}")
             continue
         if not bars:
             errors += 1
+            mark_item("quote_status", scope, code, success=False, error="empty bars")
             continue
         bars = sorted(bars, key=lambda b: b.date)
         by_d = {b.date: b for b in bars}
@@ -308,16 +317,19 @@ def backfill_quote_status(codes: list[str] | None = None, days: int = 2000) -> d
             latest_upserted += 1
             patched += max(0, written - 1)
             s.commit()
+        mark_item("quote_status", scope, code, success=True)
 
         if (i + 1) % 50 == 0:
             print(
-                f"  quote_status {i + 1}/{len(codes)}  "
+                f"  quote_status {i + 1}/{len(pending)}  "
                 f"status_patched={patched}  latest_upserted={latest_upserted}",
                 flush=True,
             )
 
     return {
         "codes": len(codes),
+        "skipped": skipped,
+        "pending": len(pending),
         "rows_patched": patched,
         "latest_upserted": latest_upserted,
         "latest_date_max": max(latest_dates).isoformat() if latest_dates else None,
@@ -420,7 +432,7 @@ SW_INDUSTRIES = {
 }
 
 
-def backfill_sw_index() -> dict:
+def backfill_sw_index(*, refresh: bool = False) -> dict:
     """一次性回补 31 个申万一级行业指数历史日线(akshare index_hist_sw)→ index_quote_daily。
 
     范式同 run_backfill_benchmark:per-symbol 两段式 session(读已有日期集合→关→拉网络→开新→add→commit)。
@@ -429,22 +441,32 @@ def backfill_sw_index() -> dict:
     """
     from stockfu.data.akshare_source import get_sw_index_daily
     from stockfu.services.quote_writer import upsert_index_daily
+    from stockfu.services.backfill_checkpoint import mark_item, pending_items
     summary: dict[str, dict] = {}
-    for sym in SW_INDUSTRIES:
+    symbols = list(SW_INDUSTRIES)
+    pending, skipped = pending_items("sw_index", "v1:all", symbols, refresh=refresh)
+    print(f"sw_index checkpoint 跳过:{skipped};待补:{len(pending)};refresh={refresh}", flush=True)
+    for sym in pending:
         asset_code = f"sw{sym}"
-        with session_scope() as s:
-            existing = s.exec(select(IndexQuoteDaily).where(
-                IndexQuoteDaily.asset_code == asset_code)).all()
-            have_dates = {r.quote_date for r in existing}
-        rows = get_sw_index_daily(sym)
-        cap = max((r["quote_date"] for r in rows), default=date.today())
-        new_n = 0
-        if rows:
+        try:
+            with session_scope() as s:
+                existing = s.exec(select(IndexQuoteDaily).where(
+                    IndexQuoteDaily.asset_code == asset_code)).all()
+                have_dates = {r.quote_date for r in existing}
+            rows = get_sw_index_daily(sym)
+            if not rows:
+                raise RuntimeError("empty rows")
+            cap = max(r["quote_date"] for r in rows)
             with session_scope() as s:
                 new_n = upsert_index_daily(s, asset_code, rows, cap_date=cap, overwrite=False)
                 s.commit()
-        summary[asset_code] = {"total": len(rows), "new": new_n,
-                               "have_before": len(have_dates)}
+            mark_item("sw_index", "v1:all", sym, success=True)
+            summary[asset_code] = {"total": len(rows), "new": new_n,
+                                   "have_before": len(have_dates)}
+        except Exception as exc:  # noqa: BLE001
+            mark_item("sw_index", "v1:all", sym, success=False,
+                      error=f"{type(exc).__name__}: {exc}")
+            summary[asset_code] = {"error": f"{type(exc).__name__}: {exc}"}
     return summary
 
 
@@ -523,6 +545,8 @@ def backfill_etf_quotes(
     codes: list[str] | None = None,
     start: str = "2010-01-01",
     sleep_s: float = 0.6,
+    *,
+    refresh: bool = False,
 ) -> dict:
     """全量回补 ETF 日线(**前复权**)→ etf_quote_daily。
 
@@ -533,13 +557,27 @@ def backfill_etf_quotes(
     """
     import time as _t
     from stockfu.data.akshare_source import get_etf_daily
+    from stockfu.services.backfill_checkpoint import mark_item, pending_items
 
     today = date.today()
     pool = codes if codes is not None else etf_universe_codes()
+    scope = f"v1:{start}:{today.isoformat()}"
+    pending, skipped = pending_items("etf_quotes", scope, pool, refresh=refresh)
+    print(f"etf_quotes checkpoint 跳过:{skipped};待补:{len(pending)};refresh={refresh}", flush=True)
     summary: dict[str, dict] = {}
-    for i, code in enumerate(pool):
-        rows = get_etf_daily(code, start, today.isoformat())
-        written = _upsert_etf_rows(code, rows)
+    for i, code in enumerate(pending):
+        try:
+            rows = get_etf_daily(code, start, today.isoformat())
+            if not rows:
+                raise RuntimeError("empty rows")
+            written = _upsert_etf_rows(code, rows)
+            mark_item("etf_quotes", scope, code, success=True)
+        except Exception as exc:  # noqa: BLE001
+            mark_item("etf_quotes", scope, code, success=False,
+                      error=f"{type(exc).__name__}: {exc}")
+            summary[code] = {"error": f"{type(exc).__name__}: {exc}"}
+            print(f"  [{i+1}/{len(pending)}] {code}: failed {exc}")
+            continue
         hint = "empty"
         if rows:
             # 东财通时通常 >900 根;腾讯兜底约 ≤801
@@ -551,19 +589,19 @@ def backfill_etf_quotes(
             "max": str(rows[-1]["quote_date"]) if rows else None,
             "source_hint": hint,
         }
-        print(f"  [{i+1}/{len(pool)}] {code}: n={len(rows)} written={written} "
+        print(f"  [{i+1}/{len(pending)}] {code}: n={len(rows)} written={written} "
               f"{summary[code]['min']}→{summary[code]['max']} ({hint})")
-        if i + 1 < len(pool) and sleep_s > 0:
+        if i + 1 < len(pending) and sleep_s > 0:
             _t.sleep(sleep_s)
     return summary
 
 
-def backfill_industry_etf() -> dict:
+def backfill_industry_etf(*, refresh: bool = False) -> dict:
     """一次性回补行业 ETF 历史日线(**前复权**)→ etf_quote_daily。
 
     走 backfill_etf_quotes(仅 INDUSTRY_ETFS);全池请用 backfill_etf_quotes()。
     """
-    return backfill_etf_quotes(list(INDUSTRY_ETFS))
+    return backfill_etf_quotes(list(INDUSTRY_ETFS), refresh=refresh)
 
 
 def run_backfill(days: int) -> dict:
