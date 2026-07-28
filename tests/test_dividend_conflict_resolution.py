@@ -4,12 +4,13 @@ import pytest
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from stockfu.data.base import DividendEventDTO
-from stockfu.models import Asset, DividendEvent
+from stockfu.models import Asset, BackfillCheckpoint, DividendEvent
 from stockfu.services.dividend import (
     CorporateActionConflictError,
     _KNOWN_DIVIDEND_RESOLUTIONS,
     _canonical_events,
     _repair_known_dividend_conflicts_in_session,
+    persist_dividends,
 )
 
 
@@ -43,12 +44,32 @@ def test_known_resolution_rejects_changed_source_candidates():
         ], code="000738")
 
 
+def test_known_resolution_accepts_audited_source_subset():
+    result = _canonical_events([
+        _event(0.021, date(2013, 3, 30), 0.0189),
+    ], code="000738")
+    assert result[0].per_share_cash == pytest.approx(0.062)
+
+
+def test_unresolved_code_remains_failed_without_network_call(monkeypatch):
+    monkeypatch.setattr(
+        "stockfu.services.dividend.get_manager",
+        lambda: pytest.fail("unresolved conflict must not query network"),
+    )
+    with pytest.raises(CorporateActionConflictError, match="未裁决"):
+        persist_dividends("300315")
+
+
 def test_repair_is_transactional_and_idempotent():
     engine = create_engine("sqlite://")
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         session.add(Asset(code="002434"))
         session.add(Asset(code="002601"))
+        session.add(BackfillCheckpoint(
+            task_key="dividend", scope_key="v1:2007-2026", item_key="300315",
+            status="success", attempts=1,
+        ))
         session.add_all([
             DividendEvent(
                 asset_code="002601", ex_date=date(2018, 10, 25),
@@ -71,6 +92,7 @@ def test_repair_is_transactional_and_idempotent():
         session.commit()
         assert summary["inserted"] == 1
         assert summary["deleted"] == 1
+        assert summary["unresolved_reset"] == 1
 
         rows = list(session.exec(select(DividendEvent).where(
             DividendEvent.asset_code == "002601",
@@ -79,7 +101,12 @@ def test_repair_is_transactional_and_idempotent():
         assert len(rows) == 1
         assert rows[0].per_share_cash == pytest.approx(0.65)
         assert rows[0].per_share_cash_after_tax == pytest.approx(0.585)
+        checkpoint = session.exec(select(BackfillCheckpoint).where(
+            BackfillCheckpoint.item_key == "300315",
+        )).one()
+        assert checkpoint.status == "failed"
 
         again = _repair_known_dividend_conflicts_in_session(session, resolutions)
         session.commit()
         assert again["inserted"] == again["updated"] == again["deleted"] == 0
+        assert again["unresolved_reset"] == 0

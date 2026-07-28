@@ -66,7 +66,7 @@
 4. **简化回测引擎**：删除 strict Raw 账户路径与多源仲裁账本，主线切到 qfq Adjustment + 红利税近似；
 5. **冻结一次 baostock 快照**作为回测基准，缓解复权基准漂移。
 
-> **实施状态（2026-07-28）**：步骤 1/3/4 已完成；步骤 2 首轮已遍历 2,023 只历史宇宙证券，成功 2,012 只并新增 268 条事件。BaoStock 的 10 个已审计同日冲突由显式裁决表处理，先运行 `--repair-known-dividend-conflicts`，再以 `--backfill-dividend` 仅重试失败 checkpoint；`300315/2012-10-22` 缺公告级裁决，必须保持失败。步骤 5 冻结快照未做（defer）。
+> **实施状态（2026-07-28）**：步骤 1/3/4 已完成；步骤 2 首轮已遍历 2,023 只历史宇宙证券，成功 2,012 只并新增 268 条事件。BaoStock 的 10 个已审计同日冲突由显式裁决表处理，修复与重试后已达 2,022 success；`300315/2012-10-22` 缺公告级裁决，`300760/2026-05-28` 是新发现且未审计的同日重复，两项均必须保持 failed。先运行 `--repair-known-dividend-conflicts`，再以 `--backfill-dividend` 仅重试失败 checkpoint；该修复命令也会将 `300315` 的误标 success 复位。步骤 5 冻结快照未做（defer）。
 > 引擎 `valuation_basis` 已是 `raw`/`qfq`/`hfq` 三态、默认 `qfq`；strict 账户/账本代码（`engine` strict 分支、`VirtualAccount` 应收/行权方法、`corporate_actions.py`）及对应 CLI（`--strict`/`--stage-corporate-*`/`--materialize-corporate-actions`）已全部移除，交易约束（涨跌停/ST/list_date）解耦为 `universe_rules`/`execution_rules` 默认严格。
 > 遗留：raw 诊断口径的 `credit_dividend` 仍按持有期 FIFO 扣红利税（§0.3 规划改用 afterTax 近似，未替换；qfq 主线 `credit_dividends=False` 不受影响）。
 
