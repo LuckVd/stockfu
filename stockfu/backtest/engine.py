@@ -383,6 +383,34 @@ def _preload_stock_dividends(codes: list[str], start: date, end: date) -> dict[d
     return out
 
 
+def settle_dividends(
+    acct: VirtualAccount, as_of: date,
+    cash_dividends: dict[date, list[tuple[str, float, date]]],
+    stock_dividends: dict[date, list[tuple[str, float]]],
+    credit_dividends: bool,
+) -> list[dict]:
+    """公司行为结算(研究模式 non-strict 主线):仅 raw 口径。返回新增 trade 记录。
+
+    qfq/hfq 三复权价已含现金分红再投+送转,credit_dividends=False 时两者全跳过
+    (再入账/调仓=重复计息)。raw 下顺序:先除息日现金分红入账(扣红利税),
+    后除权日送转调股数(不动现金)。抽出为纯函数便于 hermetic 单测门控行为。
+    """
+    records: list[dict] = []
+    if not credit_dividends:
+        return records
+    for code, cash, record_date in cash_dividends.get(as_of, []):
+        rec = acct.credit_dividend(code, cash, as_of, record_date)
+        if rec:
+            rec.update(date=as_of.isoformat(), status="credited")
+            records.append(rec)
+    for code, stock in stock_dividends.get(as_of, []):
+        rec = acct.adjust_for_stock_dividend(code, stock, as_of)
+        if rec:
+            rec.update(date=as_of.isoformat(), status="credited")
+            records.append(rec)
+    return records
+
+
 # 方案A strict 账本预载(CorporateActionCoverageError + _preload_accepted_corporate_actions)
 # 随 2026-07-27 研究模式反转移除:研究模式 non-strict 主线只读 dividend_event,不读仲裁账本。
 
@@ -1151,20 +1179,9 @@ def run_backtest(codes: list[str], start: date, end: date,
             list(codes), as_of, sctx=sctx, valuation_basis=valuation_basis)
         if not close_prices:
             continue
-        # 公司行为结算(研究模式 non-strict 主线):仅 raw 口径。qfq/hfq 三复权价已含
-        # 现金分红再投+送转,credit_dividends=False 时两者全跳过(再入账/调仓=重复计息)。
-        # raw 下顺序:先除息日现金分红入账(扣红利税),后除权日送转调股数(不动现金)。
-        if credit_dividends:
-            for code, cash, record_date in cash_dividends.get(as_of, []):
-                rec = acct.credit_dividend(code, cash, as_of, record_date)
-                if rec:
-                    rec.update(date=as_of.isoformat(), status="credited")
-                    trades.append(rec)
-            for code, stock in stock_dividends.get(as_of, []):
-                rec = acct.adjust_for_stock_dividend(code, stock, as_of)
-                if rec:
-                    rec.update(date=as_of.isoformat(), status="credited")
-                    trades.append(rec)
+        # 公司行为结算(研究模式 non-strict 主线):仅 raw 口径门控(详见 settle_dividends)。
+        trades.extend(settle_dividends(acct, as_of, cash_dividends,
+                                       stock_dividends, credit_dividends))
         last_close.update(close_prices)   # 停牌日 close 缺失时,沿用上一交易日价估值(不记 0)
 
         # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌/涨跌停顺延或拒绝)----
