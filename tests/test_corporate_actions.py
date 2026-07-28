@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 from datetime import date
 
-from stockfu.backtest.engine import Position, VirtualAccount, _canonical_dividend_rows
+from stockfu.backtest.engine import Position, VirtualAccount, _canonical_dividend_rows, settle_dividends
 from stockfu.data.base import DividendEventDTO
 from stockfu.models import DividendEvent
 from stockfu.services.dividend import (
@@ -100,6 +100,53 @@ class TestCorporateActionCanonicalization(unittest.TestCase):
         self.assertFalse(report["ready_for_formal_backtest"])
         self.assertEqual(report["duplicate_groups"][0]["count"], 2)
         self.assertEqual(report["zero_event_years"], ["2008"])
+
+
+class TestSettleDividendsGate(unittest.TestCase):
+    """送转门控(2026-07-28 修复):credit_dividends 门控现金+送转结算。
+
+    qfq/hfq 三复权价已含分红再投+送转,credit_dividends=False 时两者全跳过
+    (再手动入账/调仓=重复计息)。此 bug 曾在聚宽交叉验证通过时于 benign 票池
+    (0 送转事件)漏网——「通过≠无bug」(见 memory/backtest-crossvalidation-verdict),
+    故补 hermetic 护栏防静默回归。002594 比亚迪 2025-07-29 10送20 已真跑验证。
+    """
+
+    def _acct(self, shares=400):
+        acct = VirtualAccount(0)
+        acct.positions["002594"] = Position(
+            shares=shares, avg_cost=300.0, lots=[(shares, date(2025, 7, 1))])
+        return acct
+
+    def _divs(self):
+        ex = date(2025, 7, 29)
+        cash = {ex: [("002594", 3.974, date(2025, 7, 28))]}   # (code, 每股现金, 登记日)
+        stock = {ex: [("002594", 2.0)]}                        # 10送20 → factor 3.0
+        return ex, cash, stock
+
+    def test_qfq_skips_both_cash_and_stock(self):
+        acct = self._acct()
+        ex, cash, stock = self._divs()
+        recs = settle_dividends(acct, ex, cash, stock, credit_dividends=False)
+        self.assertEqual(recs, [])
+        self.assertEqual(acct.positions["002594"].shares, 400)   # 送转不调仓
+        self.assertEqual(acct.cash, 0)                            # 现金不入账
+
+    def test_raw_credits_cash_then_adjusts_stock_in_order(self):
+        acct = self._acct()
+        ex, cash, stock = self._divs()
+        recs = settle_dividends(acct, ex, cash, stock, credit_dividends=True)
+        self.assertEqual([r["kind"] for r in recs],
+                         ["cash_dividend", "stock_dividend"])     # 现金先、送转后
+        self.assertEqual(acct.positions["002594"].shares, 1200)   # 400 × factor(3.0)
+        self.assertAlmostEqual(acct.cash, 1271.68, places=2)      # 1589.6 毛扣 20% 税
+
+    def test_no_event_day_is_noop_under_raw(self):
+        acct = self._acct()
+        # 该日无事件 → 即使 raw 也不产生记录、不动仓位
+        recs = settle_dividends(acct, date(2025, 7, 15), {}, {}, credit_dividends=True)
+        self.assertEqual(recs, [])
+        self.assertEqual(acct.positions["002594"].shares, 400)
+        self.assertEqual(acct.cash, 0)
 
 
 if __name__ == "__main__":
