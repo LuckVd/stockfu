@@ -37,7 +37,7 @@ STAMP_DUTY_RATE = 0.0005      # 印花税 0.05%(仅卖出,现行最新;2023-08-2
 STAMP_DUTY_RATE_OLD = 0.001   # 印花税 0.1%(仅卖出,2023-08-28 前)
 STAMP_DUTY_CUTOFF = date(2023, 8, 28)   # 印花税减半生效日(千一→万五)
 TRANSFER_FEE_RATE = 0.00001   # 过户费 0.001%(双边,2022 起沪深统一)
-BENCHMARK = "sh000001"        # 上证综指（回测基准，1990 起）
+BENCHMARK = "sh000300"        # 沪深300（回测基准，2005 起；与 cn_large_pool 大盘股池口径一致）
 
 
 def stamp_duty_rate(as_of: date | None) -> float:
