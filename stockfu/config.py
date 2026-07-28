@@ -27,6 +27,8 @@ class Settings(BaseSettings):
 
     # 存储
     db_url: str = f"sqlite:///{DATA_DIR / 'stockfu.db'}"
+    # 算子结果是可再生缓存，必须与研究主数据物理隔离。
+    operator_cache_db_url: str = f"sqlite:///{DATA_DIR / 'operator_cache.db'}"
 
     # 种子自选
     watchlist: str = "600519,000858,600036,601318,510300,510500"

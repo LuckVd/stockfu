@@ -206,15 +206,20 @@ def cleanup_operator_results() -> int:
     走全表扫(5.6M 行,数秒~十几秒)。这是罕见 init 期维护操作,可接受;
     operator_id 单列索引已作为冗余删除(复合键覆盖全部热路径查询)。
     """
+    from sqlmodel import select
+    from stockfu.ai.operator_cache import cache_engine, _ensure_cache_table
+    from stockfu.db import session_scope
+    from stockfu.models import Operator
     from sqlalchemy import text
-
-    from stockfu.db import engine
-    with engine.begin() as conn:
-        result = conn.execute(text(
-            "DELETE FROM operator_result "
-            "WHERE operator_id NOT IN (SELECT operator_id FROM operator)"
-        ))
-        return result.rowcount or 0
+    with session_scope() as s:
+        known = list(s.exec(select(Operator.operator_id)).all())
+    _ensure_cache_table()
+    with cache_engine.begin() as conn:
+        if not known:
+            return int(conn.execute(text("DELETE FROM operator_result")).rowcount or 0)
+        ph = ",".join(f":p{i}" for i in range(len(known)))
+        return int(conn.execute(text(f"DELETE FROM operator_result WHERE operator_id NOT IN ({ph})"),
+                                {f"p{i}": v for i, v in enumerate(known)}).rowcount or 0)
 
 
 def _upsert_operator(s, *, operator_id, name, type, module, params_schema,

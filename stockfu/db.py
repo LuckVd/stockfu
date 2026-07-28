@@ -18,6 +18,13 @@ engine = create_engine(
 )
 
 
+def _create_main_tables() -> None:
+    """建研究主数据表；可再生的 operator_result 属于独立缓存库。"""
+    SQLModel.metadata.create_all(
+        engine, tables=[t for t in SQLModel.metadata.sorted_tables if t.name != "operator_result"]
+    )
+
+
 @event.listens_for(engine, "connect")
 def _set_sqlite_pragma(dbapi_conn, _record):
     """每连接设 SQLite pragma(G09 性能优化):
@@ -107,21 +114,10 @@ def _migrate() -> None:
         if "net_inflow_pct" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE sector_flow_snapshot ADD COLUMN net_inflow_pct FLOAT"))
+    # operator_result 是可再生缓存，迁至独立 operator_cache.db；主库禁止保留该表。
     if insp.has_table("operator_result"):
-        cols = [c["name"] for c in insp.get_columns("operator_result")]
-        # raw_score 列已废弃(G10 后并入 score,全库无代码读写)→ DROP 回收(SQLite≥3.35)。幂等。
-        if "raw_score" in cols:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE operator_result DROP COLUMN raw_score"))
-        # 删 4 个冗余单列索引（复合唯一键最左前缀/前导列已覆盖）。DROP IF EXISTS 幂等。
-        existing = {ix["name"] for ix in insp.get_indexes("operator_result")}
-        redundant = ["ix_operator_result_asset_code", "ix_operator_result_as_of",
-                     "ix_operator_result_operator_id", "ix_operator_result_fingerprint"]
-        to_drop = [name for name in redundant if name in existing]
-        if to_drop:
-            with engine.begin() as conn:
-                for name in to_drop:
-                    conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE operator_result"))
 
     # asset.note 历史遗留列(早期 model 有,后移除)→ DROP 回收:当前 Asset 模型无此字段,
     # seed_samples INSERT 不带 note 会触发 NOT NULL 约束失败(干净库不受影响——create_all
@@ -132,18 +128,10 @@ def _migrate() -> None:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE asset DROP COLUMN note"))
 
-    # source hash 上线(P2-5):指纹纳入算子源码后,旧指纹全失效成孤儿占空间。
-    # 一次性清空 operator_result(math 重算廉价,首次回测慢一次);幂等:标记设后不再清。
-    if insp.has_table("operator_result") and not has_app_config("opcache_source_hash_migrated"):
-        with engine.begin() as conn:
-            conn.execute(text("DELETE FROM operator_result"))
-        set_app_config("opcache_source_hash_migrated", "1")
-
-
 def init_db() -> None:
     """建表（幂等，含迁移）。"""
     _migrate()
-    SQLModel.metadata.create_all(engine)
+    _create_main_tables()
 
 
 def get_session() -> Iterator[Session]:
@@ -212,7 +200,7 @@ def _ensure_tables() -> None:
 
     server 启动时不调 init_db，故运行时新表（如 app_config）在此 lazy 生效。
     """
-    SQLModel.metadata.create_all(engine)
+    _create_main_tables()
 
 
 def has_app_config(key: str) -> bool:

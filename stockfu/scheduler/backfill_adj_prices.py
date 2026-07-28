@@ -274,15 +274,8 @@ def backfill_adj_prices(
 
 def clear_dividend_yield_cache() -> int:
     """删除错误口径的 dividend_yield 算子缓存。"""
-    from sqlalchemy import text
-
-    from stockfu.db import engine
-
-    with engine.begin() as conn:
-        r = conn.execute(
-            text("DELETE FROM operator_result WHERE operator_id = 'dividend_yield'")
-        )
-        return int(r.rowcount or 0)
+    from stockfu.ai.operator_cache import clear_operator_cache
+    return clear_operator_cache("dividend_yield")
 
 
 def adj_price_coverage() -> dict:
