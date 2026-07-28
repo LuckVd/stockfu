@@ -131,12 +131,16 @@ class BaostockSource(DataSource):
         start = (_d.today() - _td(days=days + 15)).strftime("%Y-%m-%d")
         flag = self.ADJ_FLAG.get((adj or "qfq").lower(), "2")
         try:
+            from stockfu.data.baostock_proxy import run_baostock_query
             # 全字段:状态 + 估值 + 换手,供补全「最新交易日所有数据」
-            rs = bs.query_history_k_data_plus(
-                _bs_code(code),
-                "date,open,high,low,close,volume,amount,tradestatus,isST,"
-                "pctChg,peTTM,pbMRQ,turn",
-                start_date=start, frequency="d", adjustflag=flag)
+            rs = run_baostock_query(
+                lambda: bs.query_history_k_data_plus(
+                    _bs_code(code),
+                    "date,open,high,low,close,volume,amount,tradestatus,isST,"
+                    "pctChg,peTTM,pbMRQ,turn",
+                    start_date=start, frequency="d", adjustflag=flag),
+                label=f"kline:{code}:{flag}",
+            )
         except Exception:  # noqa: BLE001
             return []
         return self._parse_kline_rs(rs)
@@ -157,11 +161,15 @@ class BaostockSource(DataSource):
         if end:
             kwargs["end_date"] = end
         try:
-            rs = bs.query_history_k_data_plus(
-                _bs_code(code),
-                "date,open,high,low,close,volume,amount,tradestatus,isST,"
-                "pctChg,peTTM,pbMRQ,turn",
-                **kwargs)
+            from stockfu.data.baostock_proxy import run_baostock_query
+            rs = run_baostock_query(
+                lambda: bs.query_history_k_data_plus(
+                    _bs_code(code),
+                    "date,open,high,low,close,volume,amount,tradestatus,isST,"
+                    "pctChg,peTTM,pbMRQ,turn",
+                    **kwargs),
+                label=f"kline-range:{code}:{flag}",
+            )
         except Exception as e:  # noqa: BLE001
             raise RuntimeError(f"baostock query exc: {type(e).__name__}: {e}") from e
         err = str(getattr(rs, "error_code", "1") or "1")
@@ -265,9 +273,13 @@ class BaostockSource(DataSource):
 
         start = (_d.today() - _td(days=years * 365 + 15)).strftime("%Y-%m-%d")
         try:
-            rs = bs.query_history_k_data_plus(
-                _bs_code(code), "date,peTTM,pbMRQ",
-                start_date=start, frequency="d")
+            from stockfu.data.baostock_proxy import run_baostock_query
+            rs = run_baostock_query(
+                lambda: bs.query_history_k_data_plus(
+                    _bs_code(code), "date,peTTM,pbMRQ",
+                    start_date=start, frequency="d"),
+                label=f"pe-pb:{code}",
+            )
         except Exception:  # noqa: BLE001
             return None, None
         pes: list[float] = []
@@ -305,26 +317,15 @@ class BaostockSource(DataSource):
 
         this_year = date.today().year
         events: list[DividendEventDTO] = []
-        empty_year0 = False   # 首年即空 → 可能掉线,触发一次 force_relogin
         for y in range(this_year - years + 1, this_year + 1):
             try:
-                rs = bs.query_dividend_data(_bs_code(code), year=y, yearType="report")
+                from stockfu.data.baostock_proxy import run_baostock_query
+                rs = run_baostock_query(
+                    lambda: bs.query_dividend_data(_bs_code(code), year=y, yearType="report"),
+                    label=f"dividend:{code}:{y}",
+                )
             except Exception:  # noqa: BLE001
                 continue
-            err = getattr(rs, "error_code", "1")
-            if err != "0":
-                # 非"无数据"的真实错误(常为掉线):首年失败时重连一次再试
-                if y == this_year - years + 1 and not empty_year0:
-                    empty_year0 = True
-                    self.force_relogin()
-                    try:
-                        rs = bs.query_dividend_data(_bs_code(code), year=y, yearType="report")
-                    except Exception:  # noqa: BLE001
-                        continue
-                    if getattr(rs, "error_code", "1") != "0":
-                        continue
-                else:
-                    continue
             while rs.next():
                 row = rs.get_row_data()
                 ex = _parse_date(row[6]) if len(row) > 6 else None
@@ -345,6 +346,7 @@ class BaostockSource(DataSource):
                     announce_date=_parse_date(row[3]) if len(row) > 3 else None,
                     pay_date=_parse_date(row[7]) if len(row) > 7 else None,
                     stock_mkt_date=_parse_date(row[8]) if len(row) > 8 else None,
+                    per_share_cash_after_tax=_f(row[10]) if len(row) > 10 else None,
                     currency="CNY",
                     source=f"baostock:dividend/{y}",
                 ))
@@ -377,10 +379,14 @@ def get_index_daily_baostock(symbol: str, start: str, end: str) -> list[dict]:
         return []
     import baostock as bs
     try:
-        rs = bs.query_history_k_data_plus(
-            _index_bs_symbol(symbol),
-            "date,open,high,low,close,pctChg,volume,amount",
-            start_date=start, end_date=end, frequency="d")
+        from stockfu.data.baostock_proxy import run_baostock_query
+        rs = run_baostock_query(
+            lambda: bs.query_history_k_data_plus(
+                _index_bs_symbol(symbol),
+                "date,open,high,low,close,pctChg,volume,amount",
+                start_date=start, end_date=end, frequency="d"),
+            label=f"index-daily:{symbol}",
+        )
     except Exception:  # noqa: BLE001
         return []
     asset_code = ("sz" if symbol.startswith("399") else "sh") + symbol

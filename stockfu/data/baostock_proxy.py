@@ -705,6 +705,34 @@ def rotate_baostock_proxy(reason: str = "query_fail") -> bool:
         return sess.mark_bad_and_rotate(reason)
 
 
+def run_baostock_query(
+    fn: Callable[[], T], *, label: str = "", ensure_login: bool = True,
+) -> T:
+    """经进程级代理会话执行任意 Baostock 查询。
+
+    所有 Baostock 读请求都应走此入口，而不是只在登录时接入代理池。它复用
+    :meth:`BaostockProxySession.run` 的线程硬超时、坏代理剔除、自动轮换、重拉
+    与直连兜底闭环；Baostock 以 ``error_code`` 返回的失败也会转换为异常，从而
+    触发轮换。显式 ``BAOSTOCK_PROXY_MODE=direct`` 时仍保留直连语义。
+    """
+    if ensure_login and not ensure_baostock_login():
+        raise RuntimeError("baostock login failed")
+
+    def _query() -> T:
+        result = fn()
+        code = str(getattr(result, "error_code", "0") or "0")
+        if code != "0":
+            msg = str(getattr(result, "error_msg", "") or "")
+            raise RuntimeError(f"baostock query err {code}: {msg}")
+        return result
+
+    sess = get_global_session()
+    if sess is not None and sess.active:
+        return sess.run(_query, label=label)
+    # direct 模式明确关闭代理池；仍已由 ensure_baostock_login 完成登录。
+    return _query()
+
+
 def warm_baostock_channel() -> bool:
     """--fetch 开头预热，避免第一次 PE 查询才拉代理超时。"""
     return ensure_baostock_login(force=False)

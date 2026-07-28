@@ -13,12 +13,12 @@ from typing import Optional
 
 import pandas as pd
 
-from stockfu.data.base import (DataSource, DelistingEventDTO, KlineBar, Market, Quote, RightsIssueDTO, currency_of,
+from stockfu.data.base import (DataSource, KlineBar, Market, Quote, currency_of,
                             detect_market, direct_connection)
 from stockfu.data.dividend_parser import (_filter_rows as filter_rows,
                                        _pick as pick_col, build_metric_from_df,
                                        build_metric_from_fhps, build_metric_from_history,
-                                       extract_corporate_actions_from_history, safe_float, safe_str)
+                                       safe_float, safe_str)
 
 
 def _find_col(cols, *keys, exclude=()):
@@ -546,98 +546,6 @@ class AkshareSource(DataSource):
                 df, code, cur, latest_price, source=f"akshare:{used}")
         return build_metric_from_df(
             df, code, currency=cur, latest_price=latest_price, source=f"akshare:{used}")
-
-    def get_corporate_action_events(self, code: str):
-        """返回账户账本专用的原始每旧股事件，不复用股息率展示口径。"""
-        if detect_market(code) != Market.CN:
-            return []
-        df, used, _ = _call_df([(
-            "stock_history_dividend_detail",
-            {"symbol": code, "indicator": "分红", "date": ""},
-        )])
-        if df is None:
-            return []
-        return extract_corporate_actions_from_history(
-            df, code, currency=currency_of(Market.CN),
-            source=f"akshare:{used}:pre_event_share",
-        )
-
-    def get_rights_issue_events(self, code: str, start_date: str = "20000101",
-                                end_date: str = "22220222") -> list[RightsIssueDTO]:
-        """取巨潮已实施配股；比例由“每10股”换算为每旧股。"""
-        if detect_market(code) != Market.CN:
-            return []
-        df, used, _ = _call_df([(
-            "stock_allotment_cninfo",
-            {"symbol": code, "start_date": start_date, "end_date": end_date},
-        )])
-        if df is None:
-            return []
-
-        def as_date(value):
-            try:
-                parsed = pd.to_datetime(value)
-                return None if pd.isna(parsed) else parsed.date()
-            except (TypeError, ValueError):
-                return None
-
-        events: list[RightsIssueDTO] = []
-        for _, row in df.iterrows():
-            ex_date = as_date(row.get("除权基准日"))
-            ratio_per10 = safe_float(row.get("配股比例"))
-            price = safe_float(row.get("配股价格"))
-            if ex_date is None or ratio_per10 is None or ratio_per10 <= 0 or price is None or price <= 0:
-                continue
-            events.append(RightsIssueDTO(
-                code=code, ex_date=ex_date, rights_ratio=ratio_per10 / 10.0,
-                rights_price=price, record_date=as_date(row.get("股权登记日")),
-                announce_date=as_date(row.get("公告日期")),
-                pay_date=as_date(row.get("资金到账日")),
-                stock_mkt_date=as_date(row.get("配股上市日")), currency="CNY",
-                source=f"akshare:{used}",
-            ))
-        return sorted(events, key=lambda event: event.ex_date)
-
-    def get_exchange_delisting_events(self) -> list[DelistingEventDTO]:
-        """读取沪深交易所名单，保留两市披露语义的差异。
-
-        上交所此接口仅公开暂停上市日，因此只能作为 ``delisting_warning``；深交所
-        提供终止上市日，才可记录为 ``delisting``。两者都不携带终止结算价。
-        """
-        frames: list[tuple[pd.DataFrame | None, str, str, str]] = []
-        with direct_connection():
-            try:
-                import akshare as ak
-                frames.append((ak.stock_info_sh_delist(), "公司代码", "暂停上市日期",
-                               "sse:stock_info_sh_delist"))
-                frames.append((ak.stock_info_sz_delist(), "证券代码", "终止上市日期",
-                               "szse:stock_info_sz_delist"))
-            except Exception:  # noqa: BLE001
-                return []
-        events: list[DelistingEventDTO] = []
-        for frame, code_col, date_col, source in frames:
-            if frame is None or frame.empty:
-                continue
-            action_type = "delisting_warning" if source.startswith("sse:") else "delisting"
-            for _, row in frame.iterrows():
-                code = safe_str(row.get(code_col)).zfill(6)
-                try:
-                    event_date = pd.to_datetime(row.get(date_col)).date()
-                except (TypeError, ValueError):
-                    continue
-                if not code or pd.isna(event_date):
-                    continue
-                list_value = row.get("上市日期")
-                try:
-                    list_date = pd.to_datetime(list_value).date()
-                except (TypeError, ValueError):
-                    list_date = None
-                events.append(DelistingEventDTO(
-                    code=code, event_date=event_date, action_type=action_type,
-                    list_date=list_date, name=safe_str(row.get("公司简称") or row.get("证券简称")),
-                    source=source,
-                ))
-        return sorted(events, key=lambda event: (event.event_date, event.code))
 
     # -------- 资金流（大资金/板块情绪） --------
     def get_stock_fund_flow(self, code: str) -> dict:

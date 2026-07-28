@@ -145,11 +145,11 @@ def run_backfill_benchmark() -> None:
     print("回补回测基准 sh000001 历史日线…")
     print(f"✓ {_run()}")
 
-def run_backfill_sw() -> None:
+def run_backfill_sw(*, refresh: bool = False) -> None:
     from stockfu.scheduler.jobs import backfill_sw_index as _run
 
     print("回补 31 个申万一级行业指数历史日线（akshare index_hist_sw）…")
-    print(f"✓ {_run()}")
+    print(f"✓ {_run(refresh=refresh)}")
 
 
 def run_backfill_sector_pulse() -> None:
@@ -158,23 +158,24 @@ def run_backfill_sector_pulse() -> None:
     print("回补同花顺 90 行业历史日线（2020 至今；逐年串行、每请求至少等待 0.3 秒）…")
     print(f"✓ {backfill_sector_pulse_history(pause_sec=0.3)}")
 
-def run_backfill_etf_industry() -> None:
+def run_backfill_etf_industry(*, refresh: bool = False) -> None:
     from stockfu.scheduler.jobs import backfill_industry_etf as _run
 
     print("回补行业 ETF 历史日线（前复权 qfq：东财→腾讯）…")
-    print(f"✓ {_run()}")
+    print(f"✓ {_run(refresh=refresh)}")
 
 
-def run_backfill_etf() -> None:
-    """清空后全量重灌 ETF 前复权日线(INDEX+INDUSTRY+SECTOR+自选 fund_etf)。"""
+def run_backfill_etf(*, refresh: bool = False, clear: bool = False) -> None:
+    """可恢复回补 ETF 前复权日线；仅显式 clear 时清表。"""
     from stockfu.scheduler.jobs import backfill_etf_quotes, clear_etf_data, etf_universe_codes
 
     codes = etf_universe_codes()
-    print("清空 ETF 相关表…")
-    cleared = clear_etf_data()
-    print(f"  cleared: {cleared}")
+    if clear:
+        print("清空 ETF 相关表…")
+        cleared = clear_etf_data()
+        print(f"  cleared: {cleared}")
     print(f"全量回补 {len(codes)} 只 ETF 前复权日线（东财 qfq→腾讯 qfq）…")
-    summary = backfill_etf_quotes(codes)
+    summary = backfill_etf_quotes(codes, refresh=refresh)
     ok = sum(1 for v in summary.values() if v.get("total", 0) > 0)
     deep = sum(1 for v in summary.values() if v.get("source_hint") == "em_or_deep")
     empty = [c for c, v in summary.items() if not v.get("total")]
@@ -281,133 +282,6 @@ def run_audit_corporate_actions(start_year: int, end_year: int | None) -> None:
     ))
 
 
-def run_stage_corporate_actions(codes_arg: str | None, start_year: int) -> None:
-    """受控抓取并暂存公司行为来源记录；禁止隐式全市场写入。"""
-    from datetime import date
-
-    from stockfu.data.manager import get_manager
-    from stockfu.services.corporate_actions import stage_dividend_metric
-
-    if not codes_arg:
-        raise ValueError("--stage-corporate-actions 必须带 --corporate-action-codes，例如 600519")
-    if start_year < 1990 or start_year > date.today().year:
-        raise ValueError("--corporate-action-start-year 非法")
-    codes = [code.strip() for code in codes_arg.split(",") if code.strip()]
-    if not codes:
-        raise ValueError("--corporate-action-codes 不能为空")
-    years = date.today().year - start_year + 1
-    manager = get_manager()
-    summary = {
-        "codes": len(codes), "with_events": 0, "added": 0, "skipped": 0,
-        "empty": [], "errors": {},
-    }
-    for code in codes:
-        try:
-            metric = manager.get_dividend_metric(
-                code, force_network=True, years=years, timeout=60.0,
-            )
-        except Exception as exc:  # 单证券源失败只记录；其余候选仍可形成审计材料。
-            summary["errors"][code] = f"{type(exc).__name__}: {exc}"
-            continue
-        if not metric or not metric.events:
-            summary["empty"].append(code)
-            continue
-        try:
-            report = stage_dividend_metric(code, metric)
-        except Exception as exc:
-            summary["errors"][code] = f"stage {type(exc).__name__}: {exc}"
-            continue
-        summary["with_events"] += 1
-        summary["added"] += report["added"]
-        summary["skipped"] += report["skipped"]
-    print(summary)
-
-
-def run_stage_legacy_corporate_actions(codes_arg: str | None, start_year: int) -> None:
-    """将显式证券的旧公司行为导入新来源表；不联网、不写旧表。"""
-    from datetime import date
-
-    from stockfu.services.corporate_actions import stage_legacy_dividend_events
-
-    if not codes_arg:
-        raise ValueError("--stage-legacy-corporate-actions 必须带 --corporate-action-codes")
-    codes = [code.strip() for code in codes_arg.split(",") if code.strip()]
-    print(stage_legacy_dividend_events(
-        codes, start=date(start_year, 1, 1), end=date.today(),
-    ))
-
-
-def run_stage_akshare_corporate_actions(codes_arg: str | None, start_year: int) -> None:
-    """抓取 AkShare 的除权前旧股口径事件，暂存为独立来源证据。"""
-    from stockfu.data.akshare_source import AkshareSource
-    from stockfu.data.base import DividendMetric
-    from stockfu.services.corporate_actions import stage_dividend_metric
-
-    if not codes_arg:
-        raise ValueError("--stage-akshare-corporate-actions 必须带 --corporate-action-codes")
-    source = AkshareSource()
-    summary = {"codes": 0, "with_events": 0, "added": 0, "skipped": 0, "empty": [], "errors": {}}
-    for code in [code.strip() for code in codes_arg.split(",") if code.strip()]:
-        summary["codes"] += 1
-        try:
-            events = [event for event in source.get_corporate_action_events(code)
-                      if event.ex_date.year >= start_year]
-            if not events:
-                summary["empty"].append(code)
-                continue
-            report = stage_dividend_metric(code, DividendMetric(code=code, events=events))
-            summary["with_events"] += 1
-            summary["added"] += report["added"]
-            summary["skipped"] += report["skipped"]
-        except Exception as exc:
-            summary["errors"][code] = f"{type(exc).__name__}: {exc}"
-    print(summary)
-
-
-def run_stage_akshare_rights_issues(codes_arg: str | None, start_year: int) -> None:
-    """抓取显式证券的巨潮配股实施方案到来源证据表。"""
-    from stockfu.data.akshare_source import AkshareSource
-    from stockfu.services.corporate_actions import stage_rights_issue_events
-
-    if not codes_arg:
-        raise ValueError("--stage-akshare-rights-issues 必须带 --corporate-action-codes")
-    source = AkshareSource()
-    summary = {"codes": 0, "with_events": 0, "added": 0, "skipped": 0, "empty": [], "errors": {}}
-    for code in [code.strip() for code in codes_arg.split(",") if code.strip()]:
-        summary["codes"] += 1
-        try:
-            events = [event for event in source.get_rights_issue_events(code)
-                      if event.ex_date.year >= start_year]
-            if not events:
-                summary["empty"].append(code)
-                continue
-            report = stage_rights_issue_events(events)
-            summary["with_events"] += 1
-            summary["added"] += report["added"]
-            summary["skipped"] += report["skipped"]
-        except Exception as exc:
-            summary["errors"][code] = f"{type(exc).__name__}: {exc}"
-    print(summary)
-
-
-def run_materialize_corporate_actions() -> None:
-    """将已暂存的来源证据仲裁为 append-only 正式事件版本。"""
-    from stockfu.services.corporate_actions import materialize_arbitration_proposals
-
-    print(materialize_arbitration_proposals())
-
-
-def run_stage_exchange_delistings() -> None:
-    """读取沪深交易所名单，暂存暂停/终止上市来源证据。"""
-    from stockfu.data.akshare_source import AkshareSource
-    from stockfu.services.corporate_actions import stage_delisting_events
-
-    events = AkshareSource().get_exchange_delisting_events()
-    if not events:
-        raise RuntimeError("未取得交易所退市名单，拒绝写入空覆盖结论")
-    print({"events": len(events), **stage_delisting_events(events)})
-
-
 def run_backfill_index_universe(index_codes: str | None) -> None:
     """导入带有效日期的中证当前快照；历史档案须逐期补齐，绝不倒灌。"""
     from stockfu.db import init_db
@@ -426,7 +300,7 @@ def run_backfill_index_universe(index_codes: str | None) -> None:
     print(audit_coverage(codes))
 
 
-def run_backfill_index_universe_history(start: str, end: str) -> None:
+def run_backfill_index_universe_history(start: str, end: str, *, refresh: bool = False) -> None:
     """从 BaoStock 可复现历史接口回补默认 300+500；仍待正式档案核验。"""
     from datetime import date
     from stockfu.db import init_db
@@ -439,7 +313,7 @@ def run_backfill_index_universe_history(start: str, end: str) -> None:
     if end_d < start_d:
         raise ValueError("--index-history-end 不能早于 --index-history-start")
     print(f"回补沪深300+中证500历史快照（baostock，串行、待正式档案核验）: {start_d} → {end_d}")
-    result = backfill_baostock_historical_indices(start=start_d, end=end_d)
+    result = backfill_baostock_historical_indices(start=start_d, end=end_d, refresh=refresh)
     print(result)
     print(audit_coverage(HISTORICAL_INDEX_CODES))
 
@@ -468,7 +342,7 @@ def run_backfill_star50_initial() -> None:
     print(audit_coverage(("000688",)))
 
 
-def run_backfill_quote_status() -> None:
+def run_backfill_quote_status(*, refresh: bool = False) -> None:
     """补全:历史 is_st/trade_status + 每只票最新交易日全量数据(OHLCV/估值/状态)。"""
     from stockfu.db import init_db
     from stockfu.scheduler.jobs import backfill_quote_status
@@ -479,7 +353,7 @@ def run_backfill_quote_status() -> None:
     before = quote_status_coverage()
     print(f"  前: is_st_rate={before.get('is_st_rate')}  "
           f"trade_status_rate={before.get('trade_status_rate')}  rows={before.get('n_rows')}")
-    r = backfill_quote_status()
+    r = backfill_quote_status(refresh=refresh)
     after = quote_status_coverage()
     print(f"✓ codes={r.get('codes')}  历史状态补丁={r.get('rows_patched')}  "
           f"最新日全量upsert={r.get('latest_upserted')}  errors={r.get('errors')}")
@@ -539,10 +413,10 @@ def run_clear_dividend_cache() -> None:
     print(f"✓ 已删除 operator_result dividend_yield {n} 行")
 
 
-def run_backfill_dividend(start_year: int | None = None) -> None:
+def run_backfill_dividend(start_year: int | None = None, *, refresh: bool = False) -> None:
     """回补全市场 A 股分红历史 → dividend_event 表。
 
-    baostock query_dividend_data 主源(财年口径,默认近 10 年),akshare 兜底。
+    baostock query_dividend_data 主源(财年口径,默认 2007 至今以填早期空白),akshare 兜底。
     resolve_base_codes('all') 取 quote_snapshot 全池(~800 票);按 ex_date 去重,
     幂等可重跑。baostock socket 轻量单线程,预计 10-20 分钟,建议后台跑。
     """
@@ -553,26 +427,33 @@ def run_backfill_dividend(start_year: int | None = None) -> None:
     from stockfu.services import dividend as div_svc
 
     init_db()
-    start_year = start_year or (date.today().year - 9)
+    start_year = start_year or 2007
     if start_year < 1990 or start_year > date.today().year:
         raise ValueError(f"非法分红回补起始年: {start_year}")
     years = date.today().year - start_year + 1
     codes = resolve_base_codes("all")
+    scope = f"v1:{start_year}-{date.today().year}"
+    from stockfu.services.backfill_checkpoint import mark_item, pending_items
+    pending, skipped = pending_items("dividend", scope, codes, refresh=refresh)
     with session_scope() as s:
         before = s.exec(text("SELECT COUNT(*) FROM dividend_event")).all()[0][0]
     print(f"回补 {len(codes)} 只 A 股分红历史({start_year}→{date.today().year}; "
-          f"baostock 主源 / akshare 兜底;前:{before} 行)…")
+          f"baostock 主源 / akshare 兜底;前:{before} 行; "
+          f"checkpoint 跳过:{skipped};待补:{len(pending)};refresh={refresh})…")
     new = errors = 0
-    for i, c in enumerate(codes, 1):
+    for i, c in enumerate(pending, 1):
         try:
             # 历史请求每只会查多个财年，给 baostock 更长的线程看门狗时间。
             new += div_svc.persist_dividends(c, years=years, timeout=60.0)
+            mark_item("dividend", scope, c, success=True)
         except Exception as e:  # noqa: BLE001
             errors += 1
+            mark_item("dividend", scope, c, success=False,
+                      error=f"{type(e).__name__}: {e}")
             if errors <= 5:
                 print(f"  ⚠ {c} 失败: {e}")
-        if i % 50 == 0 or i == len(codes):
-            print(f"  [{i}/{len(codes)}] 累计新增 {new} 条 (失败 {errors})")
+        if i % 50 == 0 or i == len(pending):
+            print(f"  [{i}/{len(pending)}] 累计新增 {new} 条 (失败 {errors})")
     with session_scope() as s:
         after = s.exec(text("SELECT COUNT(*) FROM dividend_event")).all()[0][0]
     print(f"✓ 完成:新增 {new} 条,失败 {errors} 只;dividend_event {before} → {after} 行")
@@ -661,14 +542,13 @@ def run_recommend(
 
 def run_backtest(strategy: str, start: str | None, end: str | None,
                  cash: float, codes: str | None, save: bool,
-                 strict: bool = True, min_amount: float | None = None,
-                 valuation_basis: str = "raw") -> None:
+                 min_amount: float | None = None,
+                 valuation_basis: str = "qfq") -> None:
     """回测：算子→策略→逐日 T+1 执行，输出绩效指标。
 
     策略由 app_config('active_strategy_id') 决定;此处 --backtest STRATEGY 设置它。
     --codes: 省略=沪深300+中证500时点成分宇宙；all/pool=大盘候选池；或逗号列表。
-    strict(默认 True): 时点宇宙 + 涨跌停/滑点; --no-strict 对齐旧「有价即成交」。
-    详见 docs/BACKTEST.md。
+    估值口径默认 qfq(研究模式主线,已含分红再投);研究模式详见 docs/BACKTEST.md §0。
     """
     from datetime import date, timedelta
 
@@ -696,7 +576,7 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     use_historical_universe = codes is None
     code_list = resolve_base_codes("historical_indices" if use_historical_universe else codes)
 
-    scope = f"{len(code_list)}只票" + (" strict" if strict else " no-strict")
+    scope = f"{len(code_list)}只票"
     print(f"回测 {strategy}  {start_d} → {end_d}  初始资金 {cash:,.0f}  ({scope}, 估值 {valuation_basis}) …")
     universe_rules = None
     if use_historical_universe:
@@ -707,7 +587,7 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
         )
     elif min_amount is not None:
         universe_rules = UniverseRules(min_amount_ma20=min_amount)
-    r = _run(code_list, start_d, end_d, initial_cash=cash, strict=strict,
+    r = _run(code_list, start_d, end_d, initial_cash=cash,
              universe_rules=universe_rules, valuation_basis=valuation_basis)
     m = r["metrics"]
     bench_ret = m.get("benchmark_return")
@@ -900,30 +780,22 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补回测基准 sh000001 历史日线（首次部署用）")
     p.add_argument("--backfill-sw", action="store_true",
                    help="回补 31 个申万一级行业指数历史日线(akshare index_hist_sw;行业情绪/轮动前置)")
+    p.add_argument("--backfill-sw-refresh", action="store_true",
+                   help="强制重跑已成功的申万行业指数项")
     p.add_argument("--backfill-sector-pulse", action="store_true",
                    help="串行回补同花顺90行业历史日线(2020至今；资金流从每日快照开始积累)")
     p.add_argument("--backfill-etf-industry", action="store_true",
                    help="回补行业 ETF 历史日线(前复权 qfq：东财→腾讯;可交易轮动前置)")
+    p.add_argument("--backfill-etf-refresh", action="store_true",
+                   help="强制重跑已成功的 ETF 项")
     p.add_argument("--backfill-etf", action="store_true",
-                   help="清空 ETF 表后全量重灌前复权日线(INDEX+行业+SECTOR+自选;东财qfq→腾讯qfq)")
+                   help="可恢复回补 ETF 前复权日线(INDEX+行业+SECTOR+自选;默认不断表)")
+    p.add_argument("--clear-etf-data", action="store_true",
+                   help="仅配合 --backfill-etf：先清空 ETF 表再回补（破坏性操作）")
     p.add_argument("--backfill-universe", action="store_true",
                    help="回补 security_master(list_date/board, baostock;时点宇宙前置)")
     p.add_argument("--audit-corporate-actions", action="store_true",
                    help="只读审计公司行为：按年覆盖、重复和金额/来源异常（正式回测前置）")
-    p.add_argument("--stage-corporate-actions", action="store_true",
-                   help="抓取显式指定证券的公司行为到来源证据表；不写旧 dividend_event")
-    p.add_argument("--stage-legacy-corporate-actions", action="store_true",
-                   help="将显式证券的旧 dividend_event 导入来源证据表；不写旧表、不自动仲裁")
-    p.add_argument("--stage-akshare-corporate-actions", action="store_true",
-                   help="按除权前旧股口径抓 AkShare 公司行为到来源证据表；不写旧表")
-    p.add_argument("--stage-akshare-rights-issues", action="store_true",
-                   help="抓取显式证券的巨潮配股实施方案到来源证据表；不自动仲裁")
-    p.add_argument("--materialize-corporate-actions", action="store_true",
-                   help="仲裁来源证据并追加正式公司行为版本；不改写历史版本")
-    p.add_argument("--stage-exchange-delistings", action="store_true",
-                   help="暂存沪深交易所暂停/终止上市名单；不写 security_master、不自动仲裁")
-    p.add_argument("--corporate-action-codes", default=None,
-                   help="配合 --stage-corporate-actions：逗号分隔证券代码（必填，禁止隐式全市场）")
     p.add_argument("--corporate-action-start-year", type=int, default=2007,
                    help="配合 --audit-corporate-actions：起始年（默认2007）")
     p.add_argument("--corporate-action-end-year", type=int, default=None,
@@ -932,6 +804,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="导入默认指数当前成分快照(只按文件日期写入；不伪造历史)")
     p.add_argument("--backfill-index-universe-history", action="store_true",
                    help="逐交易日串行回补沪深300+中证500历史成分（baostock，待正式档案核验）")
+    p.add_argument("--backfill-index-universe-history-refresh", action="store_true",
+                   help="强制重跑已 checkpoint 成功的指数成分交易日")
     p.add_argument("--backfill-index-universe-mirror", action="store_true",
                    help="导入中证1000可得的月度成分镜像（待正式档案核验，非日级完整）")
     p.add_argument("--backfill-star50-initial", action="store_true",
@@ -944,10 +818,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="配合 --backfill-index-universe：逗号分隔指数代码；默认历史宇宙指数")
     p.add_argument("--backfill-quote-status", action="store_true",
                    help="补历史 is_st/trade_status + 每只票最新交易日全量数据(baostock)")
+    p.add_argument("--backfill-quote-status-refresh", action="store_true",
+                   help="强制重跑当日已成功的行情状态证券")
     p.add_argument("--backfill-dividend", action="store_true",
                    help="回补全市场分红历史→dividend_event(baostock query_dividend_data 主源/akshare兜底;红利因子前置,10-20分钟)")
     p.add_argument("--backfill-dividend-start-year", type=int, default=None,
-                   help="分红历史回补的起始财年(仅与 --backfill-dividend 一起使用；默认近10年)")
+                   help="分红历史回补的起始财年(仅与 --backfill-dividend 一起使用；默认2007)")
+    p.add_argument("--backfill-dividend-refresh", action="store_true",
+                   help="强制重跑已 checkpoint 成功的分红证券（默认仅重试失败/未完成项）")
     p.add_argument("--backfill-adj-prices", action="store_true",
                    help="baostock 串行拉齐前复权/不复权/后复权→quote_snapshot "
                         "(*_qfq/*_raw/*_hfq);默认免费代理池;完成后清 dividend_yield 缓存")
@@ -1007,14 +885,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="标的池:省略=自选; all/pool=大盘候选(~800); 或逗号代码列表")
     p.add_argument("--min-amount", type=float, default=None,
                    help="宇宙动态池:单日成交额门槛(元,如 50000000=5000万);默认关闭")
-    p.add_argument("--strict", dest="strict", action="store_true", default=True,
-                   help="严谨模式(默认):时点宇宙+涨跌停/滑点")
-    p.add_argument("--no-strict", dest="strict", action="store_false",
-                   help="关闭宇宙/涨跌停/滑点(旧行为对照)")
     p.add_argument("--valuation-basis", dest="valuation_basis",
-                   choices=("hfq", "raw"), default="raw",
-                   help="账户估值口径:raw=不复权+现金分红入账(默认);"
-                        "hfq=后复权实验口径(不可用于正式账户回测，见 docs/BACKTEST.md)")
+                   choices=("qfq", "raw", "hfq"), default="qfq",
+                   help="账户估值口径:qfq=前复权(默认,研究模式主线,已含分红再投);"
+                        "raw=不复权+现金分红入账。研究模式详见 docs/BACKTEST.md §0.3")
     p.add_argument("--save", action="store_true", help="结果落盘（回测→data/backtest/ 诊断→data/factor_diag/）")
     p.add_argument("--periods", default=None,
                    help="因子诊断前向收益周期(交易日)，逗号分隔，默认 1,5,10,21")
@@ -1070,48 +944,34 @@ def main() -> None:
     elif args.backfill_benchmark:
         run_backfill_benchmark()
     elif args.backfill_sw:
-        run_backfill_sw()
+        run_backfill_sw(refresh=args.backfill_sw_refresh)
     elif args.backfill_sector_pulse:
         run_backfill_sector_pulse()
     elif args.backfill_etf_industry:
-        run_backfill_etf_industry()
+        run_backfill_etf_industry(refresh=args.backfill_etf_refresh)
     elif args.backfill_etf:
-        run_backfill_etf()
+        run_backfill_etf(refresh=args.backfill_etf_refresh, clear=args.clear_etf_data)
     elif args.backfill_universe:
         run_backfill_universe()
     elif args.audit_corporate_actions:
         run_audit_corporate_actions(args.corporate_action_start_year,
                                     args.corporate_action_end_year)
-    elif args.stage_corporate_actions:
-        run_stage_corporate_actions(args.corporate_action_codes,
-                                    args.corporate_action_start_year)
-    elif args.stage_legacy_corporate_actions:
-        run_stage_legacy_corporate_actions(args.corporate_action_codes,
-                                           args.corporate_action_start_year)
-    elif args.stage_akshare_corporate_actions:
-        run_stage_akshare_corporate_actions(args.corporate_action_codes,
-                                            args.corporate_action_start_year)
-    elif args.stage_akshare_rights_issues:
-        run_stage_akshare_rights_issues(args.corporate_action_codes,
-                                        args.corporate_action_start_year)
-    elif args.materialize_corporate_actions:
-        run_materialize_corporate_actions()
-    elif args.stage_exchange_delistings:
-        run_stage_exchange_delistings()
     elif args.backfill_index_universe:
         run_backfill_index_universe(args.index_codes)
     elif args.backfill_index_universe_history:
         run_backfill_index_universe_history(args.index_history_start,
-                                             args.index_history_end or date.today().isoformat())
+                                             args.index_history_end or date.today().isoformat(),
+                                             refresh=args.backfill_index_universe_history_refresh)
     elif args.backfill_index_universe_mirror:
         run_backfill_index_universe_mirror(args.index_history_start,
                                             args.index_history_end or date.today().isoformat())
     elif args.backfill_star50_initial:
         run_backfill_star50_initial()
     elif args.backfill_quote_status:
-        run_backfill_quote_status()
+        run_backfill_quote_status(refresh=args.backfill_quote_status_refresh)
     elif args.backfill_dividend:
-        run_backfill_dividend(args.backfill_dividend_start_year)
+        run_backfill_dividend(args.backfill_dividend_start_year,
+                              refresh=args.backfill_dividend_refresh)
     elif args.schedule:
         run_schedule()
     elif args.clean_quotes:
@@ -1138,7 +998,7 @@ def main() -> None:
         )
     elif args.backtest:
         run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save,
-                     strict=args.strict, min_amount=args.min_amount,
+                     min_amount=args.min_amount,
                      valuation_basis=args.valuation_basis)
     elif args.factor_diag:
         run_factor_diag(args.factor_diag, args.start, args.end, args.codes, args.params,

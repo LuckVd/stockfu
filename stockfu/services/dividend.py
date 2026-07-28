@@ -217,22 +217,29 @@ def persist_dividends(code: str, *, years: int = 10, timeout: float = 10.0) -> i
             if rows:
                 row = rows[0]
                 before = (row.record_date, row.announce_date, row.per_share_cash,
-                          row.per_share_stock, row.currency, row.source)
+                          row.per_share_stock, row.pay_date, row.stock_mkt_date,
+                          row.per_share_cash_after_tax, row.currency, row.source)
                 row.record_date = e.record_date
                 row.announce_date = e.announce_date
                 row.per_share_cash = float(e.per_share_cash or 0)
                 row.per_share_stock = float(e.per_share_stock or 0)
+                row.pay_date = e.pay_date
+                row.stock_mkt_date = e.stock_mkt_date
+                row.per_share_cash_after_tax = e.per_share_cash_after_tax
                 row.currency = e.currency
                 row.source = e.source
                 after = (row.record_date, row.announce_date, row.per_share_cash,
-                         row.per_share_stock, row.currency, row.source)
+                         row.per_share_stock, row.pay_date, row.stock_mkt_date,
+                         row.per_share_cash_after_tax, row.currency, row.source)
                 written += int(before != after)
             else:
                 s.add(DividendEvent(
                     asset_code=code, ex_date=e.ex_date,
                     record_date=e.record_date, announce_date=e.announce_date,
+                    pay_date=e.pay_date, stock_mkt_date=e.stock_mkt_date,
                     per_share_cash=float(e.per_share_cash or 0),
                     per_share_stock=float(e.per_share_stock or 0),
+                    per_share_cash_after_tax=e.per_share_cash_after_tax,
                     currency=e.currency, source=e.source,
                 ))
                 written += 1

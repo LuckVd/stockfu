@@ -309,14 +309,14 @@ def backfill_security_master(codes: list[str] | None = None) -> dict:
     except ImportError:
         return {"upserted": 0, "skipped": 0, "errors": 1, "error": "baostock 未安装"}
 
-    lg = bs.login()
-    if getattr(lg, "error_code", "1") != "0":
-        return {"upserted": 0, "skipped": 0, "errors": 1, "error": lg.error_msg}
+    from stockfu.data.baostock_proxy import ensure_baostock_login, run_baostock_query
+    if not ensure_baostock_login():
+        return {"upserted": 0, "skipped": 0, "errors": 1, "error": "baostock 登录失败"}
 
     # code -> (name, list_date, delist_date, status)
     basic: dict[str, tuple[str, date | None, date | None, str]] = {}
     try:
-        rs = bs.query_stock_basic()
+        rs = run_baostock_query(bs.query_stock_basic, label="stock-basic")
         while getattr(rs, "error_code", "1") == "0" and rs.next():
             row = rs.get_row_data()
             # code, code_name, ipoDate, outDate, type, status
@@ -333,11 +333,9 @@ def backfill_security_master(codes: list[str] | None = None) -> dict:
             delist_d = _parse_d(row[3]) if row[3] else None
             status = row[5] or "1"
             basic[code] = (name, list_d, delist_d, status)
-    finally:
-        try:
-            bs.logout()
-        except Exception:  # noqa: BLE001
-            pass
+    except Exception as exc:  # noqa: BLE001
+        return {"upserted": 0, "skipped": 0, "errors": 1,
+                "error": f"baostock query_stock_basic: {type(exc).__name__}: {exc}"}
 
     # 无 baostock 行时用 first_quote 兜底写入
     missing = code_set - set(basic.keys())

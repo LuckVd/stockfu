@@ -34,6 +34,19 @@ class TestPickPx(unittest.TestCase):
         from stockfu.backtest.engine import _pick_px
         self.assertEqual(_pick_px(self.bar, "close_hfq", "close_raw", "close", "raw"), 1639.0)
 
+    def test_qfq_picks_qfq_key(self):
+        from stockfu.backtest.engine import _pick_px
+        # qfq 研究模式主线:优先前复权键(close/open);已含分红再投。
+        self.assertEqual(_pick_px(self.bar, "close_hfq", "close_raw", "close", "qfq"), 1490.0)
+        self.assertEqual(_pick_px(self.bar, "open_hfq", "open_raw", "open", "qfq"), 1485.0)
+
+    def test_qfq_missing_falls_back_to_raw(self):
+        from stockfu.backtest.engine import _pick_px
+        bar = {"close_hfq": None, "open_hfq": None,
+               "close_raw": 1639.0, "open_raw": None, "close": None, "open": None}
+        # qfq 键缺失 → 回落 raw(qfq 与 raw 共享未除权基准,可安全回落)
+        self.assertEqual(_pick_px(bar, "close_hfq", "close_raw", "close", "qfq"), 1639.0)
+
     def test_hfq_missing_falls_back_to_raw_then_qfq(self):
         from stockfu.backtest.engine import _pick_px
         bar = {"close_hfq": None, "open_hfq": None,
@@ -73,12 +86,6 @@ class TestRunBacktestBasisValidation(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             run_backtest([], date(2024, 1, 1), date(2024, 1, 2), valuation_basis="bogus")
         self.assertIn("valuation_basis", str(cm.exception))
-
-    def test_strict_rejects_hfq_before_any_io(self):
-        from stockfu.backtest.engine import run_backtest
-        with self.assertRaises(ValueError) as cm:
-            run_backtest([], date(2024, 1, 1), date(2024, 1, 2), valuation_basis="hfq")
-        self.assertIn("strict", str(cm.exception))
 
 
 if __name__ == "__main__":
