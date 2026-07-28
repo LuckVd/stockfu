@@ -10,7 +10,6 @@ from stockfu.services.dividend import (
     _KNOWN_DIVIDEND_RESOLUTIONS,
     _canonical_events,
     _repair_known_dividend_conflicts_in_session,
-    persist_dividends,
 )
 
 
@@ -51,13 +50,21 @@ def test_known_resolution_accepts_audited_source_subset():
     assert result[0].per_share_cash == pytest.approx(0.062)
 
 
-def test_unresolved_code_remains_failed_without_network_call(monkeypatch):
-    monkeypatch.setattr(
-        "stockfu.services.dividend.get_manager",
-        lambda: pytest.fail("unresolved conflict must not query network"),
-    )
-    with pytest.raises(CorporateActionConflictError, match="未裁决"):
-        persist_dividends("300315")
+@pytest.mark.parametrize(
+    ("key", "cash", "after_tax"),
+    [
+        (("300315", date(2012, 10, 22)), .15, .135),
+        (("300760", date(2026, 5, 28)), 1.56, 1.404),
+        (("600989", date(2021, 5, 20)), .58563, .52707),
+    ],
+)
+def test_newly_audited_resolution_aggregates_source_candidates(key, cash, after_tax):
+    resolution = _KNOWN_DIVIDEND_RESOLUTIONS[key]
+    result = _canonical_events(list(resolution.expected), code=key[0])
+
+    assert result == [resolution.final]
+    assert result[0].per_share_cash == pytest.approx(cash)
+    assert result[0].per_share_cash_after_tax == pytest.approx(after_tax)
 
 
 def test_repair_is_transactional_and_idempotent():
@@ -92,7 +99,7 @@ def test_repair_is_transactional_and_idempotent():
         session.commit()
         assert summary["inserted"] == 1
         assert summary["deleted"] == 1
-        assert summary["unresolved_reset"] == 1
+        assert summary["unresolved_reset"] == 0
 
         rows = list(session.exec(select(DividendEvent).where(
             DividendEvent.asset_code == "002601",
@@ -104,7 +111,7 @@ def test_repair_is_transactional_and_idempotent():
         checkpoint = session.exec(select(BackfillCheckpoint).where(
             BackfillCheckpoint.item_key == "300315",
         )).one()
-        assert checkpoint.status == "failed"
+        assert checkpoint.status == "success"
 
         again = _repair_known_dividend_conflicts_in_session(session, resolutions)
         session.commit()
