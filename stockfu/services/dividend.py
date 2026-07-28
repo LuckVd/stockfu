@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import math
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -15,7 +15,7 @@ from sqlmodel import select
 from stockfu.data.base import DividendEventDTO, DividendMetric
 from stockfu.data.manager import get_manager
 from stockfu.db import session_scope
-from stockfu.models import DividendEvent
+from stockfu.models import BackfillCheckpoint, DividendEvent
 
 
 # 回测分红供给器：engine 每次 run 批量预载 dividend_event 后挂载。
@@ -41,7 +41,7 @@ class _DividendResolution:
 
 
 def _event_signature(event: DividendEventDTO) -> tuple:
-    """比较来源候选的稳定字段，浮点按 BaoStock 最多 7 位小数归一。"""
+    """比较来源候选的业务身份；税后近似值不参与身份判定。"""
     return (
         round(float(event.per_share_cash or 0.0), 7),
         round(float(event.per_share_stock or 0.0), 7),
@@ -49,8 +49,6 @@ def _event_signature(event: DividendEventDTO) -> tuple:
         event.announce_date,
         event.pay_date,
         event.stock_mkt_date,
-        (round(float(event.per_share_cash_after_tax), 7)
-         if event.per_share_cash_after_tax is not None else None),
     )
 
 
@@ -152,6 +150,9 @@ _KNOWN_DIVIDEND_RESOLUTIONS: dict[tuple[str, date], _DividendResolution] = {
     ),
 }
 
+# 已知来源冲突但尚无公告级裁决；即使本次网络空返回也必须留在 checkpoint failed。
+_UNRESOLVED_DIVIDEND_CONFLICTS = {"300315"}
+
 
 def _summarize_corporate_action_rows(
     rows: Iterable[DividendEvent], *, start_year: int, end_year: int,
@@ -232,9 +233,11 @@ def _canonical_events(events: list[DividendEventDTO], *, code: str | None = None
     for ex_date, group in by_date.items():
         resolution = _KNOWN_DIVIDEND_RESOLUTIONS.get((code or "", ex_date))
         if resolution is not None:
-            actual = sorted(_event_signature(event) for event in group)
-            expected = sorted(_event_signature(event) for event in resolution.expected)
-            if actual != expected:
+            actual = {_event_signature(event) for event in group}
+            expected = {_event_signature(event) for event in resolution.expected}
+            # 财年接口重试偶尔只返回同一已审计事件的一部分；接受非空子集，但
+            # 任何新增候选（金额/送转/日期变化）仍然阻断而非静默沿用裁决。
+            if not actual or not actual <= expected:
                 raise CorporateActionConflictError(
                     f"{code} {ex_date}: 已裁决事件的来源候选发生变化，拒绝静默覆盖"
                 )
@@ -276,7 +279,8 @@ def _repair_known_dividend_conflicts_in_session(
     s, resolutions: dict[tuple[str, date], _DividendResolution] | None = None,
 ) -> dict[str, int]:
     """按人工审计表修复历史重复行；未知旧值或额外行一律拒绝写入。"""
-    summary = {"inserted": 0, "updated": 0, "deleted": 0, "unchanged": 0}
+    summary = {"inserted": 0, "updated": 0, "deleted": 0, "unchanged": 0,
+               "unresolved_reset": 0}
     for (code, ex_date), resolution in (resolutions or _KNOWN_DIVIDEND_RESOLUTIONS).items():
         rows = list(s.exec(select(DividendEvent).where(
             DividendEvent.asset_code == code, DividendEvent.ex_date == ex_date,
@@ -315,6 +319,15 @@ def _repair_known_dividend_conflicts_in_session(
         primary.source = final.source
         if not before and rows:
             summary["updated"] += 1
+    for checkpoint in s.exec(select(BackfillCheckpoint).where(
+        BackfillCheckpoint.task_key == "dividend",
+        BackfillCheckpoint.item_key.in_(_UNRESOLVED_DIVIDEND_CONFLICTS),
+    )).all():
+        if checkpoint.status != "failed" or checkpoint.last_error != "等待公告级人工确认":
+            checkpoint.status = "failed"
+            checkpoint.last_error = "等待公告级人工确认"
+            checkpoint.updated_at = datetime.now()
+            summary["unresolved_reset"] += 1
     return summary
 
 
@@ -404,6 +417,10 @@ def persist_dividends(code: str, *, years: int = 10, timeout: float = 10.0) -> i
 
     强制联网（force_network），不走「仅库」短路，否则无法回补。
     """
+    if code in _UNRESOLVED_DIVIDEND_CONFLICTS:
+        raise CorporateActionConflictError(
+            f"{code}: 存在未裁决的历史分红冲突，等待公告级人工确认"
+        )
     metric = get_manager().get_dividend_metric(
         code, force_network=True, years=years, timeout=timeout,
     )
