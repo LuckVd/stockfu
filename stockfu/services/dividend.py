@@ -65,8 +65,8 @@ def _dto(
     )
 
 
-# 2026-07-28 BaoStock 单源逐字段审计结论。键只覆盖确有冲突的 10 个
-# (证券, 除权日)；300315/2012-10-22 没有可信裁决，故意不在表中。
+# 2026-07-28 BaoStock 原始字段与 akshare 报告期字段交叉审计结论。
+# 键只覆盖确有冲突的 (证券, 除权日)；新异常绝不在此静默归并。
 _KNOWN_DIVIDEND_RESOLUTIONS: dict[tuple[str, date], _DividendResolution] = {
     ("000738", date(2013, 6, 14)): _DividendResolution(
         _dto(date(2013, 6, 14), .062, 0, date(2013, 6, 13), date(2013, 5, 17),
@@ -108,6 +108,14 @@ _KNOWN_DIVIDEND_RESOLUTIONS: dict[tuple[str, date], _DividendResolution] = {
          _dto(date(2021, 6, 24), .148289, .296579, date(2021, 6, 23), date(2021, 4, 23),
               date(2021, 6, 24), date(2021, 6, 24), .1334604, "baostock:dividend/2021")),
     ),
+    ("300315", date(2012, 10, 22)): _DividendResolution(
+        _dto(date(2012, 10, 22), .15, 0, date(2012, 10, 19), date(2012, 8, 15),
+             date(2012, 10, 22), None, .135, "baostock:dividend/2012"),
+        (_dto(date(2012, 10, 22), .1, 0, date(2012, 10, 19), date(2012, 8, 15),
+              date(2012, 10, 22), None, .09, "baostock:dividend/2012"),
+         _dto(date(2012, 10, 22), .05, 0, date(2012, 10, 19), date(2012, 8, 15),
+              date(2012, 10, 22), None, .045, "baostock:dividend/2012")),
+    ),
     ("300498", date(2018, 5, 31)): _DividendResolution(
         _dto(date(2018, 5, 31), .4, 0, date(2018, 5, 30), date(2018, 4, 10),
              date(2018, 5, 31), None, .36, "baostock:dividend/2018"),
@@ -123,6 +131,14 @@ _KNOWN_DIVIDEND_RESOLUTIONS: dict[tuple[str, date], _DividendResolution] = {
               date(2025, 5, 29), None, .504, "baostock:dividend/2025"),
          _dto(date(2025, 5, 29), 1.41, 0, date(2025, 5, 28), date(2025, 4, 29),
               date(2025, 5, 29), None, 1.269, "baostock:dividend/2025")),
+    ),
+    ("300760", date(2026, 5, 28)): _DividendResolution(
+        _dto(date(2026, 5, 28), 1.56, 0, date(2026, 5, 27), date(2026, 4, 29),
+             date(2026, 5, 28), None, 1.404, "baostock:dividend/2026"),
+        (_dto(date(2026, 5, 28), .31, 0, date(2026, 5, 27), date(2026, 3, 31),
+              date(2026, 5, 28), None, .279, "baostock:dividend/2026"),
+         _dto(date(2026, 5, 28), 1.25, 0, date(2026, 5, 27), date(2026, 4, 29),
+              date(2026, 5, 28), None, 1.125, "baostock:dividend/2026")),
     ),
     ("301308", date(2026, 6, 2)): _DividendResolution(
         _dto(date(2026, 6, 2), .990744, 0, date(2026, 6, 1), date(2026, 4, 28),
@@ -140,6 +156,14 @@ _KNOWN_DIVIDEND_RESOLUTIONS: dict[tuple[str, date], _DividendResolution] = {
          _dto(date(2019, 9, 27), .27545, 0, date(2019, 9, 26), date(2019, 8, 9),
               date(2019, 9, 27), None, .247905, "baostock:dividend/2019")),
     ),
+    ("600989", date(2021, 5, 20)): _DividendResolution(
+        _dto(date(2021, 5, 20), .58563, 0, date(2021, 5, 19), date(2021, 3, 11),
+             date(2021, 5, 20), None, .52707, "baostock:dividend/2021"),
+        (_dto(date(2021, 5, 20), .32091, 0, date(2021, 5, 19), date(2021, 3, 11),
+              date(2021, 5, 20), None, .28882, "baostock:dividend/2021"),
+         _dto(date(2021, 5, 20), .26472, 0, date(2021, 5, 19), date(2021, 3, 11),
+              date(2021, 5, 20), None, .23825, "baostock:dividend/2021")),
+    ),
     ("601966", date(2024, 6, 14)): _DividendResolution(
         _dto(date(2024, 6, 14), .377, 0, date(2024, 6, 13), date(2024, 4, 25),
              date(2024, 6, 14), None, .3393, "baostock:dividend/2024"),
@@ -151,7 +175,7 @@ _KNOWN_DIVIDEND_RESOLUTIONS: dict[tuple[str, date], _DividendResolution] = {
 }
 
 # 已知来源冲突但尚无公告级裁决；即使本次网络空返回也必须留在 checkpoint failed。
-_UNRESOLVED_DIVIDEND_CONFLICTS = {"300315"}
+_UNRESOLVED_DIVIDEND_CONFLICTS: set[str] = set()
 
 
 def _summarize_corporate_action_rows(
@@ -332,7 +356,7 @@ def _repair_known_dividend_conflicts_in_session(
 
 
 def repair_known_dividend_conflicts() -> dict[str, int]:
-    """事务化修复 10 个已审计分红冲突；300315 保持失败，等待人工公告核验。"""
+    """事务化修复 12 个已审计分红冲突。"""
     with session_scope() as s:
         summary = _repair_known_dividend_conflicts_in_session(s)
         s.commit()

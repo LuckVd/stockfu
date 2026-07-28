@@ -283,12 +283,12 @@ def run_audit_corporate_actions(start_year: int, end_year: int | None) -> None:
 
 
 def run_repair_known_dividend_conflicts() -> None:
-    """应用已审计的分红冲突裁决；300315 保持阻断，随后可只重试失败 checkpoint。"""
+    """应用已审计的分红冲突裁决，随后可只重试失败 checkpoint。"""
     from stockfu.db import init_db
     from stockfu.services.dividend import repair_known_dividend_conflicts
 
     init_db()
-    print("应用已审计的分红冲突裁决（10 项；300315 不处理）…")
+    print("应用已审计的分红冲突裁决（13 项）…")
     print(f"✓ {repair_known_dividend_conflicts()}")
 
 
