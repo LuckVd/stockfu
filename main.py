@@ -282,6 +282,16 @@ def run_audit_corporate_actions(start_year: int, end_year: int | None) -> None:
     ))
 
 
+def run_repair_known_dividend_conflicts() -> None:
+    """应用已审计的分红冲突裁决；300315 保持阻断，随后可只重试失败 checkpoint。"""
+    from stockfu.db import init_db
+    from stockfu.services.dividend import repair_known_dividend_conflicts
+
+    init_db()
+    print("应用已审计的分红冲突裁决（10 项；300315 不处理）…")
+    print(f"✓ {repair_known_dividend_conflicts()}")
+
+
 def run_backfill_index_universe(index_codes: str | None) -> None:
     """导入带有效日期的中证当前快照；历史档案须逐期补齐，绝不倒灌。"""
     from stockfu.db import init_db
@@ -821,11 +831,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backfill-quote-status-refresh", action="store_true",
                    help="强制重跑当日已成功的行情状态证券")
     p.add_argument("--backfill-dividend", action="store_true",
-                   help="回补全市场分红历史→dividend_event(baostock query_dividend_data 主源/akshare兜底;红利因子前置,10-20分钟)")
+                   help="回补全市场分红历史→dividend_event(baostock 主源/akshare兜底;可恢复长任务)")
     p.add_argument("--backfill-dividend-start-year", type=int, default=None,
                    help="分红历史回补的起始财年(仅与 --backfill-dividend 一起使用；默认2007)")
     p.add_argument("--backfill-dividend-refresh", action="store_true",
                    help="强制重跑已 checkpoint 成功的分红证券（默认仅重试失败/未完成项）")
+    p.add_argument("--repair-known-dividend-conflicts", action="store_true",
+                   help="事务化修复10个已审计分红冲突；随后 --backfill-dividend 只重试剩余失败项")
     p.add_argument("--backfill-adj-prices", action="store_true",
                    help="baostock 串行拉齐前复权/不复权/后复权→quote_snapshot "
                         "(*_qfq/*_raw/*_hfq);默认免费代理池;完成后清 dividend_yield 缓存")
@@ -956,6 +968,8 @@ def main() -> None:
     elif args.audit_corporate_actions:
         run_audit_corporate_actions(args.corporate_action_start_year,
                                     args.corporate_action_end_year)
+    elif args.repair_known_dividend_conflicts:
+        run_repair_known_dividend_conflicts()
     elif args.backfill_index_universe:
         run_backfill_index_universe(args.index_codes)
     elif args.backfill_index_universe_history:
