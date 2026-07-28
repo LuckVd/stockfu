@@ -1106,8 +1106,9 @@ def run_backtest(codes: list[str], start: date, end: date,
     # 使 _backtest_series_ctx 能从内存零查库喂给 quote_series(与 DB 逐值一致)。
     _pre_start = start - timedelta(days=_PRELOAD_LOOKBACK_DAYS)
     sctx = _preload_market_range(list(codes), _pre_start, end) if days else None
-    # 分红预载:研究模式(non-strict 主线)只读 dividend_event。qfq/hfq 已含分红再投,
-    # 无需 credit_dividends;仅 raw 口径需把现金分红显式补进账户。
+    # 分红预载:研究模式(non-strict 主线)只读 dividend_event。qfq/hfq 三复权价已含
+    # 分红再投+送转(002594 实证:除权日 qfq/hfq 不跌),无需手动入账/调仓,再补=重复计息;
+    # 仅 raw 口径(不复权)需把现金分红补进账户、把送转显式调股数。
     dividend_index = (_preload_dividend_events(list(codes), _pre_start, end)
                       if sctx else {})
     cash_dividends = (
@@ -1115,7 +1116,7 @@ def run_backtest(codes: list[str], start: date, end: date,
         if sctx and credit_dividends else {}
     )
     stock_dividends = (_preload_stock_dividends(list(codes), start, end)
-                       if sctx else {})
+                       if sctx and credit_dividends else {})
     if valuation_basis == "hfq" and sctx:
         cov, hit, tot = _hfq_coverage(sctx, start, end)
         if tot and cov < HFQ_COVERAGE_MIN:
@@ -1150,19 +1151,20 @@ def run_backtest(codes: list[str], start: date, end: date,
             list(codes), as_of, sctx=sctx, valuation_basis=valuation_basis)
         if not close_prices:
             continue
-        # 公司行为结算(研究模式 non-strict 主线):除息日把现金分红直接计入账户现金
-        # (仅 raw 口径;qfq/hfq 已含分红再投,credit_dividends=False 跳过);送转调整持仓。
+        # 公司行为结算(研究模式 non-strict 主线):仅 raw 口径。qfq/hfq 三复权价已含
+        # 现金分红再投+送转,credit_dividends=False 时两者全跳过(再入账/调仓=重复计息)。
+        # raw 下顺序:先除息日现金分红入账(扣红利税),后除权日送转调股数(不动现金)。
         if credit_dividends:
             for code, cash, record_date in cash_dividends.get(as_of, []):
                 rec = acct.credit_dividend(code, cash, as_of, record_date)
                 if rec:
                     rec.update(date=as_of.isoformat(), status="credited")
                     trades.append(rec)
-        for code, stock in stock_dividends.get(as_of, []):
-            rec = acct.adjust_for_stock_dividend(code, stock, as_of)
-            if rec:
-                rec.update(date=as_of.isoformat(), status="credited")
-                trades.append(rec)
+            for code, stock in stock_dividends.get(as_of, []):
+                rec = acct.adjust_for_stock_dividend(code, stock, as_of)
+                if rec:
+                    rec.update(date=as_of.isoformat(), status="credited")
+                    trades.append(rec)
         last_close.update(close_prices)   # 停牌日 close 缺失时,沿用上一交易日价估值(不记 0)
 
         # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌/涨跌停顺延或拒绝)----
