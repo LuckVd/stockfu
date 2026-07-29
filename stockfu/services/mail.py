@@ -85,7 +85,7 @@ def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str |
 
 
 def send_card_email(images: list[bytes], subject: str | None = None) -> dict:
-    """把 images 作为 inline 图片放进一封 HTML 邮件，SMTP 发给收件人。"""
+    """把 images 内嵌进 HTML 邮件，并附同名 PNG 作为客户端兼容兜底。"""
     from stockfu.config import (get_smtp_from, get_smtp_host, get_smtp_pass,
                                 get_smtp_port, get_smtp_user, get_mail_to)
     from stockfu.services.snapshot import latest_trade_date
@@ -98,12 +98,16 @@ def send_card_email(images: list[bytes], subject: str | None = None) -> dict:
     td = latest_trade_date() or date.today()
     subject = subject or f"StockFu 每日行情 · {td}"
 
+    # 标准 MIME 层级：related（HTML 与内嵌资源）→ alternative（纯文本/HTML）。
+    # 部分邮箱对直接把 HTML 放在 related 根节点的 CID 图片不会渲染。
     msg = MIMEMultipart("related")
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = ", ".join(to_list)
     msg["Date"] = formatdate(localtime=True)
 
+    plain = (f"StockFu 每日行情 · {td}\n"
+             f"共 {len(images)} 张分享卡片。若正文图片未显示，请下载邮件附件中的 PNG 图片。")
     body = [
         "<html><body style='font-family:-apple-system,sans-serif;background:#f7f8fa;padding:12px'>",
         f"<h2 style='margin:0 0 8px'>StockFu 每日行情 · {td}</h2>",
@@ -115,13 +119,22 @@ def send_card_email(images: list[bytes], subject: str | None = None) -> dict:
             f"style='width:100%;max-width:420px;border:1px solid #e5e7eb;border-radius:8px;display:block'></div>"
         )
     body.append("<p style='color:#999;font-size:11px;margin-top:16px'>— 由 StockFu 自动发送 —</p></body></html>")
-    msg.attach(MIMEText("".join(body), "html", "utf-8"))
+    alternative = MIMEMultipart("alternative")
+    alternative.attach(MIMEText(plain, "plain", "utf-8"))
+    alternative.attach(MIMEText("".join(body), "html", "utf-8"))
+    msg.attach(alternative)
 
     for i, img in enumerate(images):
+        filename = f"stockfu-{td}-{i + 1}.png"
         part = MIMEImage(img, _subtype="png")
         part.add_header("Content-ID", f"<page-{i}>")
-        part.add_header("Content-Disposition", "inline", filename=f"stockfu-{td}-{i + 1}.png")
+        part.add_header("Content-Disposition", "inline", filename=filename)
+        part.add_header("Content-Location", filename)
         msg.attach(part)
+        # 兼容不显示 CID 图片的客户端（如部分 QQ/企业邮箱阅读器）。
+        attachment = MIMEImage(img, _subtype="png")
+        attachment.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(attachment)
 
     host, port = get_smtp_host(), get_smtp_port()
     try:
