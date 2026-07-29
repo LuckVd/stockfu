@@ -1639,22 +1639,25 @@ def run_backtest(codes: list[str], start: date, end: date,
     # 整段回测复用一个线程池(旧:每天 with 创建/销毁;冷 miss 并行在 prefetch 内,
     # analyze 热路径有 prefill 时串行,池仅兜底无 prefill 路径)。
     # _backtest_series_ctx 挂内存行情供给器 → 算子 quote_series 零查库(冷启提速核心)。
-    # 1% 粒度进度日志(BACKTEST_PROGRESS=1 启用):每完成 1% 天数打印一行,含本 1% 耗时;flush 实时落日志。
+    # 1% 粒度进度日志:每完成 1% 天数打印一行,含本 1% 耗时 + 当前交易日 as_of;flush 实时落日志。
+    # 默认开启(BACKTEST_PROGRESS=0 可关)。长周期大票池回测耗时数十分钟,日志全程可见才能判断
+    # 是在推进还是卡死——带上 as_of 即使某天算子很慢,下一行的日期推进也能证明活着。
     import os, time
-    _prog_on = bool(os.environ.get("BACKTEST_PROGRESS"))
+    _prog_on = os.environ.get("BACKTEST_PROGRESS", "1") != "0"
     _prog_total = len(days)
     _prog_step = max(1, _prog_total // 100) if _prog_total else 1
     _prog_i = 0
     _prog_last = -1
     _prog_t0 = time.time()
+    _prog_t0_wall = time.time()   # 主循环墙钟起点(含逐日执行;不含预载)
     with _backtest_series_ctx(sctx, dividend_index), ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
       for as_of in days:
         _prog_i += 1
-        if _prog_on and _prog_i % _prog_step == 0:
+        if _prog_on and (_prog_i == 1 or _prog_i % _prog_step == 0):
             _pct = _prog_i * 100 // _prog_total
             if _pct != _prog_last:
                 _now = time.time()
-                print(f"  进度 {_pct}% ({_prog_i}/{_prog_total}) 本1%耗时 {round(_now - _prog_t0, 1)}s", flush=True)
+                print(f"  进度 {_pct}% ({_prog_i}/{_prog_total}) as_of={as_of} 本1%耗时 {round(_now - _prog_t0, 1)}s", flush=True)
                 _prog_t0 = _now
                 _prog_last = _pct
         close_prices, open_prices_day, day_bars = _get_day_market(
@@ -2193,6 +2196,8 @@ def run_backtest(codes: list[str], start: date, end: date,
             "positions": day_pos,
         })
       # for as_of 结束;with 退出时 pool.shutdown
+    if _prog_on:
+        print(f"  进度 100% ({_prog_total}/{_prog_total}) 回测主循环总耗时 {round(time.time() - _prog_t0_wall, 1)}s", flush=True)
 
     # ---- 绩效 ----
     benchmark, bench_window = _benchmark_curve(BENCHMARK, days)
