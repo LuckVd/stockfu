@@ -641,11 +641,12 @@ class AkshareSource(DataSource):
         return [x["name"] for x in self.get_sector_catalog_ths()]
 
     def get_sector_kline_period(self, sector_name: str, start_date: str, end_date: str) -> list:
-        """同花顺单行业、单年度日线端点；不使用会隐式循环多年的 AKShare 封装。
+        """同花顺单行业、单年度日线端点，并合并交易日 ``today.js``。
 
         失败可见 + 轻量重试:requests 异常或非 200 自动重试 2 次(退避 0.6/1.2s,均 > 0.3s
         安全间隔);最终失败记 warning(带状态码/异常)后返回 []——保持调用方接口不变,
-        但端点故障不再被静默吞掉(真无数据 = HTTP 200 但 data 空,不重试)。
+        但端点故障不再被静默吞掉(真无数据 = HTTP 200 但 data 空,不重试)。年度文件
+        在收盘当天仍可能只到 T-1，故请求区间包含今天时额外读取同花顺实时 ``today.js``。
         """
         import logging
         log = logging.getLogger("stockfu")
@@ -702,6 +703,35 @@ class AkshareSource(DataSource):
                 ))
             except (IndexError, ValueError, TypeError):
                 continue
+        # 年度归档文件通常 T+1 才写入当天；today.js 则是交易日的实时/收盘日线。
+        # 只在调用方明确请求本机当天时合并，避免把当前快照误当作历史日期的数据。
+        current = date.today()
+        if start <= current <= end:
+            today_url = f"https://d.10jqka.com.cn/v4/line/bk_{code}/01/today.js"
+            try:
+                with direct_connection():
+                    response = requests.get(today_url, headers=headers, timeout=20)
+                if response.status_code != 200:
+                    raise RuntimeError(f"HTTP {response.status_code}")
+                payload = json.loads(response.text[response.text.find("{"):response.text.rfind("}") + 1])
+                row = payload.get(f"bk_{code}") or next(iter(payload.values()), {})
+                bar_date = datetime.strptime(str(row.get("1") or ""), "%Y%m%d").date()
+                if start <= bar_date <= end:
+                    today_bar = KlineBar(
+                        date=bar_date,
+                        open=safe_float(row.get("7")) or 0.0,
+                        high=safe_float(row.get("8")) or 0.0,
+                        low=safe_float(row.get("9")) or 0.0,
+                        close=safe_float(row.get("11")) or 0.0,
+                        volume=safe_float(row.get("13")),
+                        amount=safe_float(row.get("19")),
+                    )
+                    bars = [bar for bar in bars if bar.date != bar_date]
+                    bars.append(today_bar)
+            except Exception as exc:  # noqa: BLE001  today.js 非交易日或短暂不可用均可回退历史
+                log.warning("sector_kline_period: %s(%s) today.js 未合并(%s)",
+                            sector_name, code, exc)
+        bars.sort(key=lambda bar: bar.date)
         return bars
 
     def get_sector_kline(self, sector_name: str, days: int = 1460) -> list:

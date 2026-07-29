@@ -115,3 +115,21 @@ class TestSectorKlineRetry(TestCase):
         self.assertEqual(len(bars), 2)
         self.assertEqual([b.date for b in bars], [date(2026, 1, 5), date(2026, 1, 6)])
         self.assertEqual(rg.call_count, 1)          # 成功不重试
+
+    def test_merges_today_js_when_yearly_archive_is_t_plus_one(self):
+        day = date.today()
+        archive = 'cb({"data":"%s,10,11,9,10.5,1000,10000"})' % (
+            (day - timedelta(days=1)).strftime("%Y%m%d"))
+        today = ('cb({"bk_881155":{"1":"%s","7":"11","8":"12",'
+                 '"9":"10","11":"11.5","13":2000,"19":"30000"}})' %
+                 day.strftime("%Y%m%d"))
+        src, cat_patch = self._src_with_catalog()
+        with cat_patch, \
+             mock.patch("stockfu.data.akshare_source.direct_connection", self._noop_cm), \
+             mock.patch("requests.get", side_effect=[_FakeResp(archive), _FakeResp(today)]) as rg:
+            bars = src.get_sector_kline_period("银行", (day - timedelta(days=1)).strftime("%Y%m%d"),
+                                               day.strftime("%Y%m%d"))
+        self.assertEqual([b.date for b in bars], [day - timedelta(days=1), day])
+        self.assertEqual(bars[-1].close, 11.5)
+        self.assertEqual(bars[-1].amount, 30000.0)
+        self.assertEqual(rg.call_count, 2)
