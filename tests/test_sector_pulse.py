@@ -43,22 +43,24 @@ class TestSectorPulse(TestCase):
         self.assertEqual(result["rows"][0]["name"], "完整行业")
         self.assertEqual(result["rows"][0]["state"], "连续流入")
 
-    def test_same_day_flow_uses_cross_section_rank_from_first_day(self):
+    def test_flow_cross_section_enters_heat_not_fear_or_greed(self):
         for i in range(10):
             name = f"行业{i}"
             self._seed(name)
             row = self.session.exec(select(SectorFlowSnapshot).where(
                 SectorFlowSnapshot.sector_name == name,
                 SectorFlowSnapshot.snap_date == self.day)).one()
-            row.net_inflow = float(i - 5)
+            row.net_inflow = float(i * 10 if i else 0.1)
         self.session.commit()
         with mock.patch("stockfu.services.sector_pulse.session_scope", self._scope):
             from stockfu.services.sector_pulse import build
             result = build(self.day)
         rows = {r["name"]: r for r in result["rows"]}
         self.assertEqual(result["count"], 10)
-        self.assertGreater(rows["行业9"]["fund_rank"], rows["行业0"]["fund_rank"])
-        self.assertIsNotNone(rows["行业9"]["greed"])
+        self.assertGreater(rows["行业9"]["flow_heat"], rows["行业0"]["flow_heat"])
+        self.assertGreater(rows["行业9"]["heat"], rows["行业0"]["heat"])
+        self.assertEqual(rows["行业9"]["fear"], rows["行业0"]["fear"])
+        self.assertEqual(rows["行业9"]["greed"], rows["行业0"]["greed"])
 
     def test_single_flow_day_is_not_labeled_continuous(self):
         from stockfu.services.sector_pulse import _state
