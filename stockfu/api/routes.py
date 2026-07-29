@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Body, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import Response
 from sqlmodel import select
@@ -31,11 +31,16 @@ def get_portfolio_api():
 
 
 @router.get("/share")
-def share_card():
-    """分享卡片：大盘指数 + 持仓公开数据（脱敏，不含持仓数/成本/盈亏/市值/年红利）。"""
+def share_card(request: Request):
+    """分享卡片：大盘指数 + 持仓公开数据（脱敏，不含持仓数/成本/盈亏/市值/年红利）。
+
+    邮件渲染（render_share_images 注入 X-Mail-Render 头）放宽到只校验指数——
+    邮件已不渲染个股持仓页；web 浏览器手动导出保持严格（自选股须齐全）。
+    """
     from stockfu.services import share
+    include_watch = request.headers.get("x-mail-render") != "1"
     try:
-        return jsonable_encoder(share.build_card())
+        return jsonable_encoder(share.build_card(include_watch=include_watch))
     except ValueError as exc:
         # 数据日期不一致时明确拒绝，避免浏览器下载一张貌似当天、实为混合日期的图。
         raise HTTPException(status_code=409, detail=str(exc)) from exc

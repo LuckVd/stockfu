@@ -40,6 +40,8 @@ def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str |
         browser = p.chromium.launch(executable_path=exe)
         try:
             page = browser.new_page(viewport={"width": 1280, "height": 1500}, device_scale_factor=2)
+            # 注入标记头：/share 据此放宽到只校验指数（邮件不渲染个股持仓页）。
+            page.set_extra_http_headers({"X-Mail-Render": "1"})
             page.goto(f"{base_url}/", wait_until="domcontentloaded", timeout=30000)
             # 不等主页 loadAll（慢且与本任务无关）；openShare 自取 /share
             page.wait_for_function("typeof openShare === 'function'", timeout=15000)
@@ -52,8 +54,9 @@ def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str |
                         if (document.querySelectorAll('#share-card .sc-page').length) { clearInterval(t); r(); }
                     }, 50);
                 });
-                // 邮件只要「大盘情绪 + 行业全景/明细」：删掉末尾的个股持仓页。
-                // 多图模式下仅个股页含 .sc-tbl 表格；行业总览=热力网格、明细=.sc-sgrid 卡片网格，均无 table。
+                // 行情速览只留「大盘情绪 + 行业全景/明细」:/share 带 X-Mail-Render 头时 build_card
+                // 已不返回 holdings、前端 renderShareMulti 也不生成个股持仓页。此处兜底删任何残留
+                // .sc-tbl 页(防头失效等异常路径),正常路径下为 no-op(行业总览=热力网格、明细=.sc-sgrid)。
                 document.querySelectorAll('#share-card .sc-page').forEach(p => {
                     if (p.querySelector('.sc-tbl')) p.remove();
                 });
@@ -139,7 +142,7 @@ def run_mail_job() -> dict:
 
     if not is_mail_ready():
         return {"ok": False, "detail": "邮件未配置完整（账号 / 授权码 / 收件人）"}
-    readiness = export_readiness()
+    readiness = export_readiness(include_watch=False)
     if not readiness["ok"]:
         return {"ok": False, "detail": "分享数据日期不完整，已跳过发信", "data": readiness}
     try:

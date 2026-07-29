@@ -839,9 +839,10 @@ def run_scheduled_fetch(target_date) -> dict:
             except Exception:  # noqa: BLE001
                 pass
 
-    # 导出只接受同一交易日的自选 + 三个市场指数；不建额外状态表，结果随本次摘要返回。
+    # 自动发信只校验三个市场指数同日：邮件已不渲染个股持仓页，个股抓取仍在
+    # 长尾重试（如退市老股）不应阻塞发信。web 手动导出仍走 include_watch=True。
     from stockfu.services.share import export_readiness
-    export_data = export_readiness(td)
+    export_data = export_readiness(td, include_watch=False)
     if not export_data["ok"]:
         print(f"  [export blocked] stale={export_data['stale'][:8]}", flush=True)
 
