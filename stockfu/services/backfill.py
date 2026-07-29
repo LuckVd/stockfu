@@ -341,6 +341,9 @@ def backfill_sector_pulse_history(*, pause_sec: float = 0.3) -> dict:
     total = len(names) * len(years)
     result = {"requested": len(names), "quotes": 0, "ok": [], "failed": [], "invalid": []}
     completed = 0
+    consec_fail = 0            # 连续无效请求计数;超限疑似端点故障,中止避免空跑
+    FAIL_LIMIT = 15
+    abort = False
     for sector_no, name in enumerate(names, start=1):
         name_ok = True
         for year in years:
@@ -351,22 +354,42 @@ def backfill_sector_pulse_history(*, pause_sec: float = 0.3) -> dict:
             if not bars or len(dates) != len(set(dates)) or any(d.year != year for d in dates):
                 name_ok = False
                 result["invalid"].append(f"{name}:{year}")
+                consec_fail += 1
                 state = "无效"
             else:
                 written = _upsert_sector_bars(name, bars)
                 result["quotes"] += written
+                consec_fail = 0
                 state = f"{len(bars)}条，写入{written}条"
             print(
                 f"[历史行业 {completed}/{total}] {sector_no}/{len(names)} {name} {year}: {state}",
                 flush=True,
             )
+            if consec_fail >= FAIL_LIMIT:
+                print(
+                    f"!! 连续 {FAIL_LIMIT} 个请求无效 — 疑似同花顺端点故障,中止回补"
+                    f"(已写入{result['quotes']}条)。检查 sector_kline_period 的 warning 日志后重试。",
+                    flush=True,
+                )
+                abort = True
+                break
             time.sleep(max(0.2, pause_sec))
         (result["ok"] if name_ok else result["failed"]).append(name)
+        if abort:
+            break
         print(
             f"[历史行业完成 {sector_no}/{len(names)}] {name}: "
             f"累计写入{result['quotes']}条，失败行业{len(result['failed'])}个",
             flush=True,
         )
+    if result["failed"] or result["invalid"]:
+        rate = len(result["failed"]) * 100 // len(names) if names else 0
+        print(
+            f"[历史行业汇总] 失败行业 {len(result['failed'])}/{len(names)}({rate}%), "
+            f"无效请求 {len(result['invalid'])}个{'，已中止' if abort else ''}",
+            flush=True,
+        )
+    result["abort"] = abort
     print("[当日资金] 开始写入全行业资金与同日行情…", flush=True)
     result["daily"] = refresh_sector_pulse_today(date.today(), pause_sec=pause_sec)
     print(
