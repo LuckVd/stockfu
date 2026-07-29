@@ -641,7 +641,14 @@ class AkshareSource(DataSource):
         return [x["name"] for x in self.get_sector_catalog_ths()]
 
     def get_sector_kline_period(self, sector_name: str, start_date: str, end_date: str) -> list:
-        """同花顺单行业、单年度日线端点；不使用会隐式循环多年的 AKShare 封装。"""
+        """同花顺单行业、单年度日线端点；不使用会隐式循环多年的 AKShare 封装。
+
+        失败可见 + 轻量重试:requests 异常或非 200 自动重试 2 次(退避 0.6/1.2s,均 > 0.3s
+        安全间隔);最终失败记 warning(带状态码/异常)后返回 []——保持调用方接口不变,
+        但端点故障不再被静默吞掉(真无数据 = HTTP 200 但 data 空,不重试)。
+        """
+        import logging
+        log = logging.getLogger("stockfu")
         try:
             start, end = datetime.strptime(start_date, "%Y%m%d").date(), datetime.strptime(end_date, "%Y%m%d").date()
         except ValueError:
@@ -649,16 +656,36 @@ class AkshareSource(DataSource):
         catalog = {x["name"]: x["code"] for x in self.get_sector_catalog_ths()}
         code = catalog.get(sector_name)
         if not code:
+            log.warning("sector_kline_period: %s 不在同花顺分类清单(共%d个行业)", sector_name, len(catalog))
             return []
         import requests
         url = f"https://d.10jqka.com.cn/v4/line/bk_{code}/01/{start.year}.js"
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "http://q.10jqka.com.cn/"}
+        raw = None
+        last_err = None
+        for attempt in range(3):              # 初试 + 2 次重试
+            try:
+                with direct_connection():
+                    response = requests.get(url, headers=headers, timeout=20)
+                if response.status_code != 200:
+                    last_err = f"HTTP {response.status_code}"
+                else:
+                    raw = response.text
+                    break
+            except Exception as exc:          # noqa: BLE001  连接错/超时
+                last_err = f"{type(exc).__name__}: {exc}"
+            if attempt < 2:
+                time.sleep(0.6 * (attempt + 1))   # 0.6s → 1.2s(> 同花顺 0.3s 安全间隔)
+        if raw is None:
+            log.warning("sector_kline_period: %s(%s) %d年 拉取失败(%s)—重试耗尽,疑似端点波动/反爬升级",
+                        sector_name, code, start.year, last_err)
+            return []
         try:
-            with direct_connection():
-                response = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "http://q.10jqka.com.cn/"}, timeout=20)
-            raw = response.text
             payload = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
             lines = str(payload.get("data") or "").split(";")
-        except Exception:
+        except Exception as exc:              # noqa: BLE001  200 但正文非 JSON(反爬页)
+            log.warning("sector_kline_period: %s(%s) 正文解析失败(%s) head=%r",
+                        sector_name, code, exc, raw[:120])
             return []
         bars = []
         for line in lines:
