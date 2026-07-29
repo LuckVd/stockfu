@@ -42,17 +42,20 @@ def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str |
             page = browser.new_page(viewport={"width": 1280, "height": 1500}, device_scale_factor=2)
             # 注入标记头：/share 据此放宽到只校验指数（邮件不渲染个股持仓页）。
             page.set_extra_http_headers({"X-Mail-Render": "1"})
-            page.goto(f"{base_url}/", wait_until="domcontentloaded", timeout=30000)
+            # 邮件模式跳过首页 loadAll()；截图只依赖随后 openShare() 请求的 /share。
+            # 否则首页各看板的按需补数会把 ETF/个股抓取重新带进邮件链路。
+            page.goto(f"{base_url}/?mail_render=1", wait_until="domcontentloaded", timeout=30000)
             # 不等主页 loadAll（慢且与本任务无关）；openShare 自取 /share
             page.wait_for_function("typeof openShare === 'function'", timeout=15000)
             page.evaluate("""async () => {
                 if (typeof setTheme === 'function') setTheme('amber');     // 暖白·琥珀主题（邮件固定用此主题出图）
                 await window.openShare();                                   // 取 /share + 显示弹窗
                 document.querySelector('#share-mode .mode-opt[data-mode="multi"]').click();
-                await new Promise(r => {                                    // 等 .sc-page 渲染好
+                await new Promise((resolve, reject) => {                    // 等 .sc-page 渲染好
                     const t = setInterval(() => {
-                        if (document.querySelectorAll('#share-card .sc-page').length) { clearInterval(t); r(); }
+                        if (document.querySelectorAll('#share-card .sc-page').length) { clearInterval(t); resolve(); }
                     }, 50);
+                    setTimeout(() => { clearInterval(t); reject(new Error('邮件分享卡片未生成页面')); }, 15000);
                 });
                 // 行情速览只留「大盘情绪 + 行业全景/明细」:/share 带 X-Mail-Render 头时 build_card
                 // 已不返回 holdings、前端 renderShareMulti 也不生成个股持仓页。此处兜底删任何残留

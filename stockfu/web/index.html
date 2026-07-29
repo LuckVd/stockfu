@@ -1537,6 +1537,8 @@ function renderShareMulti(d){
     h+=`</tbody></table>${pg.tail?shareTail():''}<div class="sc-pnum">${idx+1} / ${N}</div></div>`;
     h+=`<div class="sc-dlrow"><button class="btn sm dl-one" data-idx="${pidx++}">下载第 ${idx+1} 页</button></div>`;
   });
+  // 行业源当日尚未出日线且邮件不含个股时，仍输出一张大盘页，不能让截图端无限等待。
+  if(!sortedSec.length&&!pages.length) h=`<div class="sc-page">${shareHead(d)}${shareTail()}</div>`;
   return h;
 }
 
@@ -1669,7 +1671,9 @@ function tick(){
 setInterval(tick,1000);tick();
 
 /* ---------- 启动 ---------- */
-loadAll();
+// 邮件截图只需要 openShare() 拉取 /share；跳过首页看板请求，避免按需补数把
+// ETF/个股行情重新带进邮件链路。普通浏览器入口仍完整加载。
+if(!new URLSearchParams(location.search).has('mail_render')) loadAll();
 </script>
 </body>
 </html>
