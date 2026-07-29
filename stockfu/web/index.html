@@ -1447,11 +1447,16 @@ function sharePhead(d,page,total){return `<div class="sc-phead"><div class="bran
 
 // 单图：与原渲染输出完全一致
 function renderShareSingle(d){
-  let h=shareHead(d)+`<table class="sc-tbl"><tbody>${shareTH()}`;
-  (d.holdings||[]).forEach(p=>{h+=shareRow(p)});
+  const holdings=d.holdings||[];
+  let h=shareHead(d);
+  if(holdings.length){                         // 行情速览(holdings 空)不渲染个股表
+    h+=`<table class="sc-tbl"><tbody>${shareTH()}`;
+    holdings.forEach(p=>{h+=shareRow(p)});
+    h+=`</tbody></table>`;
+  }
   const sectors=(d.sectors||{}).rows||[];
   const sortedSec=[...sectors].sort((a,b)=>((b.day_chg??-1e9)-(a.day_chg??-1e9)));
-  return h+`</tbody></table>${sortedSec.length?shareSectorOverview(d,sortedSec):''}${shareTail()}`;
+  return h+`${sortedSec.length?shareSectorOverview(d,sortedSec):''}${shareTail()}`;
 }
 
 // 多图：测量真实行高/卡高 → 按 9:16 页高切片 → 每页独立 .sc-page（绝不切断行/卡）
@@ -1487,7 +1492,9 @@ function renderShareMulti(d){
   // 3) 分页规划（末页必带 tail；中间页留 capT 给末页，绝不溢出）
   const pages=[], total=holdings.length;
   const capST=cap(true,true), capH=cap(true,false), capM=cap(false,false), capT=cap(false,true);
-  if(total<=capST){
+  if(total===0){
+    // 行情速览(邮件/生图链):build_card 未取 holdings → 不生成任何个股持仓页
+  }else if(total<=capST){
     pages.push({head:true,tail:true,rows:holdings.slice()});
   }else{
     pages.push({head:true,tail:false,rows:holdings.slice(0,capH)});

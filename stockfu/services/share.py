@@ -14,11 +14,17 @@ from stockfu.services import factors as F
 SHARE_INDEX_CODES = ("sh000001", "sz399006", "sh000688")
 
 
-def export_readiness(target_date: date | None = None) -> dict:
+def export_readiness(
+    target_date: date | None = None, *, include_watch: bool = True
+) -> dict:
     """校验分享卡片全部行情是否同属一个交易日。
 
-    只检查卡片实际会展示的自选和三个市场指数；按品种路由行情表，避免 ETF
+    默认校验卡片实际会展示的自选股和三个市场指数；按品种路由行情表，避免 ETF
     遗留在 quote_snapshot 的旧行被误判为最新。未通过时拒绝出图，宁可不导出。
+
+    include_watch=False 时只校验三个市场指数：邮件出图已不渲染个股持仓页
+    （render_share_images 删掉 .sc-tbl），个股数据缺失不应阻塞发信。web 手动
+    导出仍走默认 True（/share 弹窗含个股页）。
     """
     from sqlmodel import select
 
@@ -29,7 +35,8 @@ def export_readiness(target_date: date | None = None) -> dict:
     td = target_date or latest_trade_date()
     with session_scope() as s:
         watch_codes = list(s.exec(select(Asset.code).where(Asset.is_watch == True)).all())  # noqa: E712
-        codes = list(dict.fromkeys(watch_codes + list(SHARE_INDEX_CODES)))
+        base = list(watch_codes) if include_watch else []
+        codes = list(dict.fromkeys(base + list(SHARE_INDEX_CODES)))
         stale: list[dict[str, str | None]] = []
         for code in codes:
             model = F.quote_model_for(code)
@@ -78,13 +85,18 @@ def day_chg(code: str, cur: Optional[float] = None) -> Optional[float]:
     return None
 
 
-def build_card() -> dict:
-    """组装分享卡片数据（仅公开字段，脱敏）。"""
+def build_card(*, include_watch: bool = True) -> dict:
+    """组装分享卡片数据（仅公开字段，脱敏）。
+
+    include_watch 透传给 export_readiness；且 include_watch=False（行情速览 / 邮件
+    生图链）时不取 holdings——从数据层起就只有大盘 + 行业，不碰个股。web 手动导出
+    （默认 True）仍取完整公开字段（含个股持仓页）。
+    """
     from stockfu.services import portfolio as P
     from stockfu.services.snapshot import index_quotes_view, latest_trade_date
 
     td = latest_trade_date() or date.today()   # 卡片日期 = 最近交易日（不是今天）
-    readiness = export_readiness(td)
+    readiness = export_readiness(td, include_watch=include_watch)
     if not readiness["ok"]:
         bad = ", ".join(
             f"{x['code']}={x['quote_date'] or '缺失'}" for x in readiness["stale"][:8]
@@ -103,23 +115,28 @@ def build_card() -> dict:
               "perf_1y": perf(sh_code, 365, as_of=td),
               "index_quotes": index_quotes}
 
-    # 自选/追踪股：只取公开字段 + perf（不含 shares/cost/profit 等敏感数据）
-    wl = P.get_watchlist_view()
-    holdings = [{
-        "code": p["code"],
-        "name": p["name"] or p["code"],
-        "currency": p["currency"],
-        "price": p["price"],
-        "ttm_yield_pct": p["ttm_yield_pct"],
-        "fear": p["fear"],
-        "greed": p["greed"],
-        "heat": p["heat"],
-        "day_chg": day_chg(p["code"], p["day_chg"]),
-        "perf_1w": perf(p["code"], 7, as_of=td),
-        "perf_1m": perf(p["code"], 30, as_of=td),
-        "perf_1y": perf(p["code"], 365, as_of=td),
-    } for p in wl]
-    holdings.sort(key=lambda h: (h["day_chg"] if h["day_chg"] is not None else -999), reverse=True)
+    # 自选/追踪股：行情速览(include_watch=False)只发行情不碰个股——不取 holdings,
+    # 既省 N×3 次 perf 查询,也从数据层确保邮件/生图链只有大盘+行业(web 完整卡仍含)。
+    # 公开字段脱敏:无 shares/cost/profit 等敏感数据。
+    if include_watch:
+        wl = P.get_watchlist_view()
+        holdings = [{
+            "code": p["code"],
+            "name": p["name"] or p["code"],
+            "currency": p["currency"],
+            "price": p["price"],
+            "ttm_yield_pct": p["ttm_yield_pct"],
+            "fear": p["fear"],
+            "greed": p["greed"],
+            "heat": p["heat"],
+            "day_chg": day_chg(p["code"], p["day_chg"]),
+            "perf_1w": perf(p["code"], 7, as_of=td),
+            "perf_1m": perf(p["code"], 30, as_of=td),
+            "perf_1y": perf(p["code"], 365, as_of=td),
+        } for p in wl]
+        holdings.sort(key=lambda h: (h["day_chg"] if h["day_chg"] is not None else -999), reverse=True)
+    else:
+        holdings = []
 
     # 行业全景是附加信息：仅使用与卡片同日的行业行情+资金流；尚未完成历史
     # 初始化时返回空列表，绝不以陈旧板块数据冒充当日结论。

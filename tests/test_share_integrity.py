@@ -45,6 +45,7 @@ class TestShareIntegrity(TestCase):
         self.assertEqual(result["stale"], [])
 
     def test_readiness_reports_stale_share_component(self):
+        """web 手动导出（默认）：自选股 stale 必须报错。"""
         self.session.add(Asset(code="600519", is_watch=True))
         self.session.add(QuoteSnapshot(asset_code="600519", quote_date=date(2026, 7, 23), close=100))
         self._add_indices()
@@ -55,4 +56,32 @@ class TestShareIntegrity(TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["stale"], [{"code": "600519", "quote_date": "2026-07-23"}])
+
+    def test_readiness_skips_watch_for_mail(self):
+        """邮件路径（include_watch=False）：个股 stale 不应阻塞，只要指数齐即可发信。"""
+        self.session.add(Asset(code="600519", is_watch=True))
+        self.session.add(QuoteSnapshot(asset_code="600519", quote_date=date(2026, 7, 23), close=100))
+        self._add_indices()
+
+        with mock.patch("stockfu.db.session_scope", self._scope):
+            from stockfu.services.share import export_readiness
+            result = export_readiness(self.day, include_watch=False)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stale"], [])
+
+    def test_build_card_skips_holdings_for_mail(self):
+        """行情速览(include_watch=False):不取个股数据 → holdings=[],且不调 get_watchlist_view。"""
+        self._add_indices()
+        with mock.patch("stockfu.db.session_scope", self._scope), \
+             mock.patch("stockfu.services.snapshot.index_quotes_view", return_value={}), \
+             mock.patch("stockfu.services.snapshot.latest_trade_date", return_value=self.day), \
+             mock.patch("stockfu.services.sector_pulse.build", return_value={}), \
+             mock.patch("stockfu.services.portfolio.get_watchlist_view") as gw:
+            from stockfu.services.share import build_card
+            card = build_card(include_watch=False)
+        gw.assert_not_called()                  # 核心:行情速览不碰个股
+        self.assertEqual(card["holdings"], [])
+        self.assertIn("market", card)           # 行情速览 = 大盘 + 行业 仍在
+        self.assertIn("sectors", card)
 
