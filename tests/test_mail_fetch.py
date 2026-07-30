@@ -28,5 +28,6 @@ class TestMailFetch(TestCase):
                          ["sh000001", "sz399006", "sh000688"])
         stock_quotes.assert_not_called()
         composite.assert_called_once_with([], day)
+        self.assertEqual(timeout.call_args_list[0].args[1], 300)
         self.assertEqual(result["sector_pulse"], {"same_day": 90})
         self.assertTrue(result["export_ready"])
