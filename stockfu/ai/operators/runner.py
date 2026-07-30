@@ -137,7 +137,9 @@ class CompiledStrategy:
                        max_workers: int = 4) -> dict:
         """单日批量预读 + 冷 miss 并发算 + 批量落库(回测 engine Phase 2 前主线程调一次)。
 
-        有 begin_run_cache 时:从紧凑内存取 hit,miss 再算+写库+回填内存。
+        有 begin_run_cache 时:从紧凑内存取 hit,miss 再算+写库。当天预填数据在
+        返回给 analyze 后不再需要，必须立刻从区间缓存释放，避免长区间冷启动把
+        每一天的新 miss 留在内存中。
         无预载时:回退单日 get_operator_results_batch(兼容旧调用)。
         返回 {(code, op_id): OpResult}。
         """
@@ -146,7 +148,6 @@ class CompiledStrategy:
         from stockfu.ai.operator_cache import (
             get_operator_results_batch,
             prefill_from_run_cache,
-            pack_opresult,
             save_operator_results_batch,
         )
 
@@ -160,6 +161,9 @@ class CompiledStrategy:
         run_cache = getattr(self, "_run_op_cache", None)
         if run_cache is not None:
             prefill = prefill_from_run_cache(run_cache, as_of, codes, op_fps, op_types)
+            # 回测日历单调递增；该日期之后不会再被访问。prefill 已包含本日值，
+            # 因此可释放预载 hit 和随后 miss，保持内存只随单日规模增长。
+            run_cache.pop(as_of, None)
         else:
             prefill = get_operator_results_batch(codes, as_of, op_fps)
 
@@ -192,10 +196,6 @@ class CompiledStrategy:
                     continue
                 prefill[(c, op_id)] = r
                 entries.append((c, op_id, fp, op_type, r))
-                if run_cache is not None:
-                    day = run_cache.setdefault(as_of, {})
-                    by_code = day.setdefault(op_id, {})
-                    by_code[c] = pack_opresult(r)
         if entries:
             save_operator_results_batch(as_of, entries)
         return prefill
