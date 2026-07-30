@@ -765,7 +765,7 @@ def run_scheduled_fetch(target_date) -> dict:
     print("=== [fetch] 3/6 sector pulse ===", flush=True)
     from stockfu.services import backfill as bf
     sector_pulse = _call_timeout(
-        lambda: bf.refresh_sector_pulse_today(td), 45, "sector_pulse", default={},
+        lambda: bf.refresh_sector_pulse_today(td), 300, "sector_pulse", default={},
     ) or {}
 
     # 后半段：分红 / ETF 份额 / 三层指数
@@ -890,7 +890,7 @@ def run_mail_fetch(target_date) -> dict:
     print("=== [mail-fetch] 2/3 sector pulse ===", flush=True)
     from stockfu.services import backfill as bf
     sector_pulse = _call_timeout(
-        lambda: bf.refresh_sector_pulse_today(td), 45, "sector_pulse", default={},
+        lambda: bf.refresh_sector_pulse_today(td), 300, "sector_pulse", default={},
     ) or {}
 
     print("=== [mail-fetch] 3/3 market + sector composite ===", flush=True)
