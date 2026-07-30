@@ -43,6 +43,9 @@ class StrategyDebounce:
     max_gross: float | None = None
     stop_loss_pct: float | None = None
     portfolio_brake_dd: float | None = None
+    # 分级追踪止盈: ((触发收益率, 从持仓峰值回撤), ...);硬止盈收益率单独配置。
+    take_profit_tiers: tuple[tuple[float, float], ...] | None = None
+    take_profit_hard_pct: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +62,8 @@ class StrategyDebounce:
             "max_gross": self.max_gross,
             "stop_loss_pct": self.stop_loss_pct,
             "portfolio_brake_dd": self.portfolio_brake_dd,
+            "take_profit_tiers": self.take_profit_tiers,
+            "take_profit_hard_pct": self.take_profit_hard_pct,
         }
 
 
@@ -270,6 +275,12 @@ class CompiledStrategy:
         d = self.debounce or {}
         p = self.position or {}
         rk = self.risk or {}
+        tp = rk.get("take_profit") or {}
+        tiers = tuple(
+            (float(row["profit"]), float(row["drawdown"]))
+            for row in tp.get("trailing", [])
+            if isinstance(row, dict) and "profit" in row and "drawdown" in row
+        )
         return StrategyDebounce(
             buy_cool_down_days=d.get("buy_cool_down_days", 5),
             max_target_step=d.get("max_target_step", 1.0),
@@ -284,6 +295,9 @@ class CompiledStrategy:
             max_gross=rk.get("max_gross"),
             stop_loss_pct=rk.get("stop_loss"),
             portfolio_brake_dd=rk.get("portfolio_brake"),
+            take_profit_tiers=tiers or None,
+            take_profit_hard_pct=(float(tp["hard_profit"])
+                                  if tp.get("hard_profit") is not None else None),
         )
 
     @property

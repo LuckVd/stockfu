@@ -39,12 +39,14 @@ _STRATEGIES = [
     "cn_momentum_cross_section",
     "dual_bollinger",
     "dividend_cross_section",
+    "dividend_cross_section_take_profit",
 ]
 _RETAINED_STRATEGY_IDS = frozenset({
     "momentum_breakout",
     "cn_momentum_cross_section",
     "dual_bollinger",
     "dividend_cross_section#sl30",
+    "dividend_cross_section_take_profit",
 })
 
 _STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
