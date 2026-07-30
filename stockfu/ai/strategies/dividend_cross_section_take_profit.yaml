@@ -1,0 +1,30 @@
+version: 1
+name: 红利横截面(分级追踪止盈)
+# 独立于 dividend_cross_section / dividend_cross_section#sl30；仅新增分级止盈规则。
+operators:
+  - {id: dividend_yield, type: math, weight: 1.0, params: {high_yield: 5.0, price_basis: raw, yield_cap: 20.0}}
+  - {id: low_volatility, type: math, weight: 0.8, params: {window: 20, hist_years: 3}}
+  - {id: value, type: math, weight: 0.6, params: {years: 5}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.05
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  # 原 sl30 的止损保留，新增的分级规则只对本策略生效。
+  stop_loss: 0.30
+  take_profit:
+    trailing:
+      - {profit: 0.20, drawdown: 0.05}
+      - {profit: 0.30, drawdown: 0.03}
+    hard_profit: 0.50

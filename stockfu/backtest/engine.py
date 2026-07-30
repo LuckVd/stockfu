@@ -66,6 +66,8 @@ class Position:
     lots: list[tuple[int, date]] = field(default_factory=list)  # (shares, buy_date), FIFO for dividend tax
     # 已除权但尚未上市的送转股。它们计入经济权益，但在上市日前不得卖出。
     receivable_shares: int = 0
+    # 持仓期间最高收盘价，供分级追踪止盈。清仓后下次买入会重置。
+    peak_close: float = 0.0
 
 
 class VirtualAccount:
@@ -135,6 +137,9 @@ class VirtualAccount:
             new_total = pos.shares + shares
             pos.avg_cost = (pos.avg_cost * pos.shares + cost) / new_total  # 移动加权平均
             pos.shares = new_total
+            # 新开仓从成交价重新计峰；加仓保留已有峰值，避免“回撤”被人为抹平。
+            if pos.shares == shares:
+                pos.peak_close = price
             pos.lots.append((shares, as_of or date.today()))
             self.cash -= (cost + fee)
             self.fee_paid += fee
@@ -166,6 +171,7 @@ class VirtualAccount:
             self.fee_paid += fee
             if pos.shares == 0:
                 pos.avg_cost = 0.0
+                pos.peak_close = 0.0
             return {"kind": action, "code": code, "shares": -shares, "price": price,
                     "fee": round(fee, 2), "pnl": round(realized, 2)}
 
@@ -865,6 +871,28 @@ def _apply_gross_cap(final: dict[str, float | None], max_gross: float) -> dict[s
     return {c: (w * factor if w else w) for c, w in final.items()}
 
 
+def tiered_take_profit_reason(avg_cost: float, peak_close: float, close: float,
+                              tiers: tuple[tuple[float, float], ...] = (),
+                              hard_profit_pct: float | None = None) -> str | None:
+    """返回应触发的分级追踪止盈原因，或 None。
+
+    门槛和峰值都以同一持仓周期的收盘价、相对移动平均成本计算：
+    先到达硬止盈收益率即卖；否则取已跨越的最高收益档，并检查当前价相对
+    峰值的回撤。日频系统无法知道日内先后顺序，故统一在收盘判断、次日开盘
+    尝试执行。
+    """
+    if avg_cost <= 0 or peak_close <= 0 or close <= 0:
+        return None
+    current_profit = close / avg_cost - 1.0
+    if hard_profit_pct is not None and current_profit + 1e-12 >= hard_profit_pct:
+        return f"take_profit_hard_{hard_profit_pct:g}"
+    peak_profit = peak_close / avg_cost - 1.0
+    for profit, drawdown in sorted(tiers, reverse=True):
+        if peak_profit + 1e-12 >= profit and close / peak_close - 1.0 <= -drawdown + 1e-12:
+            return f"take_profit_trailing_{profit:g}_{drawdown:g}"
+    return None
+
+
 # =====================================================================
 # 绩效计算
 # =====================================================================
@@ -1035,6 +1063,8 @@ def run_backtest(codes: list[str], start: date, end: date,
                  max_gross: float = DEFAULT_MAX_GROSS,
                  stop_loss_pct: float = DEFAULT_STOP_LOSS,
                  portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE,
+                 take_profit_tiers: tuple[tuple[float, float], ...] = (),
+                 take_profit_hard_pct: float | None = None,
                  universe_rules=None,
                  execution_rules=None,
                  valuation_basis: str = "qfq") -> dict:
@@ -1084,6 +1114,10 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _v is not None: stop_loss_pct = _v
         _v = getattr(debounce, "portfolio_brake_dd", None)
         if _v is not None: portfolio_brake_dd = _v
+        _v = getattr(debounce, "take_profit_tiers", None)
+        if _v is not None: take_profit_tiers = _v
+        _v = getattr(debounce, "take_profit_hard_pct", None)
+        if _v is not None: take_profit_hard_pct = _v
     # 仓位调整层:独立基础架构,从 app_config 取(解耦于策略)
     from stockfu.ai.rebalancers import get_active_rebalancer, get_rebalancer_params
     rebalancer = get_active_rebalancer()
@@ -1183,6 +1217,10 @@ def run_backtest(codes: list[str], start: date, end: date,
         trades.extend(settle_dividends(acct, as_of, cash_dividends,
                                        stock_dividends, credit_dividends))
         last_close.update(close_prices)   # 停牌日 close 缺失时,沿用上一交易日价估值(不记 0)
+        # 持仓峰值只在持仓期间更新；新开仓/清仓重置由 VirtualAccount.apply_action 处理。
+        for code, pos in acct.positions.items():
+            if pos.shares > 0 and close_prices.get(code, 0.0) > pos.peak_close:
+                pos.peak_close = close_prices[code]
 
         # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌/涨跌停顺延或拒绝)----
         # 先卖后买 + 买单等比缩放到可用现金(对标 rqalpha order_target_portfolio_smart):
@@ -1405,6 +1443,19 @@ def run_backtest(codes: list[str], start: date, end: date,
                     target_weight = 0.0
                     signal = "stop_loss"
 
+            # 分级追踪止盈是新策略的可选风控；未配置时完全不改变原策略行为。
+            if current_w > 0 and target_weight not in (0.0, None):
+                _pos = acct.positions.get(code)
+                _px = close_prices.get(code, 0.0)
+                _tp_reason = tiered_take_profit_reason(
+                    _pos.avg_cost if _pos else 0.0,
+                    _pos.peak_close if _pos else 0.0,
+                    _px, take_profit_tiers, take_profit_hard_pct,
+                )
+                if _tp_reason:
+                    target_weight = 0.0
+                    signal = _tp_reason
+
             # 调出后的持仓：让策略的正常卖出、止损、减仓生效，但任何正向目标都
             # 不得超过现有仓位。exit_only 也传给 TopN，确保它不占用新选名额、不会
             # 被组合层按排名当作候选股重新加仓。
@@ -1521,6 +1572,9 @@ def run_backtest(codes: list[str], start: date, end: date,
     metrics["stop_loss_realized_loss"] = round(
         sum((t.get("pnl") or 0.0) for t in _sl_filled), 2
     )  # 负数=亏损(元);pnl 符号:盈>0 亏<0(与上方 win/loss 判定一致)
+    _tp_filled = [t for t in filled if str(t.get("signal", "")).startswith("take_profit_")]
+    metrics["take_profit_count"] = len(_tp_filled)
+    metrics["take_profit_realized_pnl"] = round(sum((t.get("pnl") or 0.0) for t in _tp_filled), 2)
     metrics["total_fee"] = round(acct.fee_paid, 2)
     metrics["cash_dividend_gross"] = round(acct.dividend_received, 2)
     metrics["dividend_tax_paid"] = round(acct.dividend_tax_paid, 2)
@@ -1571,6 +1625,8 @@ def run_backtest(codes: list[str], start: date, end: date,
         "max_gross": max_gross,
         "stop_loss_pct": stop_loss_pct,
         "portfolio_brake_dd": portfolio_brake_dd,
+        "take_profit_tiers": take_profit_tiers,
+        "take_profit_hard_pct": take_profit_hard_pct,
         "execution": "T+1_open_sell_first",
         "rebalancer": rebalancer.rebalancer_id,
         "universe": uni_ctx.summary(universe_sizes),
