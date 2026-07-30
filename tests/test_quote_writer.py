@@ -48,6 +48,15 @@ class TestValidateIngestDate(unittest.TestCase):
             d = validate_ingest_date("2026-07-22", now=datetime(2026, 7, 22, 17, 0))
             self.assertEqual(d, date(2026, 7, 22))
 
+    def test_today_accepted_at_default_cutoff(self):
+        cal = self._cal("2026-07-22")
+        with mock.patch("stockfu.services.snapshot._trade_calendar", return_value=cal):
+            from stockfu.services.quote_writer import validate_ingest_date
+            self.assertEqual(
+                validate_ingest_date("2026-07-22", now=datetime(2026, 7, 22, 15, 30)),
+                date(2026, 7, 22),
+            )
+
     def test_non_trading_day_rejected(self):
         cal = self._cal("2026-07-22")  # 2026-07-25 周六不在日历
         with mock.patch("stockfu.services.snapshot._trade_calendar", return_value=cal):

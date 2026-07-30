@@ -30,7 +30,7 @@ from stockfu.models import EtfQuoteDaily, IndexQuoteDaily, QuoteSnapshot
 
 def _ingest_cutoff() -> dtime:
     """A 股收盘分界（15:00 收盘 + 缓冲）。env STOCKFU_INGEST_CUTOFF=HH:MM 可覆盖。"""
-    raw = os.environ.get("STOCKFU_INGEST_CUTOFF", "16:00")
+    raw = os.environ.get("STOCKFU_INGEST_CUTOFF", "15:30")
     h, m = raw.split(":")
     return dtime(int(h), int(m))
 
