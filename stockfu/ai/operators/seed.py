@@ -42,6 +42,7 @@ _STRATEGIES = [
     "dividend_cross_section_take_profit",
     "dividend_cross_section_partial_take_profit",
     "dividend_cross_section_atr_take_profit",
+    "dividend_cross_section_atr_lagged_take_profit",
 ]
 _RETAINED_STRATEGY_IDS = frozenset({
     "momentum_breakout",
@@ -51,6 +52,7 @@ _RETAINED_STRATEGY_IDS = frozenset({
     "dividend_cross_section_take_profit",
     "dividend_cross_section_partial_take_profit",
     "dividend_cross_section_atr_take_profit",
+    "dividend_cross_section_atr_lagged_take_profit",
 })
 
 _STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
