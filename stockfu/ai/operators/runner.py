@@ -43,8 +43,8 @@ class StrategyDebounce:
     max_gross: float | None = None
     stop_loss_pct: float | None = None
     portfolio_brake_dd: float | None = None
-    # 分级追踪止盈: ((触发收益率, 从持仓峰值回撤), ...);硬止盈收益率单独配置。
-    take_profit_tiers: tuple[tuple[float, float], ...] | None = None
+    # 分级追踪止盈: ((触发收益率, 从持仓峰值回撤, 卖出比例), ...);卖出比例缺省=1(全清)。
+    take_profit_tiers: tuple[tuple[float, float, float], ...] | None = None
     take_profit_hard_pct: float | None = None
 
     def to_dict(self) -> dict:
@@ -277,7 +277,8 @@ class CompiledStrategy:
         rk = self.risk or {}
         tp = rk.get("take_profit") or {}
         tiers = tuple(
-            (float(row["profit"]), float(row["drawdown"]))
+            (float(row["profit"]), float(row["drawdown"]),
+             float(row.get("sell_fraction", 1.0)))
             for row in tp.get("trailing", [])
             if isinstance(row, dict) and "profit" in row and "drawdown" in row
         )
