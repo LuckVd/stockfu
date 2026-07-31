@@ -3,11 +3,19 @@ from collections import deque
 import pytest
 
 from stockfu.backtest.engine import (
+    _block_portfolio_new_buys,
     _update_atr_percent,
     atr_take_profit_action,
     tiered_take_profit_action,
     tiered_take_profit_reason,
 )
+
+
+def test_selective_portfolio_brake_blocks_buys_but_allows_reductions():
+    current = {"existing": 0.04, "reduce": 0.05, "new": 0.0, "hold": 0.03}
+    final = {"existing": 0.05, "reduce": 0.03, "new": 0.02, "hold": None}
+    blocked = _block_portfolio_new_buys(final, current)
+    assert blocked == {"existing": 0.04, "reduce": 0.03, "new": 0.0, "hold": None}
 
 
 def test_take_profit_is_disabled_without_config():
