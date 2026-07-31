@@ -68,6 +68,10 @@ class Position:
     receivable_shares: int = 0
     # 持仓期间最高收盘价，供分级追踪止盈。清仓后下次买入会重置。
     peak_close: float = 0.0
+    # 分段止盈锚点与已触发阶段。分段减仓后限制目标仓位，避免次日被选股逻辑买回。
+    take_profit_anchor_shares: int = 0
+    take_profit_fired: set[str] = field(default_factory=set)
+    take_profit_cap_shares: int | None = None
 
 
 class VirtualAccount:
@@ -140,6 +144,9 @@ class VirtualAccount:
             # 新开仓从成交价重新计峰；加仓保留已有峰值，避免“回撤”被人为抹平。
             if pos.shares == shares:
                 pos.peak_close = price
+            if not pos.take_profit_fired:
+                pos.take_profit_anchor_shares = new_total
+                pos.take_profit_cap_shares = None
             pos.lots.append((shares, as_of or date.today()))
             self.cash -= (cost + fee)
             self.fee_paid += fee
@@ -172,6 +179,12 @@ class VirtualAccount:
             if pos.shares == 0:
                 pos.avg_cost = 0.0
                 pos.peak_close = 0.0
+                pos.take_profit_anchor_shares = 0
+                pos.take_profit_fired.clear()
+                pos.take_profit_cap_shares = None
+            elif not pos.take_profit_fired:
+                pos.take_profit_anchor_shares = pos.shares
+                pos.take_profit_cap_shares = None
             return {"kind": action, "code": code, "shares": -shares, "price": price,
                     "fee": round(fee, 2), "pnl": round(realized, 2)}
 
@@ -871,26 +884,77 @@ def _apply_gross_cap(final: dict[str, float | None], max_gross: float) -> dict[s
     return {c: (w * factor if w else w) for c, w in final.items()}
 
 
-def tiered_take_profit_reason(avg_cost: float, peak_close: float, close: float,
-                              tiers: tuple[tuple[float, float], ...] = (),
-                              hard_profit_pct: float | None = None) -> str | None:
+def _take_profit_tier_parts(tier: tuple[float, ...]) -> tuple[float, float, float] | None:
+    """兼容旧的二元 tier，并把卖出比例规范到(0,1]。"""
+    if len(tier) < 2:
+        return None
+    profit = float(tier[0])
+    drawdown = float(tier[1])
+    sell_fraction = float(tier[2]) if len(tier) >= 3 else 1.0
+    if sell_fraction <= 0:
+        return None
+    return profit, drawdown, min(sell_fraction, 1.0)
+
+
+def _take_profit_stage(profit: float, drawdown: float) -> str:
+    return f"take_profit_trailing_{profit:g}_{drawdown:g}"
+
+
+def tiered_take_profit_action(
+    avg_cost: float, peak_close: float, close: float,
+    tiers: tuple[tuple[float, ...], ...] = (),
+    hard_profit_pct: float | None = None,
+    fired_tiers: set[str] | frozenset[str] = frozenset(),
+) -> tuple[str, float, str | None] | None:
     """返回应触发的分级追踪止盈原因，或 None。
 
     门槛和峰值都以同一持仓周期的收盘价、相对移动平均成本计算：
     先到达硬止盈收益率即卖；否则取已跨越的最高收益档，并检查当前价相对
-    峰值的回撤。日频系统无法知道日内先后顺序，故统一在收盘判断、次日开盘
-    尝试执行。
+    峰值的回撤。返回(原因, 本次卖出比例, 阶段ID)；卖出比例按首次触发前
+    持仓的比例解释。日频系统无法知道日内先后顺序，故统一在收盘判断、次日
+    开盘尝试执行。
     """
     if avg_cost <= 0 or peak_close <= 0 or close <= 0:
         return None
     current_profit = close / avg_cost - 1.0
     if hard_profit_pct is not None and current_profit + 1e-12 >= hard_profit_pct:
-        return f"take_profit_hard_{hard_profit_pct:g}"
+        return f"take_profit_hard_{hard_profit_pct:g}", 1.0, None
     peak_profit = peak_close / avg_cost - 1.0
-    for profit, drawdown in sorted(tiers, reverse=True):
-        if peak_profit + 1e-12 >= profit and close / peak_close - 1.0 <= -drawdown + 1e-12:
-            return f"take_profit_trailing_{profit:g}_{drawdown:g}"
+    parsed = [parts for tier in tiers
+              if (parts := _take_profit_tier_parts(tier)) is not None]
+    for profit, drawdown, sell_fraction in sorted(parsed, reverse=True):
+        stage = _take_profit_stage(profit, drawdown)
+        if stage in fired_tiers:
+            continue
+        if (peak_profit + 1e-12 >= profit
+                and close / peak_close - 1.0 <= -drawdown + 1e-12):
+            return stage, sell_fraction, stage
     return None
+
+
+def _take_profit_remaining_fraction(
+    tiers: tuple[tuple[float, ...], ...], fired_tiers: set[str] | frozenset[str],
+) -> float:
+    """根据已触发阶段计算原始持仓剩余比例。"""
+    sold = 0.0
+    for tier in tiers:
+        parts = _take_profit_tier_parts(tier)
+        if parts is None:
+            continue
+        profit, drawdown, sell_fraction = parts
+        if _take_profit_stage(profit, drawdown) in fired_tiers:
+            sold += sell_fraction
+    return max(0.0, 1.0 - min(sold, 1.0))
+
+
+def tiered_take_profit_reason(avg_cost: float, peak_close: float, close: float,
+                              tiers: tuple[tuple[float, ...], ...] = (),
+                              hard_profit_pct: float | None = None) -> str | None:
+    """兼容旧调用方：只返回止盈原因，不暴露分段卖出比例。"""
+    action = tiered_take_profit_action(
+        avg_cost, peak_close, close, tiers, hard_profit_pct,
+    )
+    return action[0] if action else None
 
 
 # =====================================================================
@@ -1063,7 +1127,7 @@ def run_backtest(codes: list[str], start: date, end: date,
                  max_gross: float = DEFAULT_MAX_GROSS,
                  stop_loss_pct: float = DEFAULT_STOP_LOSS,
                  portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE,
-                 take_profit_tiers: tuple[tuple[float, float], ...] = (),
+                 take_profit_tiers: tuple[tuple[float, ...], ...] = (),
                  take_profit_hard_pct: float | None = None,
                  universe_rules=None,
                  execution_rules=None,
@@ -1443,18 +1507,66 @@ def run_backtest(codes: list[str], start: date, end: date,
                     target_weight = 0.0
                     signal = "stop_loss"
 
-            # 分级追踪止盈是新策略的可选风控；未配置时完全不改变原策略行为。
-            if current_w > 0 and target_weight not in (0.0, None):
-                _pos = acct.positions.get(code)
-                _px = close_prices.get(code, 0.0)
-                _tp_reason = tiered_take_profit_reason(
-                    _pos.avg_cost if _pos else 0.0,
-                    _pos.peak_close if _pos else 0.0,
-                    _px, take_profit_tiers, take_profit_hard_pct,
+            # 分级追踪止盈是可选风控；二元 tier 仍按旧语义全清，带 sell_fraction 的
+            # tier 则按首次触发前持仓分段减仓，并把剩余仓位设为上限，防止次日买回。
+            _pos = acct.positions.get(code)
+            _px = close_prices.get(code, 0.0)
+            _has_partial_tp = any(
+                (parts := _take_profit_tier_parts(tier)) is not None and parts[2] < 1.0
+                for tier in take_profit_tiers
+            )
+            if (_pos and current_w > 0
+                    and (target_weight not in (0.0, None)
+                         or (target_weight is None and _has_partial_tp))):
+                _tp_action = tiered_take_profit_action(
+                    _pos.avg_cost, _pos.peak_close, _px,
+                    take_profit_tiers, take_profit_hard_pct,
+                    _pos.take_profit_fired,
                 )
-                if _tp_reason:
-                    target_weight = 0.0
+                if _tp_action:
+                    _tp_reason, _sell_fraction, _tp_stage = _tp_action
                     signal = _tp_reason
+                    if _sell_fraction >= 1.0 - 1e-12:
+                        target_weight = 0.0
+                    else:
+                        if _pos.take_profit_anchor_shares <= 0:
+                            _pos.take_profit_anchor_shares = _pos.shares
+                        if _tp_stage:
+                            _pos.take_profit_fired.add(_tp_stage)
+                        _remaining = _take_profit_remaining_fraction(
+                            take_profit_tiers, _pos.take_profit_fired,
+                        )
+                        _cap_shares = int(
+                            _pos.take_profit_anchor_shares * _remaining / 100
+                        ) * 100
+                        if _remaining > 0 and _cap_shares <= 0:
+                            _cap_shares = min(100, _pos.shares)
+                        if _pos.take_profit_cap_shares is None:
+                            _pos.take_profit_cap_shares = _cap_shares
+                        else:
+                            _pos.take_profit_cap_shares = min(
+                                _pos.take_profit_cap_shares, _cap_shares,
+                            )
+                        _eq = acct.equity(last_close)
+                        _cap_value = (
+                            _pos.take_profit_cap_shares + _pos.receivable_shares
+                        ) * _px
+                        _cap_weight = _cap_value / _eq if _eq > 0 else 0.0
+                        target_weight = (
+                            _cap_weight if target_weight is None
+                            else min(target_weight, _cap_weight)
+                        )
+
+            # 已经分段减仓的持仓保持在该阶段的仓位上限内；正常因子目标可以
+            # 进一步减仓，但不能把已兑现的仓位重新补回去。
+            if (_pos and _pos.take_profit_cap_shares is not None
+                    and target_weight not in (0.0, None) and _px > 0):
+                _eq = acct.equity(last_close)
+                _cap_value = (
+                    _pos.take_profit_cap_shares + _pos.receivable_shares
+                ) * _px
+                _cap_weight = _cap_value / _eq if _eq > 0 else 0.0
+                target_weight = min(target_weight, _cap_weight)
 
             # 调出后的持仓：让策略的正常卖出、止损、减仓生效，但任何正向目标都
             # 不得超过现有仓位。exit_only 也传给 TopN，确保它不占用新选名额、不会
