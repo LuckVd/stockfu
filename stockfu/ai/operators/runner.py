@@ -15,12 +15,23 @@ from __future__ import annotations
 import functools
 import hashlib
 import inspect
+import os
 from dataclasses import dataclass, field
+from datetime import date as _date
+from datetime import timedelta
 
 import yaml
 
 from stockfu.ai.operators.base import OpContext
 from stockfu.ai.operators.registry import REGISTRY, discover_and_register, get_operator_class
+
+# 回测算子缓存滚动预载:begin_run_cache 只预载未来 RUN_CACHE_WINDOW_DAYS 日历日窗口,
+# prefetch_cache 消费到尾部提前量内再同步补下一块。长区间(如 2007-2026)峰值内存从
+# "全区间 11.9M 行(~3.6G)" 降到 "窗口×每日行数"(250 日 ≈ 0.7M/日 ≈ 180M),已消费日
+# 仍由 prefetch_cache 的 run_cache.pop(as_of) 逐日释放。窗口大小只影响分块加载频率
+# (每块 = 3 条走索引 SQL)与峰值内存,对 3.7G 预算都可忽略,取大(≈1 年)减查询次数。
+RUN_CACHE_WINDOW_DAYS = int(os.environ.get("STOCKFU_RUN_CACHE_WINDOW_DAYS", "250"))
+RUN_CACHE_LOOKAHEAD_DAYS = int(os.environ.get("STOCKFU_RUN_CACHE_LOOKAHEAD_DAYS", "20"))
 
 
 @dataclass(frozen=True)
@@ -45,6 +56,17 @@ class StrategyDebounce:
     portfolio_brake_dd: float | None = None
     portfolio_brake_scale: float | None = None
     portfolio_brake_mode: str = "scale_all"
+    # 组合级敞口刹车:刹车期把总仓上限收窄到该值(<max_gross);keep_ratio=刹车期
+    # 只保留 raw 分数最高的比例;add_min_score=回撤加仓仅对 raw≥ 阈值票生效;
+    # recover_dd=触发后的解除回撤阈值(滞回,防频繁开关)。
+    portfolio_brake_max_gross: float | None = None
+    portfolio_brake_keep_ratio: float | None = None
+    portfolio_brake_add_min_score: float | None = None
+    portfolio_brake_recover_dd: float | None = None
+    # 深度分级刹车: ((回撤阈值, 敞口上限), ...) 按回撤深度升序,越深越紧、自然随反弹放松。
+    portfolio_brake_tiers: tuple[tuple[float, float], ...] | None = None
+    # 滚动新高解除刹车:权益创出 N 日新高即释放(临时熔断自释放;0=不启用)。
+    portfolio_brake_recover_high_days: int = 0
     # 分级追踪止盈: ((触发收益率, 从持仓峰值回撤, 卖出比例), ...);卖出比例缺省=1(全清)。
     take_profit_tiers: tuple[tuple[float, ...], ...] | None = None
     take_profit_hard_pct: float | None = None
@@ -70,6 +92,12 @@ class StrategyDebounce:
             "portfolio_brake_dd": self.portfolio_brake_dd,
             "portfolio_brake_scale": self.portfolio_brake_scale,
             "portfolio_brake_mode": self.portfolio_brake_mode,
+            "portfolio_brake_max_gross": self.portfolio_brake_max_gross,
+            "portfolio_brake_keep_ratio": self.portfolio_brake_keep_ratio,
+            "portfolio_brake_add_min_score": self.portfolio_brake_add_min_score,
+            "portfolio_brake_recover_dd": self.portfolio_brake_recover_dd,
+            "portfolio_brake_tiers": self.portfolio_brake_tiers,
+            "portfolio_brake_recover_high_days": self.portfolio_brake_recover_high_days,
             "take_profit_tiers": self.take_profit_tiers,
             "take_profit_hard_pct": self.take_profit_hard_pct,
             "take_profit_atr_period": self.take_profit_atr_period,
@@ -120,37 +148,89 @@ class CompiledStrategy:
                         temperature: float = 0.0) -> dict:
         """回测启动:区间紧凑预载算子缓存到实例(_run_op_cache)。
 
-        一次 SQL 拉 [start,end]×codes×策略叶子算子,pack 为 tuple 存内存;
-        之后 prefetch_cache 日循环优先内存 hit,不再每日扫 operator_result。
-        返回 {days: n_as_of, entries: n_packs} 供日志;失败/空则 _run_op_cache={}.
+        只预载 [start, start+WINDOW] 首块(滚动窗口,见 RUN_CACHE_WINDOW_DAYS),后续
+        prefetch_cache 消费到尾部提前量内再同步补块 —— 长区间峰值内存 ≈ 窗口×每日
+        行数而非全区间(2007-2026: 11.9M 行 ~3.6G → 250 日窗口 ~180M);范围 ≤ 窗口
+        时单块全量 = 旧行为。日期超界/空宇宙安全处理,空则 _run_op_cache={}。
+        返回 {days: n_as_of, entries: n_packs}(首块口径,仅日志用)。
         """
         from stockfu.ai.operator_cache import load_operator_results_range
 
+        if start is not None and not isinstance(start, _date):
+            start = _date.fromisoformat(str(start)[:10])
+        if end is not None and not isinstance(end, _date):
+            end = _date.fromisoformat(str(end)[:10])
         meta = self._ensure_op_meta(temperature)
         op_fps = [(spec["id"], fp) for spec, cls, fp, version in meta if fp is not None]
         op_types = {spec["id"]: cls.type for spec, cls, fp, version in meta if fp is not None}
         self._run_op_types = op_types  # type: ignore[attr-defined]
         self._run_op_fps = op_fps  # type: ignore[attr-defined]
-        cache = load_operator_results_range(
-            list(codes or []), start, end, op_fps, op_types=op_types)
+        codes = list(codes or [])
+        self._run_codes = codes  # type: ignore[attr-defined]
+        self._run_end = end  # type: ignore[attr-defined]
+        if start is not None and end is not None:
+            win_end = min(start + timedelta(days=RUN_CACHE_WINDOW_DAYS), end)
+        else:
+            win_end = end
+        self._run_window_end = win_end  # type: ignore[attr-defined]
+        cache = load_operator_results_range(codes, start, win_end, op_fps, op_types=op_types)
         self._run_op_cache = cache  # type: ignore[attr-defined]
         n_entries = sum(len(d) for d in cache.values())
         return {"days": len(cache), "entries": n_entries, "operators": len(op_fps)}
+
+    def _maybe_load_run_cache_window(self, as_of) -> None:
+        """滚动预载触发:as_of 进入窗口尾部提前量(或越过)时,同步补下一块。幂等。"""
+        wend = getattr(self, "_run_window_end", None)
+        end = getattr(self, "_run_end", None)
+        if wend is None or end is None or wend >= end:
+            return
+        d = getattr(as_of, "date", None)
+        as_of = d() if d else as_of
+        if (wend - as_of).days > RUN_CACHE_LOOKAHEAD_DAYS:
+            return
+        self._load_next_run_cache_chunk()
+
+    def _load_next_run_cache_chunk(self) -> bool:
+        """补下一块 [window_end+1, window_end+WINDOW];按日历日推进(空块也前进,防死循环)。
+
+        与残余尾窗 merge(日期不重叠);已消费日由 prefetch_cache 逐日 pop。无窗口状态
+        或已到尾部返回 False。
+        """
+        from stockfu.ai.operator_cache import load_operator_results_range
+
+        codes = getattr(self, "_run_codes", None) or []
+        wend = getattr(self, "_run_window_end", None)
+        end = getattr(self, "_run_end", None)
+        op_fps = getattr(self, "_run_op_fps", None) or []
+        op_types = getattr(self, "_run_op_types", None) or {}
+        if not codes or wend is None or end is None or wend >= end:
+            return False
+        nxt = wend + timedelta(days=1)
+        win_end = min(nxt + timedelta(days=RUN_CACHE_WINDOW_DAYS), end)
+        chunk = load_operator_results_range(codes, nxt, win_end, op_fps, op_types=op_types)
+        if chunk:
+            cur = getattr(self, "_run_op_cache", None) or {}
+            self._run_op_cache = {**cur, **chunk}  # type: ignore[attr-defined]
+        self._run_window_end = win_end  # type: ignore[attr-defined]
+        return True
 
     def end_run_cache(self) -> None:
         """释放区间预载,避免策略实例常驻占内存。"""
         self._run_op_cache = None  # type: ignore[attr-defined]
         self._run_op_types = None  # type: ignore[attr-defined]
         self._run_op_fps = None  # type: ignore[attr-defined]
+        self._run_codes = None  # type: ignore[attr-defined]
+        self._run_end = None  # type: ignore[attr-defined]
+        self._run_window_end = None  # type: ignore[attr-defined]
 
     def prefetch_cache(self, codes: list[str], as_of,
                        temperature: float = 0.0,
                        max_workers: int = 4) -> dict:
         """单日批量预读 + 冷 miss 并发算 + 批量落库(回测 engine Phase 2 前主线程调一次)。
 
-        有 begin_run_cache 时:从紧凑内存取 hit,miss 再算+写库。当天预填数据在
-        返回给 analyze 后不再需要，必须立刻从区间缓存释放，避免长区间冷启动把
-        每一天的新 miss 留在内存中。
+        有 begin_run_cache 时:从紧凑内存取 hit,miss 再算+写库;窗口消费到尾部提前量内
+        自动补下一块(滚动预载,见 RUN_CACHE_WINDOW_DAYS),长区间峰值内存有界。当天
+        预填数据在返回给 analyze 后不再需要,必须立刻从区间缓存释放。
         无预载时:回退单日 get_operator_results_batch(兼容旧调用)。
         返回 {(code, op_id): OpResult}。
         """
@@ -171,6 +251,9 @@ class CompiledStrategy:
 
         run_cache = getattr(self, "_run_op_cache", None)
         if run_cache is not None:
+            # 滚动预载触发(可能重分配 _run_op_cache 为合并后新 dict → 重新取引用)
+            self._maybe_load_run_cache_window(as_of)
+            run_cache = getattr(self, "_run_op_cache", None) or {}
             prefill = prefill_from_run_cache(run_cache, as_of, codes, op_fps, op_types)
             # 回测日历单调递增；该日期之后不会再被访问。prefill 已包含本日值，
             # 因此可释放预载 hit 和随后 miss，保持内存只随单日规模增长。
@@ -303,6 +386,11 @@ class CompiledStrategy:
         atr_period = (int(atr_cfg["period"])
                       if atr_cfg.get("period") is not None else None)
         atr_lagged = bool(atr_cfg.get("lagged", False))
+        brake_tiers = tuple(
+            (float(row["drawdown"]), float(row["max_gross"]))
+            for row in (rk.get("portfolio_brake_tiers") or [])
+            if isinstance(row, dict) and "drawdown" in row and "max_gross" in row
+        )
         return StrategyDebounce(
             buy_cool_down_days=d.get("buy_cool_down_days", 5),
             max_target_step=d.get("max_target_step", 1.0),
@@ -319,6 +407,12 @@ class CompiledStrategy:
             portfolio_brake_dd=rk.get("portfolio_brake"),
             portfolio_brake_scale=rk.get("portfolio_brake_scale"),
             portfolio_brake_mode=rk.get("portfolio_brake_mode", "scale_all"),
+            portfolio_brake_max_gross=rk.get("portfolio_brake_max_gross"),
+            portfolio_brake_keep_ratio=rk.get("portfolio_brake_keep_ratio"),
+            portfolio_brake_add_min_score=rk.get("portfolio_brake_add_min_score"),
+            portfolio_brake_recover_dd=rk.get("portfolio_brake_recover_dd"),
+            portfolio_brake_tiers=brake_tiers or None,
+            portfolio_brake_recover_high_days=int(rk.get("portfolio_brake_recover_high_days") or 0),
             take_profit_tiers=tiers or None,
             take_profit_hard_pct=(float(tp["hard_profit"])
                                   if tp.get("hard_profit") is not None else None),

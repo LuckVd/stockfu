@@ -915,6 +915,76 @@ def _apply_gross_cap(final: dict[str, float | None], max_gross: float) -> dict[s
     return {c: (w * factor if w else w) for c, w in final.items()}
 
 
+def _apply_portfolio_brake(
+    final: dict[str, float | None],
+    current: dict[str, float],
+    meta: dict[str, dict],
+    *,
+    scale: float,
+    mode: str,
+    brake_max_gross: float | None,
+    keep_ratio: float | None = None,
+    add_min_score: float | None = None,
+    max_weight: float = 0.15,
+) -> dict[str, float | None]:
+    """组合回撤期目标仓位调节(规则化风控,增强路径)。
+
+    - mode=block_new_buys:保持旧语义(禁新买/加仓,放行减仓与风险退出)。
+    - scale<1(平滑刹车):正目标 ×scale;维持(None)仓显式落为 current(不再 ×scale,
+      避免长刹车期每日等比压缩把组合逐步清光),总敞口由调用方 _apply_gross_cap
+      压到 brake_max_gross —— 组合级敞口真正下降(旧实现只缩正目标、维持仓 +
+      cap_and_rank 每日重新填满,总敞口实际不降)。
+    - scale>1(回撤加仓):只放大未满单股上限的正目标;add_min_score 设置时仅
+      raw 分数≥ 阈值的票放大(质量门控)。
+    - keep_ratio:刹车期只保留 raw 分数最高的 keep_ratio 比例正目标,其余清 0。
+    - 结尾把显式化后的维持仓并入 brake_max_gross 总敞口(未设则交给调用方兜底)。
+    """
+    if mode == "block_new_buys":
+        return _block_portfolio_new_buys(final, current)
+
+    # 质量门控:只保留 raw 分数最高的 keep_ratio 比例正目标,其余清 0。
+    if keep_ratio is not None and 0 < keep_ratio < 1:
+        pos = [(c, w) for c, w in final.items() if w and w > 0]
+        pos.sort(key=lambda x: -float((meta or {}).get(x[0], {}).get("raw") or 0.0))
+        keep_n = max(1, int(len(pos) * keep_ratio))
+        keep = {c for c, _ in pos[:keep_n]}
+        final = {c: (w if c in keep else 0.0) for c, w in final.items()}
+
+    if scale <= 1.0:
+        # 平滑刹车:正目标 ×scale;维持仓显式落为 current(供总敞口 cap 一并压缩)。
+        out: dict[str, float | None] = {}
+        for c, w in final.items():
+            if w is None:
+                out[c] = current.get(c, 0.0)
+            elif w:
+                out[c] = w * scale
+            else:
+                out[c] = w
+        final = out
+    else:
+        # 回撤加仓:只放大未满单股上限的正目标;可选 strong_buy 质量门控。
+        out = {}
+        for c, w in final.items():
+            if not w or w <= 0:
+                out[c] = w
+                continue
+            if add_min_score is not None:
+                raw = (meta or {}).get(c, {}).get("raw") or 0.0
+                if float(raw) < add_min_score:
+                    out[c] = w  # 不放大
+                    continue
+            if max_weight > 0 and w < max_weight:
+                out[c] = min(w * scale, max_weight)
+            else:
+                out[c] = w
+        final = out
+
+    # 组合级总敞口安全阀:刹车期收窄到 brake_max_gross(含被显式化的维持仓)。
+    if brake_max_gross is None:
+        return final
+    return _apply_gross_cap(final, brake_max_gross)
+
+
 def _block_portfolio_new_buys(
     final: dict[str, float | None], current: dict[str, float],
 ) -> dict[str, float | None]:
@@ -1221,6 +1291,12 @@ def run_backtest(codes: list[str], start: date, end: date,
                  portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE,
                  portfolio_brake_scale: float = DEFAULT_PORTFOLIO_BRAKE_SCALE,
                  portfolio_brake_mode: str = "scale_all",
+                 portfolio_brake_max_gross: float | None = None,
+                 portfolio_brake_keep_ratio: float | None = None,
+                 portfolio_brake_add_min_score: float | None = None,
+                 portfolio_brake_recover_dd: float | None = None,
+                 portfolio_brake_recover_high_days: int = 0,
+                 portfolio_brake_tiers: tuple[tuple[float, float], ...] = (),
                  take_profit_tiers: tuple[tuple[float, ...], ...] = (),
                  take_profit_hard_pct: float | None = None,
                  take_profit_atr_period: int | None = None,
@@ -1279,6 +1355,18 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _v is not None: portfolio_brake_scale = _v
         _v = getattr(debounce, "portfolio_brake_mode", None)
         if _v is not None: portfolio_brake_mode = _v
+        _v = getattr(debounce, "portfolio_brake_max_gross", None)
+        if _v is not None: portfolio_brake_max_gross = _v
+        _v = getattr(debounce, "portfolio_brake_keep_ratio", None)
+        if _v is not None: portfolio_brake_keep_ratio = _v
+        _v = getattr(debounce, "portfolio_brake_add_min_score", None)
+        if _v is not None: portfolio_brake_add_min_score = _v
+        _v = getattr(debounce, "portfolio_brake_recover_dd", None)
+        if _v is not None: portfolio_brake_recover_dd = _v
+        _v = getattr(debounce, "portfolio_brake_recover_high_days", None)
+        if _v is not None: portfolio_brake_recover_high_days = _v
+        _v = getattr(debounce, "portfolio_brake_tiers", None)
+        if _v is not None: portfolio_brake_tiers = _v
         _v = getattr(debounce, "take_profit_tiers", None)
         if _v is not None: take_profit_tiers = _v
         _v = getattr(debounce, "take_profit_hard_pct", None)
@@ -1289,7 +1377,31 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _v is not None: take_profit_atr_tiers = _v
         _v = getattr(debounce, "take_profit_atr_lagged", None)
         if _v is not None: take_profit_atr_lagged = _v
-    portfolio_brake_scale = min(max(float(portfolio_brake_scale), 0.0), 1.0)
+    portfolio_brake_scale = min(max(float(portfolio_brake_scale), 0.0), 1.5)
+    if portfolio_brake_max_gross is not None:
+        portfolio_brake_max_gross = min(
+            max(float(portfolio_brake_max_gross), 0.0), 1.0,
+        )
+    if portfolio_brake_keep_ratio is not None:
+        portfolio_brake_keep_ratio = min(
+            max(float(portfolio_brake_keep_ratio), 0.0), 1.0,
+        )
+    if portfolio_brake_recover_dd is not None:
+        portfolio_brake_recover_dd = min(
+            max(float(portfolio_brake_recover_dd), 0.0), 1.0,
+        )
+    portfolio_brake_recover_high_days = max(
+        int(portfolio_brake_recover_high_days or 0), 0,
+    )
+    # 深度分级刹车:((回撤阈值, 该档敞口上限), ...)按回撤深度升序;最深档兜底。
+    if portfolio_brake_tiers:
+        _norm = []
+        for t in portfolio_brake_tiers:
+            dd, cap = (float(t[0]), float(t[1])) if not isinstance(t, dict) else (
+                float(t["drawdown"]), float(t["max_gross"]),
+            )
+            _norm.append((min(max(dd, 0.0), 1.0), min(max(cap, 0.0), 1.0)))
+        portfolio_brake_tiers = tuple(sorted(_norm, key=lambda x: x[0]))
     if portfolio_brake_mode not in ("scale_all", "block_new_buys"):
         raise ValueError(
             "portfolio_brake_mode 必须是 scale_all 或 block_new_buys"
@@ -1337,6 +1449,10 @@ def run_backtest(codes: list[str], start: date, end: date,
     pending_signal: dict[str, str | None] = {}  # 同生命周期:挂单的 signal(止损等),穿透到成交单
     last_close: dict[str, float] = {}       # code → 最近有收盘价交易日的价(停牌日估值用)
     peak_equity: float = float(initial_cash)  # 组合回撤刹车:追踪回测内权益峰值
+    brake_latched: bool = False   # 刹车滞回:触发后需满足解除条件(防频繁开关)
+    brake_eq_window: deque[float] = deque(  # 近期权益序列(解除参考 = 滚动 N 日新高)
+        maxlen=max(int(portfolio_brake_recover_high_days), 1) or 1
+    )
     cash_constraint_hits: int = 0             # 当日买单触发现金缩放的天数(可观测,对标 backtrader Margin)
 
     _atr_period = int(take_profit_atr_period or 0)
@@ -1750,34 +1866,116 @@ def run_backtest(codes: list[str], start: date, end: date,
 
         # 3b. 仓位调整层:desired全集 + current全集 → 最终目标仓位(独立基础架构,从 app_config 取)
         current_weights = {c: s["weight"] for c, s in snap.items()}   # 全集(含未覆盖持仓)
-        final = rebalancer.adjust(
-            desired, current_weights, meta,
-            equity=acct.equity(last_close),
-            params=rebalancer_params,
+        # 增强刹车参数是否显式配置(opt-in):配置任一即走组合级敞口刹车新路径;
+        # 全部未配时保持旧语义(仅缩正目标/禁新买,rebalancer 每轮仍填满 max_gross)。
+        _enhanced_brake = (
+            portfolio_brake_max_gross is not None
+            or bool(portfolio_brake_tiers)
+            or portfolio_brake_keep_ratio is not None
+            or portfolio_brake_add_min_score is not None
+            or portfolio_brake_recover_dd is not None
+            or portfolio_brake_recover_high_days > 0
         )
+        _cur_eq = acct.equity(last_close)
+        peak_equity = max(peak_equity, _cur_eq)
+        _below_brake = (
+            portfolio_brake_dd > 0
+            and peak_equity > 0
+            and _cur_eq / peak_equity - 1 <= -portfolio_brake_dd
+        )
+        # 滞回解除(仅增强路径,防频繁开关):
+        #   - recover_high_days>0:权益创出滚动 N 日新高即解除(临时熔断,自释放);
+        #   - 否则 recover_dd 设置时需恢复到峰值 -recover_dd 以内;
+        #   - 两者都未配时回到触发线上方即解除(旧语义)。
+        _rolling_high = max(brake_eq_window) if brake_eq_window else 0.0
+        if _below_brake:
+            brake_latched = True
+        elif portfolio_brake_recover_high_days > 0:
+            if brake_latched and _cur_eq >= _rolling_high:
+                brake_latched = False
+        elif portfolio_brake_recover_dd is None:
+            brake_latched = False
+        elif brake_latched and _cur_eq / peak_equity - 1 > -portfolio_brake_recover_dd:
+            brake_latched = False
+        _brake_active = bool(_below_brake or brake_latched)
+        # 记录当日权益进滚动窗口(滚到解除判定之后,避免当日自身成新高)。
+        brake_eq_window.append(_cur_eq)
 
-        # 宇宙外持仓:禁止加仓(target 上限 = current);允许 exit-only 信号减仓/清仓。
-        for code, tw in list(final.items()):
-            if code in u or tw is None:
-                continue
-            cur = current_weights.get(code, 0.0)
-            if tw > cur + 1e-9:
-                final[code] = cur
-
-        # 组合回撤刹车(规则化风控):equity 较回测峰值回撤达阈值 → 保留配置比例的目标仓位。
-        if portfolio_brake_dd > 0:
-            _cur_eq = acct.equity(last_close)
-            peak_equity = max(peak_equity, _cur_eq)
-            if peak_equity > 0 and _cur_eq / peak_equity - 1 <= -portfolio_brake_dd:
+        if not _enhanced_brake:
+            # 旧路径(逐字节保持):rebalancer 用原 max_gross;刹车只缩正目标/禁新买。
+            final = rebalancer.adjust(
+                desired, current_weights, meta,
+                equity=acct.equity(last_close),
+                params=rebalancer_params,
+            )
+            # 宇宙外持仓:禁止加仓(target 上限 = current);允许 exit-only 信号减仓/清仓。
+            for code, tw in list(final.items()):
+                if code in u or tw is None:
+                    continue
+                cur = current_weights.get(code, 0.0)
+                if tw > cur + 1e-9:
+                    final[code] = cur
+            if _brake_active:
                 if portfolio_brake_mode == "block_new_buys":
                     # 选择性刹车:新增仓/已有仓加仓被压回当前仓位;正常减仓、止损、止盈放行。
                     final = _block_portfolio_new_buys(final, current_weights)
                 else:
                     final = {c: (w * portfolio_brake_scale if w else w)
                              for c, w in final.items()}
-        # 总仓安全阀:Σ目标权重 ≤ max_gross(留 1-max_gross 现金,对所有 rebalancer 生效)→
-        # 保证执行层买单总额 ≤ 可投资现金,不夹断丢目标。超限等比缩放所有正值权重。
-        final = _apply_gross_cap(final, max_gross)
+            final = _apply_gross_cap(final, max_gross)
+        else:
+            # 组合级敞口刹车:刹车期把 rebalancer 竞争额度收紧到有效 max_gross,
+            # 否则 cap_and_rank 先按 max_gross 填满、之后单票缩放被每日重新填满
+            # → 总敞口实际不降(2008 实测根因)。
+            _effective_max_gross = max_gross
+            _day_rebalancer_params = rebalancer_params
+            if _brake_active:
+                if portfolio_brake_tiers:
+                    # 深度分级:按当前回撤深度取对应敞口上限(越深越紧,自然随反弹放松)。
+                    _dd = _cur_eq / peak_equity - 1.0
+                    _effective_max_gross = max_gross
+                    for _t_dd, _t_cap in portfolio_brake_tiers:
+                        if _dd <= -_t_dd:
+                            _effective_max_gross = min(_t_cap, max_gross)
+                        else:
+                            break
+                elif portfolio_brake_max_gross is not None:
+                    # 显式配的组合级敞口:平滑刹车(<max_gross)或回撤加仓(>max_gross)共用。
+                    _effective_max_gross = portfolio_brake_max_gross
+                elif portfolio_brake_mode == "block_new_buys":
+                    _effective_max_gross = max_gross
+                else:
+                    _effective_max_gross = min(
+                        max_gross * portfolio_brake_scale, max_gross,
+                    )
+                _day_rebalancer_params = dict(rebalancer_params)
+                _day_rebalancer_params["max_gross"] = _effective_max_gross
+            final = rebalancer.adjust(
+                desired, current_weights, meta,
+                equity=acct.equity(last_close),
+                params=_day_rebalancer_params,
+            )
+            # 宇宙外持仓:禁止加仓(target 上限 = current);允许 exit-only 信号减仓/清仓。
+            for code, tw in list(final.items()):
+                if code in u or tw is None:
+                    continue
+                cur = current_weights.get(code, 0.0)
+                if tw > cur + 1e-9:
+                    final[code] = cur
+            # 刹车期保留配置比例目标仓位:组合级敞口收窄 / 质量门控 / 回撤加仓门控。
+            if _brake_active:
+                final = _apply_portfolio_brake(
+                    final, current_weights, meta,
+                    scale=portfolio_brake_scale,
+                    mode=portfolio_brake_mode,
+                    brake_max_gross=_effective_max_gross,
+                    keep_ratio=portfolio_brake_keep_ratio,
+                    add_min_score=portfolio_brake_add_min_score,
+                    max_weight=max_weight,
+                )
+            # 总仓安全阀:Σ目标权重 ≤ max_gross(留 1-max_gross 现金,对所有 rebalancer 生效)→
+            # 保证执行层买单总额 ≤ 可投资现金,不夹断丢目标。超限等比缩放所有正值权重。
+            final = _apply_gross_cap(final, _effective_max_gross)
 
         # 3c. 边沿触发 + 冷却(遍历 final 全集;未覆盖维持的 code 过 should_act 是 no-op)
         # sorted by code:final 经 rebalancer 的 set 构造、顺序随哈希随机化漂移;
@@ -1910,6 +2108,12 @@ def run_backtest(codes: list[str], start: date, end: date,
         "portfolio_brake_dd": portfolio_brake_dd,
         "portfolio_brake_scale": portfolio_brake_scale,
         "portfolio_brake_mode": portfolio_brake_mode,
+        "portfolio_brake_max_gross": portfolio_brake_max_gross,
+        "portfolio_brake_keep_ratio": portfolio_brake_keep_ratio,
+        "portfolio_brake_add_min_score": portfolio_brake_add_min_score,
+        "portfolio_brake_recover_dd": portfolio_brake_recover_dd,
+        "portfolio_brake_recover_high_days": portfolio_brake_recover_high_days,
+        "portfolio_brake_tiers": [list(t) for t in portfolio_brake_tiers],
         "take_profit_tiers": take_profit_tiers,
         "take_profit_hard_pct": take_profit_hard_pct,
         "take_profit_atr_period": take_profit_atr_period,
