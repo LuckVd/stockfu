@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 from array import array
 from bisect import bisect_left, bisect_right
-from collections import namedtuple
+from collections import deque, namedtuple
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -639,6 +639,36 @@ def _bar_from_cols(cols: dict, di: int) -> dict:
     }
 
 
+def _update_atr_percent(
+    bar: dict,
+    previous_close: float | None,
+    tr_history: deque[float],
+    period: int,
+) -> tuple[float | None, float | None]:
+    """用复权 OHLC 更新 ATR 百分比状态,返回(本日收盘, ATR/收盘)。
+
+    真实波幅采用复权 high/low/close,因此 raw 估值回测也不会把现金分红除息
+    造成的价格跳变放大成波动。当前 bar 只使用截至 as_of 的数据,可直接用于
+    T 日收盘止盈判断;period 未满时返回 None,避免用不足样本的 ATR。
+    """
+    close = bar.get("close")
+    high = bar.get("high")
+    low = bar.get("low")
+    if (close is None or close <= 0 or high is None or low is None
+            or high <= 0 or low <= 0 or high < low):
+        return close, None
+    base = previous_close if previous_close and previous_close > 0 else close
+    true_range = max(
+        high - low,
+        abs(high - previous_close) if previous_close and previous_close > 0 else 0.0,
+        abs(low - previous_close) if previous_close and previous_close > 0 else 0.0,
+    )
+    tr_history.append(true_range / base)
+    if len(tr_history) < period:
+        return close, None
+    return close, sum(tr_history) / len(tr_history)
+
+
 def _bar_from_row(r) -> dict:
     """ORM 行情行 → 日 bar dict(字段缺失时用 getattr 默认,兼容 ETF/指数表无 is_st 等列)。"""
     return _bar_from_tuple(_pack_bar_row(r))
@@ -900,6 +930,22 @@ def _take_profit_stage(profit: float, drawdown: float) -> str:
     return f"take_profit_trailing_{profit:g}_{drawdown:g}"
 
 
+def _take_profit_atr_parts(tier: tuple[float, ...]) -> tuple[float, float, float] | None:
+    """解析 ATR tier=(收益门槛, ATR 倍数, 卖出比例)。"""
+    if len(tier) < 2:
+        return None
+    profit = float(tier[0])
+    multiple = float(tier[1])
+    sell_fraction = float(tier[2]) if len(tier) >= 3 else 1.0
+    if multiple <= 0 or sell_fraction <= 0:
+        return None
+    return profit, multiple, min(sell_fraction, 1.0)
+
+
+def _take_profit_atr_stage(profit: float, multiple: float) -> str:
+    return f"take_profit_atr_{profit:g}_{multiple:g}"
+
+
 def tiered_take_profit_action(
     avg_cost: float, peak_close: float, close: float,
     tiers: tuple[tuple[float, ...], ...] = (),
@@ -932,8 +978,41 @@ def tiered_take_profit_action(
     return None
 
 
+def atr_take_profit_action(
+    avg_cost: float, peak_close: float, close: float, atr_pct: float | None,
+    tiers: tuple[tuple[float, ...], ...] = (),
+    hard_profit_pct: float | None = None,
+    fired_tiers: set[str] | frozenset[str] = frozenset(),
+) -> tuple[str, float, str | None] | None:
+    """按 ATR 百分比触发分级追踪止盈。
+
+    tier 的第二个字段是 ATR 倍数,实际回撤门槛为 ``atr_pct * multiple``;
+    阶段 ID 只含配置倍数而不含每日 ATR 值,避免波动率变化后重复触发同一档。
+    """
+    if avg_cost <= 0 or peak_close <= 0 or close <= 0:
+        return None
+    current_profit = close / avg_cost - 1.0
+    if hard_profit_pct is not None and current_profit + 1e-12 >= hard_profit_pct:
+        return f"take_profit_hard_{hard_profit_pct:g}", 1.0, None
+    if atr_pct is None or atr_pct <= 0:
+        return None
+    peak_profit = peak_close / avg_cost - 1.0
+    parsed = [parts for tier in tiers
+              if (parts := _take_profit_atr_parts(tier)) is not None]
+    for profit, multiple, sell_fraction in sorted(parsed, reverse=True):
+        stage = _take_profit_atr_stage(profit, multiple)
+        if stage in fired_tiers:
+            continue
+        drawdown = atr_pct * multiple
+        if (peak_profit + 1e-12 >= profit
+                and close / peak_close - 1.0 <= -drawdown + 1e-12):
+            return stage, sell_fraction, stage
+    return None
+
+
 def _take_profit_remaining_fraction(
     tiers: tuple[tuple[float, ...], ...], fired_tiers: set[str] | frozenset[str],
+    atr: bool = False,
 ) -> float:
     """根据已触发阶段计算原始持仓剩余比例。"""
     sold = 0.0
@@ -942,7 +1021,9 @@ def _take_profit_remaining_fraction(
         if parts is None:
             continue
         profit, drawdown, sell_fraction = parts
-        if _take_profit_stage(profit, drawdown) in fired_tiers:
+        stage = (_take_profit_atr_stage(profit, drawdown)
+                 if atr else _take_profit_stage(profit, drawdown))
+        if stage in fired_tiers:
             sold += sell_fraction
     return max(0.0, 1.0 - min(sold, 1.0))
 
@@ -1129,6 +1210,8 @@ def run_backtest(codes: list[str], start: date, end: date,
                  portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE,
                  take_profit_tiers: tuple[tuple[float, ...], ...] = (),
                  take_profit_hard_pct: float | None = None,
+                 take_profit_atr_period: int | None = None,
+                 take_profit_atr_tiers: tuple[tuple[float, ...], ...] = (),
                  universe_rules=None,
                  execution_rules=None,
                  valuation_basis: str = "qfq") -> dict:
@@ -1182,6 +1265,10 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _v is not None: take_profit_tiers = _v
         _v = getattr(debounce, "take_profit_hard_pct", None)
         if _v is not None: take_profit_hard_pct = _v
+        _v = getattr(debounce, "take_profit_atr_period", None)
+        if _v is not None: take_profit_atr_period = _v
+        _v = getattr(debounce, "take_profit_atr_tiers", None)
+        if _v is not None: take_profit_atr_tiers = _v
     # 仓位调整层:独立基础架构,从 app_config 取(解耦于策略)
     from stockfu.ai.rebalancers import get_active_rebalancer, get_rebalancer_params
     rebalancer = get_active_rebalancer()
@@ -1227,11 +1314,36 @@ def run_backtest(codes: list[str], start: date, end: date,
     peak_equity: float = float(initial_cash)  # 组合回撤刹车:追踪回测内权益峰值
     cash_constraint_hits: int = 0             # 当日买单触发现金缩放的天数(可观测,对标 backtrader Margin)
 
+    _atr_period = int(take_profit_atr_period or 0)
+    _atr_enabled = _atr_period > 0 and bool(take_profit_atr_tiers)
+    _atr_ranges: dict[str, deque[float]] = {}
+    _atr_previous_close: dict[str, float] = {}
+
+
     # D: 区间行情列式预载(一次 SQL → _SeriesCtx:全局日历 + per-code array);日循环零扫库。
     # 预载起点提前 _PRELOAD_LOOKBACK_DAYS,覆盖算子最大回看(low_volatility ~1160 历日),
     # 使 _backtest_series_ctx 能从内存零查库喂给 quote_series(与 DB 逐值一致)。
     _pre_start = start - timedelta(days=_PRELOAD_LOOKBACK_DAYS)
     sctx = _preload_market_range(list(codes), _pre_start, end) if days else None
+    # 用 start 之前已预载的行情预热 ATR,避免回测起点恰好落在波动期时产生
+    # 人为的 20 日冷启动差异;只读取 <start 的历史,仍无未来函数。
+    if _atr_enabled and sctx:
+        for code, cols in sctx.series.items():
+            history = deque(maxlen=_atr_period)
+            previous = None
+            valid_code = sctx.valid.get(code)
+            for di, hist_date in enumerate(sctx.dates):
+                if hist_date >= start:
+                    break
+                if valid_code is None or not valid_code[di]:
+                    continue
+                previous, _ = _update_atr_percent(
+                    _bar_from_cols(cols, di), previous, history, _atr_period,
+                )
+            if history:
+                _atr_ranges[code] = history
+            if previous and previous > 0:
+                _atr_previous_close[code] = previous
     # 分红预载:研究模式(non-strict 主线)只读 dividend_event。qfq/hfq 三复权价已含
     # 分红再投+送转(002594 实证:除权日 qfq/hfq 不跌),无需手动入账/调仓,再补=重复计息;
     # 仅 raw 口径(不复权)需把现金分红补进账户、把送转显式调股数。
@@ -1277,6 +1389,17 @@ def run_backtest(codes: list[str], start: date, end: date,
             list(codes), as_of, sctx=sctx, valuation_basis=valuation_basis)
         if not close_prices:
             continue
+        atr_pct_by_code: dict[str, float] = {}
+        if _atr_enabled:
+            for code, bar in day_bars.items():
+                history = _atr_ranges.setdefault(code, deque(maxlen=_atr_period))
+                previous, atr_pct = _update_atr_percent(
+                    bar, _atr_previous_close.get(code), history, _atr_period,
+                )
+                if previous and previous > 0:
+                    _atr_previous_close[code] = previous
+                if atr_pct is not None:
+                    atr_pct_by_code[code] = atr_pct
         # 公司行为结算(研究模式 non-strict 主线):仅 raw 口径门控(详见 settle_dividends)。
         trades.extend(settle_dividends(acct, as_of, cash_dividends,
                                        stock_dividends, credit_dividends))
@@ -1511,18 +1634,30 @@ def run_backtest(codes: list[str], start: date, end: date,
             # tier 则按首次触发前持仓分段减仓，并把剩余仓位设为上限，防止次日买回。
             _pos = acct.positions.get(code)
             _px = close_prices.get(code, 0.0)
+            _active_tp_tiers = (
+                take_profit_atr_tiers if _atr_enabled else take_profit_tiers
+            )
             _has_partial_tp = any(
-                (parts := _take_profit_tier_parts(tier)) is not None and parts[2] < 1.0
-                for tier in take_profit_tiers
+                (parts := (_take_profit_atr_parts(tier)
+                           if _atr_enabled else _take_profit_tier_parts(tier))) is not None
+                and parts[2] < 1.0
+                for tier in _active_tp_tiers
             )
             if (_pos and current_w > 0
                     and (target_weight not in (0.0, None)
                          or (target_weight is None and _has_partial_tp))):
-                _tp_action = tiered_take_profit_action(
-                    _pos.avg_cost, _pos.peak_close, _px,
-                    take_profit_tiers, take_profit_hard_pct,
-                    _pos.take_profit_fired,
-                )
+                if _atr_enabled:
+                    _tp_action = atr_take_profit_action(
+                        _pos.avg_cost, _pos.peak_close, _px,
+                        atr_pct_by_code.get(code), take_profit_atr_tiers,
+                        take_profit_hard_pct, _pos.take_profit_fired,
+                    )
+                else:
+                    _tp_action = tiered_take_profit_action(
+                        _pos.avg_cost, _pos.peak_close, _px,
+                        take_profit_tiers, take_profit_hard_pct,
+                        _pos.take_profit_fired,
+                    )
                 if _tp_action:
                     _tp_reason, _sell_fraction, _tp_stage = _tp_action
                     signal = _tp_reason
@@ -1534,7 +1669,8 @@ def run_backtest(codes: list[str], start: date, end: date,
                         if _tp_stage:
                             _pos.take_profit_fired.add(_tp_stage)
                         _remaining = _take_profit_remaining_fraction(
-                            take_profit_tiers, _pos.take_profit_fired,
+                            _active_tp_tiers, _pos.take_profit_fired,
+                            atr=_atr_enabled,
                         )
                         _cap_shares = int(
                             _pos.take_profit_anchor_shares * _remaining / 100
@@ -1739,6 +1875,8 @@ def run_backtest(codes: list[str], start: date, end: date,
         "portfolio_brake_dd": portfolio_brake_dd,
         "take_profit_tiers": take_profit_tiers,
         "take_profit_hard_pct": take_profit_hard_pct,
+        "take_profit_atr_period": take_profit_atr_period,
+        "take_profit_atr_tiers": take_profit_atr_tiers,
         "execution": "T+1_open_sell_first",
         "rebalancer": rebalancer.rebalancer_id,
         "universe": uni_ctx.summary(universe_sizes),

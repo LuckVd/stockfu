@@ -44,8 +44,11 @@ class StrategyDebounce:
     stop_loss_pct: float | None = None
     portfolio_brake_dd: float | None = None
     # 分级追踪止盈: ((触发收益率, 从持仓峰值回撤, 卖出比例), ...);卖出比例缺省=1(全清)。
-    take_profit_tiers: tuple[tuple[float, float, float], ...] | None = None
+    take_profit_tiers: tuple[tuple[float, ...], ...] | None = None
     take_profit_hard_pct: float | None = None
+    # ATR 追踪止盈: period + ((触发收益率, ATR 倍数, 卖出比例), ...)。
+    take_profit_atr_period: int | None = None
+    take_profit_atr_tiers: tuple[tuple[float, ...], ...] | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -64,6 +67,8 @@ class StrategyDebounce:
             "portfolio_brake_dd": self.portfolio_brake_dd,
             "take_profit_tiers": self.take_profit_tiers,
             "take_profit_hard_pct": self.take_profit_hard_pct,
+            "take_profit_atr_period": self.take_profit_atr_period,
+            "take_profit_atr_tiers": self.take_profit_atr_tiers,
         }
 
 
@@ -282,6 +287,15 @@ class CompiledStrategy:
             for row in tp.get("trailing", [])
             if isinstance(row, dict) and "profit" in row and "drawdown" in row
         )
+        atr_cfg = tp.get("atr_trailing") or {}
+        atr_tiers = tuple(
+            (float(row["profit"]), float(row["multiple"]),
+             float(row.get("sell_fraction", 1.0)))
+            for row in atr_cfg.get("tiers", [])
+            if isinstance(row, dict) and "profit" in row and "multiple" in row
+        )
+        atr_period = (int(atr_cfg["period"])
+                      if atr_cfg.get("period") is not None else None)
         return StrategyDebounce(
             buy_cool_down_days=d.get("buy_cool_down_days", 5),
             max_target_step=d.get("max_target_step", 1.0),
@@ -299,6 +313,8 @@ class CompiledStrategy:
             take_profit_tiers=tiers or None,
             take_profit_hard_pct=(float(tp["hard_profit"])
                                   if tp.get("hard_profit") is not None else None),
+            take_profit_atr_period=atr_period,
+            take_profit_atr_tiers=atr_tiers or None,
         )
 
     @property
