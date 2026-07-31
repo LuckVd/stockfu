@@ -915,6 +915,16 @@ def _apply_gross_cap(final: dict[str, float | None], max_gross: float) -> dict[s
     return {c: (w * factor if w else w) for c, w in final.items()}
 
 
+def _block_portfolio_new_buys(
+    final: dict[str, float | None], current: dict[str, float],
+) -> dict[str, float | None]:
+    """组合刹车期间禁止新建仓/加仓,但放行正常减仓与风险退出。"""
+    return {
+        c: (current.get(c, 0.0) if w and w > current.get(c, 0.0) else w)
+        for c, w in final.items()
+    }
+
+
 def _take_profit_tier_parts(tier: tuple[float, ...]) -> tuple[float, float, float] | None:
     """兼容旧的二元 tier，并把卖出比例规范到(0,1]。"""
     if len(tier) < 2:
@@ -1210,6 +1220,7 @@ def run_backtest(codes: list[str], start: date, end: date,
                  stop_loss_pct: float = DEFAULT_STOP_LOSS,
                  portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE,
                  portfolio_brake_scale: float = DEFAULT_PORTFOLIO_BRAKE_SCALE,
+                 portfolio_brake_mode: str = "scale_all",
                  take_profit_tiers: tuple[tuple[float, ...], ...] = (),
                  take_profit_hard_pct: float | None = None,
                  take_profit_atr_period: int | None = None,
@@ -1266,6 +1277,8 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _v is not None: portfolio_brake_dd = _v
         _v = getattr(debounce, "portfolio_brake_scale", None)
         if _v is not None: portfolio_brake_scale = _v
+        _v = getattr(debounce, "portfolio_brake_mode", None)
+        if _v is not None: portfolio_brake_mode = _v
         _v = getattr(debounce, "take_profit_tiers", None)
         if _v is not None: take_profit_tiers = _v
         _v = getattr(debounce, "take_profit_hard_pct", None)
@@ -1277,6 +1290,10 @@ def run_backtest(codes: list[str], start: date, end: date,
         _v = getattr(debounce, "take_profit_atr_lagged", None)
         if _v is not None: take_profit_atr_lagged = _v
     portfolio_brake_scale = min(max(float(portfolio_brake_scale), 0.0), 1.0)
+    if portfolio_brake_mode not in ("scale_all", "block_new_buys"):
+        raise ValueError(
+            "portfolio_brake_mode 必须是 scale_all 或 block_new_buys"
+        )
     # 仓位调整层:独立基础架构,从 app_config 取(解耦于策略)
     from stockfu.ai.rebalancers import get_active_rebalancer, get_rebalancer_params
     rebalancer = get_active_rebalancer()
@@ -1752,8 +1769,12 @@ def run_backtest(codes: list[str], start: date, end: date,
             _cur_eq = acct.equity(last_close)
             peak_equity = max(peak_equity, _cur_eq)
             if peak_equity > 0 and _cur_eq / peak_equity - 1 <= -portfolio_brake_dd:
-                final = {c: (w * portfolio_brake_scale if w else w)
-                         for c, w in final.items()}
+                if portfolio_brake_mode == "block_new_buys":
+                    # 选择性刹车:新增仓/已有仓加仓被压回当前仓位;正常减仓、止损、止盈放行。
+                    final = _block_portfolio_new_buys(final, current_weights)
+                else:
+                    final = {c: (w * portfolio_brake_scale if w else w)
+                             for c, w in final.items()}
         # 总仓安全阀:Σ目标权重 ≤ max_gross(留 1-max_gross 现金,对所有 rebalancer 生效)→
         # 保证执行层买单总额 ≤ 可投资现金,不夹断丢目标。超限等比缩放所有正值权重。
         final = _apply_gross_cap(final, max_gross)
@@ -1888,6 +1909,7 @@ def run_backtest(codes: list[str], start: date, end: date,
         "stop_loss_pct": stop_loss_pct,
         "portfolio_brake_dd": portfolio_brake_dd,
         "portfolio_brake_scale": portfolio_brake_scale,
+        "portfolio_brake_mode": portfolio_brake_mode,
         "take_profit_tiers": take_profit_tiers,
         "take_profit_hard_pct": take_profit_hard_pct,
         "take_profit_atr_period": take_profit_atr_period,
