@@ -56,6 +56,7 @@ def stamp_duty_rate(as_of: date | None) -> float:
 DEFAULT_MAX_GROSS = 0.90      # Σ目标权重上限(留 10% 现金;对所有 rebalancer 生效)
 DEFAULT_STOP_LOSS = 0.08      # 个股成本止损:浮亏达此比例 → 强制清仓
 DEFAULT_PORTFOLIO_BRAKE = 0.10  # 组合回撤刹车:equity 较峰值回撤达此值 → 全局临时降仓一半
+DEFAULT_PORTFOLIO_BRAKE_SCALE = 0.50  # 组合回撤刹车触发后保留的目标仓位比例
 HFQ_COVERAGE_MIN = 0.995      # hfq 口径门禁:回测窗口内有 hfq 数据的股票,close_hfq 非空率下限
 
 
@@ -1208,6 +1209,7 @@ def run_backtest(codes: list[str], start: date, end: date,
                  max_gross: float = DEFAULT_MAX_GROSS,
                  stop_loss_pct: float = DEFAULT_STOP_LOSS,
                  portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE,
+                 portfolio_brake_scale: float = DEFAULT_PORTFOLIO_BRAKE_SCALE,
                  take_profit_tiers: tuple[tuple[float, ...], ...] = (),
                  take_profit_hard_pct: float | None = None,
                  take_profit_atr_period: int | None = None,
@@ -1262,6 +1264,8 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _v is not None: stop_loss_pct = _v
         _v = getattr(debounce, "portfolio_brake_dd", None)
         if _v is not None: portfolio_brake_dd = _v
+        _v = getattr(debounce, "portfolio_brake_scale", None)
+        if _v is not None: portfolio_brake_scale = _v
         _v = getattr(debounce, "take_profit_tiers", None)
         if _v is not None: take_profit_tiers = _v
         _v = getattr(debounce, "take_profit_hard_pct", None)
@@ -1272,6 +1276,7 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _v is not None: take_profit_atr_tiers = _v
         _v = getattr(debounce, "take_profit_atr_lagged", None)
         if _v is not None: take_profit_atr_lagged = _v
+    portfolio_brake_scale = min(max(float(portfolio_brake_scale), 0.0), 1.0)
     # 仓位调整层:独立基础架构,从 app_config 取(解耦于策略)
     from stockfu.ai.rebalancers import get_active_rebalancer, get_rebalancer_params
     rebalancer = get_active_rebalancer()
@@ -1742,12 +1747,13 @@ def run_backtest(codes: list[str], start: date, end: date,
             if tw > cur + 1e-9:
                 final[code] = cur
 
-        # 组合回撤刹车(规则化风控):equity 较回测峰值回撤达阈值 → 全局临时降仓一半(风险优先)。
+        # 组合回撤刹车(规则化风控):equity 较回测峰值回撤达阈值 → 保留配置比例的目标仓位。
         if portfolio_brake_dd > 0:
             _cur_eq = acct.equity(last_close)
             peak_equity = max(peak_equity, _cur_eq)
             if peak_equity > 0 and _cur_eq / peak_equity - 1 <= -portfolio_brake_dd:
-                final = {c: (w * 0.5 if w else w) for c, w in final.items()}
+                final = {c: (w * portfolio_brake_scale if w else w)
+                         for c, w in final.items()}
         # 总仓安全阀:Σ目标权重 ≤ max_gross(留 1-max_gross 现金,对所有 rebalancer 生效)→
         # 保证执行层买单总额 ≤ 可投资现金,不夹断丢目标。超限等比缩放所有正值权重。
         final = _apply_gross_cap(final, max_gross)
@@ -1881,6 +1887,7 @@ def run_backtest(codes: list[str], start: date, end: date,
         "max_gross": max_gross,
         "stop_loss_pct": stop_loss_pct,
         "portfolio_brake_dd": portfolio_brake_dd,
+        "portfolio_brake_scale": portfolio_brake_scale,
         "take_profit_tiers": take_profit_tiers,
         "take_profit_hard_pct": take_profit_hard_pct,
         "take_profit_atr_period": take_profit_atr_period,
