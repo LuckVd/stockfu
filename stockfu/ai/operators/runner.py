@@ -43,6 +43,7 @@ class StrategyDebounce:
     max_gross: float | None = None
     stop_loss_pct: float | None = None
     portfolio_brake_dd: float | None = None
+    portfolio_brake_scale: float | None = None
     # 分级追踪止盈: ((触发收益率, 从持仓峰值回撤, 卖出比例), ...);卖出比例缺省=1(全清)。
     take_profit_tiers: tuple[tuple[float, ...], ...] | None = None
     take_profit_hard_pct: float | None = None
@@ -66,6 +67,7 @@ class StrategyDebounce:
             "max_gross": self.max_gross,
             "stop_loss_pct": self.stop_loss_pct,
             "portfolio_brake_dd": self.portfolio_brake_dd,
+            "portfolio_brake_scale": self.portfolio_brake_scale,
             "take_profit_tiers": self.take_profit_tiers,
             "take_profit_hard_pct": self.take_profit_hard_pct,
             "take_profit_atr_period": self.take_profit_atr_period,
@@ -313,6 +315,7 @@ class CompiledStrategy:
             max_gross=rk.get("max_gross"),
             stop_loss_pct=rk.get("stop_loss"),
             portfolio_brake_dd=rk.get("portfolio_brake"),
+            portfolio_brake_scale=rk.get("portfolio_brake_scale"),
             take_profit_tiers=tiers or None,
             take_profit_hard_pct=(float(tp["hard_profit"])
                                   if tp.get("hard_profit") is not None else None),
