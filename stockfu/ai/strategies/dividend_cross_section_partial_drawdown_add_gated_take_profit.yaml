@@ -1,0 +1,35 @@
+version: 1
+name: 红利横截面(分段止盈+回撤加仓质量门控)
+# 实验候选:组合权益从峰值回撤达到 8% 后,允许把未达单股上限的正目标放大 1.20 倍,
+# 但仅对 raw 分数 ≥ 12(strong_buy)的目标生效——避免无条件加仓摊上弱势票(修复旧
+# 回撤加仓 2024-2026 后段回撤偏高的根因);总仓上限放宽到 1.00。
+operators:
+  - {id: dividend_yield, type: math, weight: 1.0, params: {high_yield: 5.0, price_basis: raw, yield_cap: 20.0}}
+  - {id: low_volatility, type: math, weight: 0.8, params: {window: 20, hist_years: 3}}
+  - {id: value, type: math, weight: 0.6, params: {years: 5}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.05
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  stop_loss: 0.30
+  portfolio_brake: 0.08
+  portfolio_brake_scale: 1.20
+  portfolio_brake_max_gross: 1.00
+  portfolio_brake_add_min_score: 12.0
+  take_profit:
+    trailing:
+      - {profit: 0.20, drawdown: 0.05, sell_fraction: 0.3333333333}
+      - {profit: 0.30, drawdown: 0.03, sell_fraction: 0.3333333333}
+    hard_profit: null

@@ -46,6 +46,8 @@ _STRATEGIES = [
     "dividend_cross_section_partial_brake_take_profit",
     "dividend_cross_section_partial_gentle_brake_take_profit",
     "dividend_cross_section_partial_selective_brake_take_profit",
+    "dividend_cross_section_partial_exposure_brake_take_profit",
+    "dividend_cross_section_partial_drawdown_add_gated_take_profit",
 ]
 _RETAINED_STRATEGY_IDS = frozenset({
     "momentum_breakout",
@@ -59,6 +61,10 @@ _RETAINED_STRATEGY_IDS = frozenset({
     "dividend_cross_section_partial_brake_take_profit",
     "dividend_cross_section_partial_gentle_brake_take_profit",
     "dividend_cross_section_partial_selective_brake_take_profit",
+    "dividend_cross_section_partial_exposure_brake_take_profit",
+    "dividend_cross_section_partial_exposure_brake_take_profit#deep",
+    "dividend_cross_section_partial_exposure_brake_take_profit#rec125",
+    "dividend_cross_section_partial_drawdown_add_gated_take_profit",
 })
 
 _STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"

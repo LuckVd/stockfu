@@ -3,6 +3,7 @@ from collections import deque
 import pytest
 
 from stockfu.backtest.engine import (
+    _apply_portfolio_brake,
     _block_portfolio_new_buys,
     _update_atr_percent,
     atr_take_profit_action,
@@ -16,6 +17,76 @@ def test_selective_portfolio_brake_blocks_buys_but_allows_reductions():
     final = {"existing": 0.05, "reduce": 0.03, "new": 0.02, "hold": None}
     blocked = _block_portfolio_new_buys(final, current)
     assert blocked == {"existing": 0.04, "reduce": 0.03, "new": 0.0, "hold": None}
+
+
+def test_portfolio_brake_smooth_scales_positive_and_keeps_maintain_cap():
+    # 平滑刹车:正目标 ×scale;维持(None)落为 current;总敞口压到 brake_max_gross。
+    current = {"a": 0.04, "b": 0.05, "c": 0.03, "d": 0.0}
+    final = {"a": 0.05, "b": None, "c": 0.04, "d": 0.02}
+    out = _apply_portfolio_brake(
+        final, current, {},
+        scale=0.75, mode="scale_all", brake_max_gross=0.6,
+    )
+    # a: 0.05*0.75=0.0375; c: 0.04*0.75=0.03; d: 0.02*0.75=0.015; b 维持=current 0.05
+    # 合计 0.0375+0.05+0.03+0.015=0.1325 <= 0.6 → 不再缩放
+    assert out["a"] == pytest.approx(0.0375)
+    assert out["b"] == 0.05
+    assert out["c"] == pytest.approx(0.03)
+    assert out["d"] == pytest.approx(0.015)
+
+
+def test_portfolio_brake_max_gross_caps_maintain_positions():
+    # 维持仓占大头时,组合级 cap 必须把总敞口压到 brake_max_gross(2008 根因修复)。
+    current = {"a": 0.30, "b": 0.30, "c": 0.30, "d": 0.0}
+    final = {"a": None, "b": None, "c": None, "d": 0.05}
+    out = _apply_portfolio_brake(
+        final, current, {},
+        scale=0.75, mode="scale_all", brake_max_gross=0.6,
+    )
+    gross = sum(w for w in out.values() if w)
+    assert gross <= 0.6 + 1e-9
+    # 维持仓显式化后参与 cap:等比缩到 0.6
+    assert out["a"] < 0.30 and out["a"] > 0.15
+    assert out["b"] == out["c"]  # 等比缩放一致
+
+
+def test_portfolio_brake_keep_ratio_drops_low_score():
+    current = {"high": 0.04, "mid": 0.04, "low": 0.04}
+    final = {"high": 0.05, "mid": 0.05, "low": 0.05}
+    meta = {"high": {"raw": 20.0}, "mid": {"raw": 8.0}, "low": {"raw": -5.0}}
+    out = _apply_portfolio_brake(
+        final, current, meta,
+        scale=0.75, mode="scale_all", brake_max_gross=None,
+        keep_ratio=0.5,
+    )
+    # 3 个正目标 × keep_ratio 0.5 → 保留 top 1(高分);其余清 0。
+    assert out["low"] == 0.0          # 低分被清
+    assert out["mid"] == 0.0          # 未入保留集也被清
+    assert out["high"] == pytest.approx(0.0375)
+
+
+def test_portfolio_brake_drawdown_add_gated_by_min_score():
+    current = {"strong": 0.02, "weak": 0.02}
+    final = {"strong": 0.05, "weak": 0.05}
+    meta = {"strong": {"raw": 15.0}, "weak": {"raw": 5.0}}
+    out = _apply_portfolio_brake(
+        final, current, meta,
+        scale=1.20, mode="scale_all", brake_max_gross=None,
+        add_min_score=12.0, max_weight=0.05,
+    )
+    assert out["strong"] == pytest.approx(0.05)   # 0.05*1.2 封顶 0.05
+    assert out["weak"] == 0.05                      # 未过门控不放大
+
+
+def test_portfolio_brake_block_mode_delegates():
+    current = {"existing": 0.04, "new": 0.0}
+    final = {"existing": 0.05, "new": 0.02}
+    out = _apply_portfolio_brake(
+        final, current, {},
+        scale=0.75, mode="block_new_buys", brake_max_gross=None,
+    )
+    assert out == {"existing": 0.04, "new": 0.0}
+
 
 
 def test_take_profit_is_disabled_without_config():
