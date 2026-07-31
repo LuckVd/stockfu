@@ -49,6 +49,7 @@ class StrategyDebounce:
     # ATR 追踪止盈: period + ((触发收益率, ATR 倍数, 卖出比例), ...)。
     take_profit_atr_period: int | None = None
     take_profit_atr_tiers: tuple[tuple[float, ...], ...] | None = None
+    take_profit_atr_lagged: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +70,7 @@ class StrategyDebounce:
             "take_profit_hard_pct": self.take_profit_hard_pct,
             "take_profit_atr_period": self.take_profit_atr_period,
             "take_profit_atr_tiers": self.take_profit_atr_tiers,
+            "take_profit_atr_lagged": self.take_profit_atr_lagged,
         }
 
 
@@ -296,6 +298,7 @@ class CompiledStrategy:
         )
         atr_period = (int(atr_cfg["period"])
                       if atr_cfg.get("period") is not None else None)
+        atr_lagged = bool(atr_cfg.get("lagged", False))
         return StrategyDebounce(
             buy_cool_down_days=d.get("buy_cool_down_days", 5),
             max_target_step=d.get("max_target_step", 1.0),
@@ -315,6 +318,7 @@ class CompiledStrategy:
                                   if tp.get("hard_profit") is not None else None),
             take_profit_atr_period=atr_period,
             take_profit_atr_tiers=atr_tiers or None,
+            take_profit_atr_lagged=atr_lagged,
         )
 
     @property

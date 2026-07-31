@@ -1212,6 +1212,7 @@ def run_backtest(codes: list[str], start: date, end: date,
                  take_profit_hard_pct: float | None = None,
                  take_profit_atr_period: int | None = None,
                  take_profit_atr_tiers: tuple[tuple[float, ...], ...] = (),
+                 take_profit_atr_lagged: bool = False,
                  universe_rules=None,
                  execution_rules=None,
                  valuation_basis: str = "qfq") -> dict:
@@ -1269,6 +1270,8 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _v is not None: take_profit_atr_period = _v
         _v = getattr(debounce, "take_profit_atr_tiers", None)
         if _v is not None: take_profit_atr_tiers = _v
+        _v = getattr(debounce, "take_profit_atr_lagged", None)
+        if _v is not None: take_profit_atr_lagged = _v
     # 仓位调整层:独立基础架构,从 app_config 取(解耦于策略)
     from stockfu.ai.rebalancers import get_active_rebalancer, get_rebalancer_params
     rebalancer = get_active_rebalancer()
@@ -1393,13 +1396,18 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _atr_enabled:
             for code, bar in day_bars.items():
                 history = _atr_ranges.setdefault(code, deque(maxlen=_atr_period))
+                prior_atr_pct = (
+                    sum(history) / len(history)
+                    if len(history) >= _atr_period else None
+                )
                 previous, atr_pct = _update_atr_percent(
                     bar, _atr_previous_close.get(code), history, _atr_period,
                 )
                 if previous and previous > 0:
                     _atr_previous_close[code] = previous
-                if atr_pct is not None:
-                    atr_pct_by_code[code] = atr_pct
+                selected_atr_pct = prior_atr_pct if take_profit_atr_lagged else atr_pct
+                if selected_atr_pct is not None:
+                    atr_pct_by_code[code] = selected_atr_pct
         # 公司行为结算(研究模式 non-strict 主线):仅 raw 口径门控(详见 settle_dividends)。
         trades.extend(settle_dividends(acct, as_of, cash_dividends,
                                        stock_dividends, credit_dividends))
@@ -1877,6 +1885,7 @@ def run_backtest(codes: list[str], start: date, end: date,
         "take_profit_hard_pct": take_profit_hard_pct,
         "take_profit_atr_period": take_profit_atr_period,
         "take_profit_atr_tiers": take_profit_atr_tiers,
+        "take_profit_atr_lagged": take_profit_atr_lagged,
         "execution": "T+1_open_sell_first",
         "rebalancer": rebalancer.rebalancer_id,
         "universe": uni_ctx.summary(universe_sizes),
