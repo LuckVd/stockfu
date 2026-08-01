@@ -901,6 +901,80 @@ def _get_day_market(codes: list[str], as_of: date,
     return close_prices, open_prices, day_bars
 
 
+def _preload_bench_closes(code: str, start: date, end: date) -> dict:
+    """基准指数(code)在 [start, end] 的 {dates, closes}(升序、一一对应,跳过 None 收盘)。
+
+    供大盘 regime 门禁算 MA / 已实现波动率:一次 SQL,日循环 bisect 取窗,零查库。
+    """
+    from stockfu.models import IndexQuoteDaily
+    with session_scope() as s:
+        rows = s.exec(select(IndexQuoteDaily).where(
+            IndexQuoteDaily.asset_code == code,
+            IndexQuoteDaily.quote_date >= start,
+            IndexQuoteDaily.quote_date <= end,
+        ).order_by(IndexQuoteDaily.quote_date)).all()
+    dates, closes = [], []
+    for r in rows:
+        if r.close is None:
+            continue
+        dates.append(r.quote_date)
+        closes.append(float(r.close))
+    return {"dates": dates, "closes": closes}
+
+
+def _bench_closes_asof(pre: dict, as_of: date, lookback: int = 252) -> list[float]:
+    """as_of 及之前最多 lookback 根基准收盘(含 as_of);无数据 → []。"""
+    dates, closes = pre.get("dates") or [], pre.get("closes") or []
+    if not dates:
+        return []
+    i = bisect_right(dates, as_of) - 1
+    if i < 0:
+        return []
+    lo = max(0, i - lookback + 1)
+    return closes[lo:i + 1]
+
+
+def _market_throttle_step(
+    bench_window: list[float], *, bear_latched: bool,
+    ma_days: int | None, enter_band: float, exit_band: float, bear_gross: float,
+    target_vol: float | None, vol_window: int, vol_floor: float,
+    max_gross: float,
+) -> tuple[float, bool]:
+    """大盘趋势 regime 门禁:算当日敞口 cap + 更新后的 bear_latched。
+
+    - trend(ma_days>0):收盘跌破 N 日均线进 bear(敞口压到 bear_gross),
+      涨破均线×(1+exit_band)解除;不对称带宽防 whipsaw。样本不足 → 不拦。
+    - vol(target_vol>0):近 vol_window 日已实现波动率(年化)缩放,
+      cap = max_gross × min(1, target_vol/realvol),下限 vol_floor。
+    - 两信号都配 → 取更严 min(双门禁)。返回 (cap, new_bear_latched);cap≥max_gross=不限制。
+    """
+    cap = max_gross
+    px = bench_window[-1] if bench_window else 0.0
+    # trend:长均线滞回状态机(仿 portfolio_brake_latched,前瞻性降仓)。
+    if ma_days and ma_days > 0 and len(bench_window) >= max(5, ma_days // 4) and px > 0:
+        w = min(ma_days, len(bench_window))
+        ma = sum(bench_window[-w:]) / w
+        if not bear_latched and px < ma * (1.0 - enter_band):
+            bear_latched = True
+        elif bear_latched and px > ma * (1.0 + exit_band):
+            bear_latched = False
+        if bear_latched:
+            cap = min(cap, bear_gross)
+    # vol targeting:已实现波动率飙升 → 等比缩总敞口(vol cluster 危机防御)。
+    if target_vol and target_vol > 0 and len(bench_window) > vol_window:
+        seg = bench_window[-(vol_window + 1):]
+        rets = [seg[i] / seg[i - 1] - 1.0
+                for i in range(1, len(seg)) if seg[i - 1] > 0]
+        if len(rets) >= max(10, vol_window // 2):
+            mean_r = sum(rets) / len(rets)
+            var = sum((r - mean_r) ** 2 for r in rets) / len(rets)
+            realvol = (var ** 0.5) * (252.0 ** 0.5)
+            if realvol > 0:
+                vscale = max(min(1.0, target_vol / realvol), vol_floor)
+                cap = min(cap, max_gross * vscale)
+    return cap, bear_latched
+
+
 def _apply_gross_cap(final: dict[str, float | None], max_gross: float) -> dict[str, float | None]:
     """总仓位安全阀:若 Σ正值权重 > max_gross,等比缩放所有正值权重到 Σ=max_gross。
 
@@ -1297,6 +1371,18 @@ def run_backtest(codes: list[str], start: date, end: date,
                  portfolio_brake_recover_dd: float | None = None,
                  portfolio_brake_recover_high_days: int = 0,
                  portfolio_brake_tiers: tuple[tuple[float, float], ...] = (),
+                 # 大盘趋势 regime 门禁(前瞻性风控,与组合回撤刹车正交 min 叠加):
+                 # trend:基准收盘跌破 N 日均线 → 敞口压到 market_regime_max_gross,
+                 #        涨破均线×(1+exit_band)解除(滞回防 whipsaw);
+                 # vol:近 vol_window 日已实现波动率缩放(target_vol 年化)。任一配即启用。
+                 market_regime_code: str | None = None,
+                 market_regime_ma_days: int | None = None,
+                 market_regime_enter_band: float = 0.0,
+                 market_regime_exit_band: float = 0.03,
+                 market_regime_max_gross: float = 0.50,
+                 market_regime_target_vol: float | None = None,
+                 market_regime_vol_window: int = 63,
+                 market_regime_vol_floor: float = 0.30,
                  take_profit_tiers: tuple[tuple[float, ...], ...] = (),
                  take_profit_hard_pct: float | None = None,
                  take_profit_atr_period: int | None = None,
@@ -1377,6 +1463,22 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _v is not None: take_profit_atr_tiers = _v
         _v = getattr(debounce, "take_profit_atr_lagged", None)
         if _v is not None: take_profit_atr_lagged = _v
+        _v = getattr(debounce, "market_regime_code", None)
+        if _v is not None: market_regime_code = _v
+        _v = getattr(debounce, "market_regime_ma_days", None)
+        if _v is not None: market_regime_ma_days = _v
+        _v = getattr(debounce, "market_regime_enter_band", None)
+        if _v is not None: market_regime_enter_band = _v
+        _v = getattr(debounce, "market_regime_exit_band", None)
+        if _v is not None: market_regime_exit_band = _v
+        _v = getattr(debounce, "market_regime_max_gross", None)
+        if _v is not None: market_regime_max_gross = _v
+        _v = getattr(debounce, "market_regime_target_vol", None)
+        if _v is not None: market_regime_target_vol = _v
+        _v = getattr(debounce, "market_regime_vol_window", None)
+        if _v is not None: market_regime_vol_window = _v
+        _v = getattr(debounce, "market_regime_vol_floor", None)
+        if _v is not None: market_regime_vol_floor = _v
     portfolio_brake_scale = min(max(float(portfolio_brake_scale), 0.0), 1.5)
     if portfolio_brake_max_gross is not None:
         portfolio_brake_max_gross = min(
@@ -1406,6 +1508,23 @@ def run_backtest(codes: list[str], start: date, end: date,
         raise ValueError(
             "portfolio_brake_mode 必须是 scale_all 或 block_new_buys"
         )
+    # 大盘趋势 regime 门禁参数规范化(前瞻性风控,与组合回撤刹车正交):
+    # trend(ma_days)/ vol(target_vol)任一配置即启用;code 默认沪深300(回测基准)。
+    if market_regime_ma_days is not None:
+        market_regime_ma_days = max(int(market_regime_ma_days), 0)
+    market_regime_enter_band = max(float(market_regime_enter_band), 0.0)
+    market_regime_exit_band = max(float(market_regime_exit_band), 0.0)
+    market_regime_max_gross = min(max(float(market_regime_max_gross), 0.0), 1.0)
+    if market_regime_target_vol is not None:
+        market_regime_target_vol = max(float(market_regime_target_vol), 0.0)
+    market_regime_vol_window = max(int(market_regime_vol_window), 2)
+    market_regime_vol_floor = min(max(float(market_regime_vol_floor), 0.0), 1.0)
+    _regime_enabled = (
+        (market_regime_ma_days is not None and market_regime_ma_days > 0)
+        or (market_regime_target_vol is not None and market_regime_target_vol > 0)
+    )
+    if _regime_enabled and (market_regime_code is None or not market_regime_code):
+        market_regime_code = BENCHMARK
     # 仓位调整层:独立基础架构,从 app_config 取(解耦于策略)
     from stockfu.ai.rebalancers import get_active_rebalancer, get_rebalancer_params
     rebalancer = get_active_rebalancer()
@@ -1501,6 +1620,13 @@ def run_backtest(codes: list[str], start: date, end: date,
     )
     stock_dividends = (_preload_stock_dividends(list(codes), start, end)
                        if sctx and credit_dividends else {})
+    # 大盘趋势 regime 门禁:预载基准收盘序列(trend 算 MA / vol 算已实现波动率),
+    # 一次 SQL;日循环 bisect 取窗,零查库(_pre_start 已含 1900 历日回看,覆盖 200 日均线)。
+    _regime_bench = (_preload_bench_closes(market_regime_code, _pre_start, end)
+                     if (_regime_enabled and sctx) else {"dates": [], "closes": []})
+    _regime_bear_latched = False
+    _regime_bear_days = 0
+    _regime_throttle_days = 0
     if valuation_basis == "hfq" and sctx:
         cov, hit, tot = _hfq_coverage(sctx, start, end)
         if tot and cov < HFQ_COVERAGE_MIN:
@@ -1885,6 +2011,7 @@ def run_backtest(codes: list[str], start: date, end: date,
             or portfolio_brake_add_min_score is not None
             or portfolio_brake_recover_dd is not None
             or portfolio_brake_recover_high_days > 0
+            or _regime_enabled
         )
         _cur_eq = acct.equity(last_close)
         peak_equity = max(peak_equity, _cur_eq)
@@ -1960,6 +2087,32 @@ def run_backtest(codes: list[str], start: date, end: date,
                     )
                 _day_rebalancer_params = dict(rebalancer_params)
                 _day_rebalancer_params["max_gross"] = _effective_max_gross
+            # 大盘趋势 regime 门禁:前瞻性敞口 cap,min 叠加在组合回撤刹车之上
+            # (brake 不 active 时也独立生效;温市满仓、危机初期降仓)。
+            if _regime_enabled:
+                _win = _bench_closes_asof(
+                    _regime_bench, as_of,
+                    max(market_regime_ma_days or 0, market_regime_vol_window + 1, 252),
+                )
+                _cap, _regime_bear_latched = _market_throttle_step(
+                    _win, bear_latched=_regime_bear_latched,
+                    ma_days=market_regime_ma_days,
+                    enter_band=market_regime_enter_band,
+                    exit_band=market_regime_exit_band,
+                    bear_gross=market_regime_max_gross,
+                    target_vol=market_regime_target_vol,
+                    vol_window=market_regime_vol_window,
+                    vol_floor=market_regime_vol_floor,
+                    max_gross=max_gross,
+                )
+                if _cap < _effective_max_gross - 1e-12:
+                    _effective_max_gross = _cap
+                    _day_rebalancer_params = dict(_day_rebalancer_params)
+                    _day_rebalancer_params["max_gross"] = _effective_max_gross
+                if market_regime_ma_days and _regime_bear_latched:
+                    _regime_bear_days += 1
+                if _cap < max_gross - 1e-9:
+                    _regime_throttle_days += 1
             final = rebalancer.adjust(
                 desired, current_weights, meta,
                 equity=acct.equity(last_close),
@@ -2096,6 +2249,11 @@ def run_backtest(codes: list[str], start: date, end: date,
     metrics["annual_turnover"] = (round((_tov_total / _years) / _avg_n, 2)
                                   if _years > 0 and _avg_n > 0 else None)
     metrics["cash_constraint_hits"] = cash_constraint_hits   # 买单被现金缩放的天数(可观测)
+    metrics["market_regime_bear_days"] = _regime_bear_days if _regime_enabled else 0
+    metrics["market_regime_throttle_days"] = _regime_throttle_days if _regime_enabled else 0
+    metrics["market_regime_bear_ratio"] = (
+        round(_regime_bear_days / len(days), 4) if _regime_enabled and days else None
+    )
     metrics["limit_reject_buys"] = limit_reject_buys
     metrics["limit_reject_sells"] = limit_reject_sells
     metrics["fill_rejects"] = fill_rejects
@@ -2124,6 +2282,14 @@ def run_backtest(codes: list[str], start: date, end: date,
         "portfolio_brake_recover_dd": portfolio_brake_recover_dd,
         "portfolio_brake_recover_high_days": portfolio_brake_recover_high_days,
         "portfolio_brake_tiers": [list(t) for t in portfolio_brake_tiers],
+        "market_regime_code": market_regime_code if _regime_enabled else None,
+        "market_regime_ma_days": market_regime_ma_days,
+        "market_regime_enter_band": market_regime_enter_band,
+        "market_regime_exit_band": market_regime_exit_band,
+        "market_regime_max_gross": market_regime_max_gross,
+        "market_regime_target_vol": market_regime_target_vol,
+        "market_regime_vol_window": market_regime_vol_window,
+        "market_regime_vol_floor": market_regime_vol_floor,
         "take_profit_tiers": take_profit_tiers,
         "take_profit_hard_pct": take_profit_hard_pct,
         "take_profit_atr_period": take_profit_atr_period,
