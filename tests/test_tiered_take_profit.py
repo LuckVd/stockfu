@@ -2,6 +2,7 @@ from collections import deque
 
 import pytest
 
+from stockfu.ai.action import _total_to_weight, compute_target_weight
 from stockfu.backtest.engine import (
     _apply_portfolio_brake,
     _block_portfolio_new_buys,
@@ -78,6 +79,30 @@ def test_portfolio_brake_drawdown_add_gated_by_min_score():
     assert out["weak"] == 0.05                      # 未过门控不放大
 
 
+def test_portfolio_brake_tiers_scale_gt1_gating_caps_gross():
+    # 融合语义:浅回调(近满仓)放大 strong_buy,同时 tiers 档位兜底总敞口上限。
+    # 放大仅对未达单股上限(w<max_weight)的目标生效(engine._apply_portfolio_brake)。
+    current = {}
+    final = {f"s{i}": 0.03 for i in range(20)}
+    final.update({f"w{i}": 0.03 for i in range(10)})
+    meta = {**{f"s{i}": {"raw": 15.0} for i in range(20)},
+            **{f"w{i}": {"raw": 5.0} for i in range(10)}}
+    out = _apply_portfolio_brake(
+        final, current, meta,
+        scale=1.20, mode="scale_all", brake_max_gross=0.65,
+        add_min_score=12.0, max_weight=0.05,
+    )
+    # strong_buy(20只) ×1.2 → 0.036;weak(10只) 不放大 → 0.03;
+    # 合计 20*0.036+10*0.03=1.02 > 0.65 → 等比缩到 tier 档位 0.65。
+    gross = sum(w for w in out.values() if w)
+    assert gross == pytest.approx(0.65)
+    factor = 0.65 / (20 * 0.036 + 10 * 0.03)
+    assert out["s0"] == pytest.approx(0.036 * factor)  # 放大后参与 cap
+    assert out["w0"] == pytest.approx(0.03 * factor)   # 未放大也参与 cap
+    assert out["s0"] > out["w0"]                        # 加仓倾斜保留
+
+
+
 def test_portfolio_brake_block_mode_delegates():
     current = {"existing": 0.04, "new": 0.0}
     final = {"existing": 0.05, "new": 0.02}
@@ -86,6 +111,61 @@ def test_portfolio_brake_block_mode_delegates():
         scale=0.75, mode="block_new_buys", brake_max_gross=None,
     )
     assert out == {"existing": 0.04, "new": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# 买卖不对称滞回(双总分):空仓用 buy 分判定建仓,持仓用 sell 分判定清仓。
+# ---------------------------------------------------------------------------
+
+
+def test_total_to_weight_legacy_symmetric_deadzone_unchanged():
+    # 旧路径(未传 total_sell):对称死区,行为与历史一致。
+    assert _total_to_weight(-5, max_w=0.05, dead=3, score_full=8) == 0.0
+    assert _total_to_weight(2, max_w=0.05, dead=3, score_full=8) is None
+    assert _total_to_weight(4, max_w=0.05, dead=3, score_full=8) == pytest.approx(0.05 * 4 / 8)
+
+
+def test_total_to_weight_empty_position_uses_buy_score_only():
+    # 空仓:买入分 < dead 不建仓;≥ dead 线性建仓;满分满仓。
+    assert _total_to_weight(3, total_sell=-2, held=False, max_w=0.05, dead=5, score_full=8) is None
+    assert _total_to_weight(6, total_sell=10, held=False, max_w=0.05, dead=5, score_full=8) == pytest.approx(0.05 * 6 / 8)
+    assert _total_to_weight(20, total_sell=-50, held=False, max_w=0.05, dead=5, score_full=8) == pytest.approx(0.05)
+
+
+def test_total_to_weight_holding_keeps_on_buy_dip_but_sell_breaks():
+    # 持仓:卖出分未破 -dead 时,买入分小降不清仓(滞回);跌破 -dead 才清仓。
+    # 买入分 3(买入线 5 之下)但卖出分 -4(清仓线 -5 之上)→ 维持。
+    assert _total_to_weight(3, total_sell=-4, held=True, max_w=0.05, dead=5, score_full=8) is None
+    # 买入分 3 且卖出分 -6 → 清仓。
+    assert _total_to_weight(3, total_sell=-6, held=True, max_w=0.05, dead=5, score_full=8) == 0.0
+    # 买入分回升到 6 → 持仓可继续加仓。
+    assert _total_to_weight(6, total_sell=-4, held=True, max_w=0.05, dead=5, score_full=8) == pytest.approx(0.05 * 6 / 8)
+
+
+def test_compute_target_weight_hysteresis_full_chain():
+    # compute_target_weight 透传 current_weight>0 推导 held。
+    # 持仓中(0.04),买入分 3、卖出分 -4 → 维持(不清仓)。
+    assert compute_target_weight(False, 0.04, total_score=3, total_sell_score=-4,
+                                 max_w=0.05, dead=5, score_full=8) is None
+    # 持仓中(0.04),卖出分 -6 → 清仓。
+    assert compute_target_weight(False, 0.04, total_score=3, total_sell_score=-6,
+                                 max_w=0.05, dead=5, score_full=8) == 0.0
+    # 空仓(0.0),买入分 3 → 不建仓。
+    assert compute_target_weight(False, 0.0, total_score=3, total_sell_score=-6,
+                                 max_w=0.05, dead=5, score_full=8) is None
+    # 空仓,买入分 6 → 建仓。
+    assert compute_target_weight(False, 0.0, total_score=6, total_sell_score=20,
+                                 max_w=0.05, dead=5, score_full=8) == pytest.approx(0.05 * 6 / 8)
+    # risk 一票否决优先于双总分滞回。
+    assert compute_target_weight(True, 0.04, total_score=6, total_sell_score=-2,
+                                 max_w=0.05, dead=5, score_full=8) == 0.0
+
+
+def test_total_to_weight_legacy_kept_for_no_sell_score():
+    # 旧调用方不传 total_sell_score 时,行为与历史一致(回归)。
+    assert compute_target_weight(False, 0.04, total_score=-5, max_w=0.05, dead=3, score_full=8) == 0.0
+    assert compute_target_weight(False, 0.04, total_score=2, max_w=0.05, dead=3, score_full=8) is None
+    assert compute_target_weight(False, 0.0, total_score=4, max_w=0.05, dead=3, score_full=8) == pytest.approx(0.05 * 4 / 8)
 
 
 
