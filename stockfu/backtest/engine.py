@@ -17,6 +17,7 @@ analyze_fn 由调用方注入(scheduler: temp=0 + prefetch 批量缓存 + 算子
 """
 from __future__ import annotations
 
+import logging
 import math
 from array import array
 from bisect import bisect_left, bisect_right
@@ -29,6 +30,8 @@ from sqlmodel import select, and_
 
 from stockfu.db import session_scope
 from stockfu.backtest.cash_scaler import scale_buys_to_cash
+
+logger = logging.getLogger(__name__)
 
 INITIAL_CASH = 1_000_000.0
 COMMISSION_RATE = 0.0003      # 券商佣金 万3(双边)
@@ -1565,6 +1568,7 @@ def run_backtest(codes: list[str], start: date, end: date,
     limit_reject_sells = 0
     fill_rejects = 0
     deferred_orders = 0
+    analyze_failures = 0   # analyze_fn 抛错被吞的次数(可观测:失败标的不进 results 当日静默 hold)
 
     equity_curve: list[dict] = []
     holdings_curve: list[dict] = []          # 每日逐票持仓快照(完整持仓记录,供直观回看)
@@ -1831,16 +1835,18 @@ def run_backtest(codes: list[str], start: date, end: date,
                         results[c] = _analyze(c, as_of, snap[c]["holding"], prefill)
                     else:
                         results[c] = _analyze(c, as_of, snap[c]["holding"])
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("backtest analyze 失败 code=%s as_of=%s: %r", c, as_of, e)
+                    analyze_failures += 1
         else:
             fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"]): c for c in to_run}
             for f in as_completed(fut):
                 c = fut[f]
                 try:
                     results[c] = f.result()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("backtest analyze 失败(线程池) code=%s as_of=%s: %r", c, as_of, e)
+                    analyze_failures += 1
 
         # ---- Phase 3: 仓位层(信号→desired→组合层→目标仓位→边沿触发→冷却) ----
         # 3a. 逐标的算 desired。宇宙外持仓走 exit-only：仍跑卖出/止损/减仓，
@@ -2263,6 +2269,7 @@ def run_backtest(codes: list[str], start: date, end: date,
     metrics["limit_reject_sells"] = limit_reject_sells
     metrics["fill_rejects"] = fill_rejects
     metrics["deferred_orders"] = deferred_orders
+    metrics["analyze_failures"] = analyze_failures
     metrics["final_equity"] = round(
         acct.equity(last_close) if last_close else initial_cash, 2
     )
