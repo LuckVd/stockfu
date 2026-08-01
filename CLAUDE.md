@@ -21,8 +21,8 @@ python3 main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20
 python3 main.py --clear-dividend-cache
 python3 main.py --backtest bollinger_monthly --start 2025-06-01 --end 2026-01-01 --codes 600519,000858 --save
 python3 main.py --update-backtests   # 全周期;可 --strategies a,b
-  # 加 BACKTEST_PROGRESS=1 输出 1% 粒度进度日志(每 1% 打印耗时);后台跑用 setsid 脱离会话
-  #   setsid bash -c 'BACKTEST_PROGRESS=1 exec python3 -u main.py --update-backtests' > log 2>&1 < /dev/null &
+  # 默认输出 1% 粒度进度日志(每 1% 打印耗时 + as_of;BACKTEST_PROGRESS=0 可关);后台跑用 setsid 脱离会话
+  #   setsid bash -c 'exec python3 -u main.py --update-backtests' > log 2>&1 < /dev/null &
 python3 main.py --list-strategies
 python3 main.py --recommend --strategies cross_section_factor --as-of 2026-07-17
 nohup python3 main.py --schedule >> data/schedule.log 2>&1 &   # 常驻:工作日到点 fetch→算指数→出图→发信(内嵌 web 单进程)
