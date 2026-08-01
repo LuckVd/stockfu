@@ -38,6 +38,7 @@ ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 - **数据**在 `data/stockfu.db`(WAL);回测产物 `data/backtest/`(gitignore)
 - **回测防未来函数**:取数 `<= as_of`
 - **回测价格口径(研究模式,2026-07-27 反转,2026-07-28 落地)**(`docs/BACKTEST.md` §0):收益/净值走 **qfq**(涨跌幅复权法,已含分红再投,接受基准漂移);**绝对值逻辑**(股息率分母/PE/PB)坚持 **raw** + 税前分红;红利税用 baostock `dividCashPsAfterTax` 近似;直接用 `dividend_event` 表,**不自建多源仲裁账本**(旧 `corporate_action_source_record`/`corporate_action_event` 已删除 DROP,`init-db` 回收);hfq 只作数据对账。引擎 `valuation_basis` 三态 `raw`/`qfq`/`hfq`、默认 **qfq**;strict 账户/账本路径 + 对应 CLI(`--strict`/`--stage-corporate-*`/`--materialize-corporate-actions`)已全部移除。
+- **新策略验证 · 三跑门禁(防过拟合)**:新增/调参/改算子后、认定结论前**必须** ①全样本 2007–2026 一跑 ②再从 07–26 任取两段、较短段 ≥5 年、且覆盖不同行情的子区间各跑;两轮(三跑)方向一致才认定,否则按 §0.6.4 判过拟合。详见 `docs/BACKTEST.md` §0.6.6
 - **量化四层**:算子(math 连续 score)+策略 yaml+rebalancer+engine;算子缓存 fingerprint 含源码 hash
 - **行情拆表**:QuoteSnapshot / EtfQuoteDaily / IndexQuoteDaily;`quote_model_for` 路由
 - **入库统一收口 + 日期驱动**(`stockfu/services/quote_writer.py`):三张行情表各 1 个 canonical writer(`upsert_quote_snapshot`/`upsert_etf_daily`/`upsert_index_daily`),**严禁别处 `s.add(QuoteSnapshot...)`**;writer 硬保证 `quote_date <= cap_date`(超 cap 的源 bar 一律丢弃)。`--fetch` **必带 `--date YYYY-MM-DD`**,非法(未来/当日未收盘[北京15:30]/非交易日)→ `validate_ingest_date` 报错退出(凌晨不再误判为未开盘的今天);`--schedule` 自动取已收盘最近交易日。stamp 表(资金流/三层情绪/板块资金流)与读窗(composite/fundflow series)统一 `as_of=target_date`
