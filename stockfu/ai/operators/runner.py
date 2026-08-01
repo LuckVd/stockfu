@@ -350,6 +350,24 @@ class CompiledStrategy:
             "ai_target_weight": summary.target_weight,
             "confidence": summary.confidence,
         }
+        # 买卖权重不对称(opt-in):配置 aggregate.sell_weights 时,额外算卖出总分
+        # 并把买入/卖出两个总分各自归一化到 ±100(按各自权重理论上限直接乘)。
+        # total_score 保持原始分不动(engine meta["raw"]/横截面排序/门控语义不变);
+        # 归一化值仅喂仓位映射(compute_target_weight),死区/满仓刻度即 ±100 刻度。
+        sell_weights = self.aggregate.get("sell_weights") or {}
+        if sell_weights:
+            buy_max = 20.0 * sum(
+                float(s.get("weight", 1.0)) for s in self.operators
+            )
+            sell_max = 20.0 * sum(float(v) for v in sell_weights.values())
+            sell_total = round(sum(
+                r.score * float(sell_weights.get(r.operator, 1.0))
+                for r in results
+            ), 2)
+            if buy_max > 0:
+                aggregate["total_score_norm"] = round(summary.score / buy_max * 100, 2)
+            if sell_max > 0:
+                aggregate["total_sell_score"] = round(sell_total / sell_max * 100, 2)
 
         # 4. narrative: 纯数学规则拼接(不调 LLM,秒级)
         parts = "; ".join(f"{r.operator}={r.signal}({r.score:+.1f})" for r in results)

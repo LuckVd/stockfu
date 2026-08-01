@@ -180,6 +180,85 @@
 | fill_rejects（成交拒绝） | 3 |
 | deferred_orders（挂单顺延） | 3 |
 
+#### 0.6.2 候选策略验证结论（2026-08-01）
+
+**方向背景**：原「平滑刹车」（`scale_all ×0.75`，`dividend_cross_section_partial_gentle_brake_take_profit`）只缩单票权重、组合每日重新填满，2008 危机下总敞口不降（回撤 69.52%）。本阶段在引擎层新增两个 opt-in 候选（旧路径逐字节不变）：
+
+- **组合级敞口刹车**（`portfolio_brake_max_gross` / `portfolio_brake_tiers` 深度分级 + `portfolio_brake_recover_high_days` 滚动新高解除，策略 `dividend_cross_section_partial_exposure_brake_take_profit`）；
+- **回撤加仓质量门控**（`portfolio_brake_scale >1` + `portfolio_brake_add_min_score` 仅对 strong_buy 加仓，策略 `dividend_cross_section_partial_drawdown_add_gated_take_profit`）。
+
+**同窗口对照（2021-01-04 → 2026-07-21，5.33 年，raw，csi300+csi500 历史成分日均 799 只）**
+
+| strategy_id | 收益% | 年化% | 回撤% | 夏普 | 胜率% | avg 敞口% | 止损 |
+|---|---|---|---|---|---|---|---|
+| partial_gentle_brake_take_profit（平滑刹车基线） | 80.00 | 11.66 | 15.00 | 0.83 | 59.9 | 95.8 | 14 |
+| partial_exposure_brake_take_profit（base） | 70.87 | 10.58 | 16.83 | 0.76 | 79.7 | 94.4 | 16 |
+| partial_exposure_brake_take_profit#deep | 63.92 | 9.72 | 15.05 | 0.71 | 78.7 | 95.5 | 19 |
+| **partial_drawdown_add_gated_take_profit（scale1.2 门控）** | **101.12** | **14.01** | **14.24** | **0.96** | 82.4 | 96.5 | 12 |
+| partial_drawdown_add_gated_take_profit#scale110（已弃） | 79.12 | 11.56 | 16.34 | 0.81 | 80.2 | 96.6 | 17 |
+| partial_exposure_add_gated_take_profit（融合 tiers+门控） | 58.09 | 8.97 | 15.11 | 0.67 | 74.9 | 95.1 | 23 |
+
+**长周期压力对照（2007-01-04 → 2026-07-21，19.5 年 / 4749 交易日，raw，含 2008 危机）**
+
+| strategy_id | 收益% | 年化% | 回撤% | 夏普 | 胜率% | avg 敞口% | 止损 |
+|---|---|---|---|---|---|---|---|
+| partial_gentle_brake_take_profit（平滑刹车基线） | 319.76 | 7.91 | 69.52 | 0.43 | 65.2 | 97.6 | 129 |
+| **partial_exposure_brake_take_profit（base）** | **421.78** | **9.16** | **54.09** | **0.60** | 65.0 | **72.6** | 119 |
+| partial_drawdown_add_gated_take_profit（scale1.2 门控） | 260.77 | 7.05 | **71.50** | 0.40 | 68.0 | 98.3 | 134 |
+| partial_exposure_add_gated_take_profit（融合 tiers+门控） | 436.95 | 9.33 | 56.47 | 0.57 | 66.7 | 78.9 | 121 |
+
+**结论（定论）**
+
+- **敞口刹车 base 是唯一长周期全面跑赢的方向**：2008 回撤从平滑刹车 69.52% 压到 **54.09%**，且收益（+421.78% vs +319.76%）、夏普（0.60 vs 0.43）均更高 → **定为候选**。机制：刹车期组合级总敞口真实下降（avg 72.6% vs 97.6%）。
+- **回撤加仓门控只在近 5 年窗口成立**（+101.12% / 0.96），**长周期失效**：2008 危机下回撤 71.50%（三方向最差）、收益低于旧基线——危机中「加仓强者」放大风险，avg 敞口 98.3% 从不降 → 方向在长周期作罢（策略保留，可作近 5 年窗口参考）。
+- **`#scale110`（1.10）≈ 无门控**（+79.12%），加仓火力不足；1.20 才是甜点位 → 变体已清理。
+- **融合候选（tiers+门控，`partial_exposure_add_gated_take_profit`）未达预期**：长周期收益最高（+436.95%，超 base +421.78%）但回撤 56.47% / 夏普 0.57 均略逊 base；近 5 年全面落后（+58.09% / 0.67，三方向最差）。机制：近 5 年 tiers 0.95/0.80/0.65/0.50 频繁触发，总敞口被反复压降（avg 95.1%）拖累收益，而门控放大仅对未满单股上限目标生效、贡献不足；长周期 2008 保护成立（回撤 56.47% vs 门控 71.50%）但未优于纯 base → **方向作罢，策略保留（长周期收益优先备选）**。
+
+**候选胜者标准绩效（敞口刹车 base，run-20260801-003431）**
+
+配置：`dividend_cross_section_partial_exposure_brake_take_profit` base（tiers 0.85/0.75/0.60/0.45 + rec63，scale 1.0）| 2007-01-04 → 2026-07-21 / 19.5 年 / 4749 交易日 | 初始 1,000,000 | `cn_historical_baostock_csi300_csi500_v1`（日均 702 只）| raw | 基准沪深300。
+
+| 指标 | 值 |
+|---|---|
+| total_return / annualized | +421.78% / 9.16% |
+| final_equity | 5,217,767.81 |
+| excess / benchmark_return | +292.51% / +129.27% |
+| max_drawdown / 回本天数 | 54.09% / 1528 天 |
+| sharpe / sortino / calmar | 0.60 / 0.55 / 0.17 |
+| win_rate | 65.0% |
+| trade_count / 止损笔数 | 3,597 / 119 |
+| cash_dividend_net / total_fee | 1,473,788.25 / 116,668.70 |
+| avg_gross_leverage / max | 72.6% / 100.0% |
+
+#### 0.6.3 买卖不对称滞回 + 8 成仓验证（2026-08-01）
+
+**方向背景**：持仓后分数小降即被 -dead 线清仓（对称死区）。本阶段新增**买卖不对称滞回**（opt-in，旧路径逐字节不变）：买入/持仓等权 1/1/1 算买入总分，卖出 2/1/2（低波降权、基本面升权）算卖出总分，各自归一化 ±100；持仓时卖出分跌破 -5 才清仓（买入线仍 +5），分数小降不追卖。另加组合 `max_gross=0.80`（8 成仓，留 2 成现金供高分票加仓）+ 冷却 30 交易日。策略 `..._exposure_brake_hold_take_profit`（=敞口刹车 base + 双总分）、`..._exposure_add_gated_hold_take_profit`（=融合 + 双总分）。
+
+**同窗口对照（2021-01-04 → 2026-07-21，5.33 年，raw，日均 799 只）**
+
+| strategy_id | 收益% | 年化% | 回撤% | 夏普 | 胜率% | avg 敞口% | 止损 |
+|---|---|---|---|---|---|---|---|
+| partial_exposure_brake_take_profit（base 对照） | 70.87 | 10.58 | 16.83 | 0.76 | 79.7 | 94.4 | 16 |
+| **partial_exposure_brake_hold_take_profit（双总分）** | 59.23 | 9.12 | **11.70** | 0.76 | 80.1 | — | 13 |
+| partial_exposure_add_gated_hold_take_profit（融合+双总分） | 56.03 | 8.71 | 12.65 | 0.72 | 79.5 | — | 14 |
+
+**长周期压力对照（2007-01-04 → 2026-07-21，19.5 年 / 4749 交易日，raw，含 2008 危机）**
+
+| strategy_id | 收益% | 年化% | 回撤% | 夏普 | 胜率% | 止损 |
+|---|---|---|---|---|---|---|
+| partial_exposure_brake_take_profit（base 对照） | 421.78 | 9.16 | 54.09 | 0.60 | 65.0 | 119 |
+| **partial_exposure_brake_hold_take_profit（双总分）** | 380.97 | 8.69 | **50.83** | 0.59 | 66.0 | 106 |
+| partial_exposure_add_gated_hold_take_profit（融合+双总分） | 350.63 | 8.32 | 53.70 | 0.54 | 67.2 | 134 |
+
+**结论**
+
+- **双总分滞回 + 8 成仓把回撤压到全系列最低**：长周期 50.83%（vs base 54.09%）、近 5 年 11.70%（vs base 16.83%），夏普与 base 持平（0.59 / 0.76）。
+- **代价是收益同步下降**：长周期 +380.97%（vs base +421.78%）、近 5 年 +59.23%（vs base +70.87%）——`max_gross=0.80` 8 成仓永久放弃 20% 杠杆收益；冷却 30 交易日进一步降低交易（2373 vs 3597 笔）。回撤/收益同降、夏普持平 → 定位「低回撤稳健版」，非进攻增强。
+- 双总分在融合变体上收益衰减更多（+350.63%），滞回加仓与门控叠加未产生正协同。
+- 旧路径回归：敞口刹车 base 逐字节复现（70.87%/16.83%/0.76，run-20260801-133018）→ 改动完全向后兼容。
+
+**运营注记（内存）**：2007 长窗回测曾因算子缓存全量预载（2007-2026 全区间 11.9M 行 ≈ 3.6G）超出宿主 3.7G 内存导致冻结重启；已改**滚动分块预载**（`CompiledStrategy.begin_run_cache` 只预载 250 日历日窗口、`prefetch_cache` 消费到尾部 20 日提前量内自动补块，`operator_cache.py` 零改动），峰值降到 ~1.5G 实测。长窗回测须 `BACKTEST_PROGRESS=1` 开进度日志并盯 RSS。
+
 ### 0.7 旧方案降级声明
 
 本文 **§1–§13 为原「高可信 Raw + 自建账本」方案**，保留作历史参考与技术附录：

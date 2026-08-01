@@ -1410,10 +1410,15 @@ def run_backtest(codes: list[str], start: date, end: date,
     from stockfu.ai.rebalancers import get_active_rebalancer, get_rebalancer_params
     rebalancer = get_active_rebalancer()
     rebalancer_params = get_rebalancer_params()
-    # max_gross 优先级:app_config rebalancer_params > yaml debounce > 默认。让 cap_and_rank
-    # 内部竞争额度与 engine 层安全阀用同一值,避免 pass_through/top_n_picker 不限仓导致现金被吃光。
+    # max_gross 优先级:yaml risk 显式配置(debounce.max_gross)> app_config rebalancer_params
+    # > 默认。让 cap_and_rank 内部竞争额度与 engine 层安全阀用同一值,避免 pass_through/
+    # top_n_picker 不限仓导致现金被吃光。YAML 显式配置(如 8 成仓)时优先,否则沿用 app_config。
+    _yaml_max_gross = getattr(debounce, "max_gross", None) if debounce is not None else None
     _mp = rebalancer_params.get("max_gross")
-    if _mp is not None:
+    if _yaml_max_gross is not None:
+        max_gross = float(_yaml_max_gross)
+        rebalancer_params = {**rebalancer_params, "max_gross": max_gross}
+    elif _mp is not None:
         max_gross = float(_mp)
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from stockfu.ai.action import PositionManager, resolve_action, compute_target_weight
@@ -1752,9 +1757,14 @@ def run_backtest(codes: list[str], start: date, end: date,
                 risk_vetoed = _risk_streak[code] >= risk_confirm_days
 
             # 信号→目标仓位(discrete=阶跃查表;continuous=total 连续映射+滞回死区)
+            # 买卖权重不对称(opt-in):runner 已归一化买入分 total_score_norm 与卖出分
+            # total_sell_score(±100 刻度)时用双总分滞回;否则回退原始 total_score(旧路径)。
+            total_score_norm = agg.get("total_score_norm")
+            total_sell_score = agg.get("total_sell_score")
             target_weight = compute_target_weight(
                 risk_vetoed, current_w, ai_target,
-                total_score=total_score,
+                total_score=total_score_norm if total_score_norm is not None else total_score,
+                total_sell_score=total_sell_score,
                 max_w=max_weight, dead=total_dead,
                 score_full=debounce.score_full if debounce else 20.0,
             )
