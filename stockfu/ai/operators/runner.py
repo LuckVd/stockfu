@@ -74,6 +74,16 @@ class StrategyDebounce:
     take_profit_atr_period: int | None = None
     take_profit_atr_tiers: tuple[tuple[float, ...], ...] | None = None
     take_profit_atr_lagged: bool = False
+    # 大盘趋势 regime 门禁(前瞻性风控,YAML risk.market_regime_* 配;None=未配、用 engine 默认/不启用):
+    # trend(ma_days)+ vol(target_vol)双信号,min 叠加到组合敞口上限;详见 engine._market_throttle_step。
+    market_regime_code: str | None = None
+    market_regime_ma_days: int | None = None
+    market_regime_enter_band: float | None = None
+    market_regime_exit_band: float | None = None
+    market_regime_max_gross: float | None = None
+    market_regime_target_vol: float | None = None
+    market_regime_vol_window: int | None = None
+    market_regime_vol_floor: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -103,6 +113,14 @@ class StrategyDebounce:
             "take_profit_atr_period": self.take_profit_atr_period,
             "take_profit_atr_tiers": self.take_profit_atr_tiers,
             "take_profit_atr_lagged": self.take_profit_atr_lagged,
+            "market_regime_code": self.market_regime_code,
+            "market_regime_ma_days": self.market_regime_ma_days,
+            "market_regime_enter_band": self.market_regime_enter_band,
+            "market_regime_exit_band": self.market_regime_exit_band,
+            "market_regime_max_gross": self.market_regime_max_gross,
+            "market_regime_target_vol": self.market_regime_target_vol,
+            "market_regime_vol_window": self.market_regime_vol_window,
+            "market_regime_vol_floor": self.market_regime_vol_floor,
         }
 
 
@@ -437,6 +455,16 @@ class CompiledStrategy:
             take_profit_atr_period=atr_period,
             take_profit_atr_tiers=atr_tiers or None,
             take_profit_atr_lagged=atr_lagged,
+            market_regime_code=rk.get("market_regime_code"),
+            market_regime_ma_days=(int(rk["market_regime_ma_days"])
+                                   if rk.get("market_regime_ma_days") is not None else None),
+            market_regime_enter_band=rk.get("market_regime_enter_band"),
+            market_regime_exit_band=rk.get("market_regime_exit_band"),
+            market_regime_max_gross=rk.get("market_regime_max_gross"),
+            market_regime_target_vol=rk.get("market_regime_target_vol"),
+            market_regime_vol_window=(int(rk["market_regime_vol_window"])
+                                      if rk.get("market_regime_vol_window") is not None else None),
+            market_regime_vol_floor=rk.get("market_regime_vol_floor"),
         )
 
     @property
