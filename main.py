@@ -550,6 +550,54 @@ def run_recommend(
     print_report(report)
 
 
+def run_watchlist_review(
+    strategies: str | None,
+    as_of: str | None,
+    pool_spec: str,
+    codes_override: str | None,
+    add: list[str],
+    drop: list[str],
+    with_sentiment: bool,
+    with_llm: bool,
+    write_cache: bool,
+) -> None:
+    """自选股多策略评价矩阵:解耦引擎 evaluate(codes, strategy_ids, as_of)。
+
+    股票池:默认 watchlist;--codes 显式覆盖;--add/--drop 临时增删(不写 DB)。
+    策略:--strategies 任意入库 id(默认 active_strategy_id),不限 catalog。
+    """
+    from stockfu.db import init_db
+    from stockfu.services.evaluator import (
+        available_strategy_ids, run_watchlist_review as _run,
+    )
+    init_db()
+    sids = [s.strip() for s in (strategies or "").split(",") if s.strip()] or None
+    codes_list = (
+        [c.strip() for c in codes_override.split(",") if c.strip()]
+        if codes_override else None
+    )
+    try:
+        _run(
+            pool_spec=pool_spec,
+            codes_override=codes_list,
+            add=add or None,
+            drop=drop or None,
+            strategies=sids,
+            as_of=as_of,
+            with_sentiment=with_sentiment,
+            with_llm=with_llm,
+            write_cache=write_cache,
+            save=True,
+        )
+    except ValueError as e:
+        print(f"✗ {e}")
+        if "未知 strategy_id" in str(e) or "可选" in str(e):
+            pass  # 错误信息已含可选列表
+        else:
+            print(f"  可用策略: {', '.join(available_strategy_ids())}")
+        raise SystemExit(2) from e
+
+
 def run_backtest(strategy: str, start: str | None, end: str | None,
                  cash: float, codes: str | None, save: bool,
                  min_amount: float | None = None,
@@ -874,6 +922,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="因子诊断算子ID（如 momentum / macd_cross）；单算子 IC/分位收益/换手/衰减，见 docs/BACKTEST.md")
     p.add_argument("--recommend", action="store_true",
                    help="空仓重建荐股(必填 --strategies;可选 --as-of/--cash)")
+    p.add_argument("--watchlist-review", action="store_true",
+                   help="自选股多策略评价矩阵(默认 watchlist + active 策略;"
+                        "可选 --codes/--add/--drop 临时调池;--strategies 任意入库 id)")
+    p.add_argument("--from-pool", default="watchlist", metavar="POOL",
+                   help="--watchlist-review 的基础池:watchlist(默认)/all/historical_indices"
+                        " 或逗号代码;--codes 非空时被覆盖")
+    p.add_argument("--add", action="append", default=None, metavar="CODE",
+                   help="--watchlist-review:本次临时加入评价池(可多次;不写 DB)")
+    p.add_argument("--drop", action="append", default=None, metavar="CODE",
+                   help="--watchlist-review:本次临时移出评价池(可多次;不写 DB)")
+    p.add_argument("--no-llm", action="store_true",
+                   help="--watchlist-review:跳过 LLM 点评(只出量化评价)")
     p.add_argument("--as-of", default=None, metavar="YYYY-MM-DD",
                    help="信号日(荐股默认库内行情末日;严格 <=as_of 取数)")
     p.add_argument("--slip-bps", type=float, default=10.0,
@@ -1009,6 +1069,14 @@ def main() -> None:
             slip_bps=args.slip_bps, band_pct=args.band_pct,
             max_gross=args.max_gross, min_amount=args.min_amount,
             with_sentiment=args.with_sentiment, write_cache=args.write_cache,
+        )
+    elif args.watchlist_review:
+        run_watchlist_review(
+            args.strategies, args.as_of, args.from_pool, args.codes,
+            add=args.add or [], drop=args.drop or [],
+            with_sentiment=args.with_sentiment,
+            with_llm=not args.no_llm,
+            write_cache=args.write_cache,
         )
     elif args.backtest:
         run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save,
