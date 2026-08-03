@@ -75,7 +75,10 @@ def get_index_daily(symbol: str, start: str, end: str) -> list[dict]:
     rows = get_index_daily_baostock(symbol, start, end)
     if rows:
         return rows
-    return _get_index_daily_sina(symbol, start, end)   # 新浪兜底(科创50 000688 等)
+    rows = _get_index_daily_sina(symbol, start, end)
+    if rows:
+        return rows
+    return _get_index_daily_tx(symbol, start, end)   # 腾讯实时末级兜底(东财/bs/新浪全缺当日时)
 
 
 def _get_index_daily_akshare(symbol: str, start: str, end: str) -> list[dict]:
@@ -164,6 +167,52 @@ def _get_index_daily_sina(symbol: str, start: str, end: str) -> list[dict]:
             "amount": float(r["amount"]) if pd.notna(r.get("amount")) else None,
         })
     return results
+
+
+def _get_index_daily_tx(symbol: str, start: str, end: str) -> list[dict]:
+    """腾讯实时指数兜底(qt.gtimg.cn):东财/baostock/新浪均无当日数据时的末级兜底。
+
+    腾讯返回「当前快照」:盘中只有半天数据,因此仅当快照时间戳日期落在请求窗口
+    [start, end] 内才补当日单条(调用方 update_index_benchmark 增量拉取,窗口 =
+    上次落库日+1..目标日,正常只会命中今天一条)。字段位:~ 分隔,3 今收/5 今开/
+    30 时间戳(YYYYMMDDHHMMSS)/32 涨跌幅%/33 最高/34 最低/36 成交量(手)/
+    37 成交额(万元,×10000 转元)。请求失败/字段缺失/不在窗口 → 返回 []。
+    """
+    import requests
+
+    asset_code = ("sz" if symbol.startswith("399") else "sh") + symbol
+    start_d = pd.to_datetime(start).date()
+    end_d = pd.to_datetime(end).date()
+    try:
+        with direct_connection():   # 国内源直连(摘代理),与 akshare 各源一致
+            resp = requests.get(
+                f"https://qt.gtimg.cn/q={asset_code}", timeout=10,
+            )
+            resp.raise_for_status()
+            body = resp.content.decode("gbk", errors="ignore")
+    except Exception:  # noqa: BLE001
+        return []
+    parts = body.split("~")
+    if len(parts) < 38:
+        return []
+    try:
+        d = pd.to_datetime(parts[30][:8], format="%Y%m%d").date()
+        row = {
+            "asset_code": asset_code,
+            "quote_date": d,
+            "open": float(parts[5]),
+            "high": float(parts[33]),
+            "low": float(parts[34]),
+            "close": float(parts[3]),
+            "pct_chg": float(parts[32]),
+            "volume": float(parts[36]),
+            "amount": float(parts[37]) * 10000.0,   # 万元 → 元
+        }
+    except (ValueError, TypeError, IndexError):
+        return []
+    if not (start_d <= d <= end_d):
+        return []
+    return [row]
 
 
 def get_sw_index_daily(symbol: str) -> list[dict]:
