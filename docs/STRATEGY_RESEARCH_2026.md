@@ -152,6 +152,36 @@
   8% 止损洗盘 + 1-4x 年换手(对照 base:30% 止损 / 0.4x 换手 / 44 笔止损 / test 正超额)。
   按「原文风控映射」修正后(见 §6)正在重跑,待出结果。
 
+### 7.1 三跑门禁最终结果（2026-08-03，30/30 完成，raw 口径）
+
+> 批次 00:40–08:40（`data/backtest/new2026_batch_raw.log`，结果 `data/backtest/run-20260803-*.json.gz`）。
+> 窗口：full 2007-01-04→2026-07-21 / train 2007-01-04→2016-12-30 / test 2017-01-04→2026-07-21，基准沪深300（full +129.27% / train +60.13% / test +40.7%），`--valuation-basis raw`。
+> 最终配置：全部 `max_gross: 1.0` 满仓 + `max_w: 0.20` 等权 ~5 只 + 无组合刹车；9 个纯因子 `stop_loss: 0`；ts_momentum 波动率目标 0.15；graham `hard_profit: 0.50`；donchian `stop_loss: 0.18` + ATR 追踪止盈。
+
+**超额 vs 沪深300 对照（30 轮）**
+
+| 策略 | full | train | test | test 回撤 | 判定 |
+|---|---|---|---|---|---|
+| low_beta_dividend | +59.6% | +98.6% | **+9.7%** | **26.3%** | ✅ 通过 |
+| graham_defensive_value | +14.4% | +65.5% | **+11.2%** | 36.2% | ✅ 通过 |
+| smart_beta_multi_factor | +378.5% | +215.1% | **+17.9%** | 40.9% | ✅ 通过(衰减剧烈) |
+| fifty_two_week_high_cross_section | −131.6% | −73.2% | −58.2% | 49.9% | ❌ 全输 |
+| ts_momentum_trend | −178.6% | −84.6% | −87.9% | 49.1% | ❌ 全输 |
+| donchian_breakout_cross_section | −166.0% | −92.8% | −78.5% | 60.2% | ❌ 全输(止损17–20笔) |
+| small_cap_low_turnover | +284.3% | +349.7% | −33.1% | 40.6% | ❌ test 崩 |
+| low_turnover_reversal | +75.2% | +186.7% | −65.4% | 41.1% | ❌ test 崩 |
+| illiquidity_value | +68.5% | +252.2% | −68.1% | 56.7% | ❌ test 崩 |
+| anti_lottery_defensive | −53.2% | +93.4% | −51.8% | 48.7% | ❌ 方向不一致 |
+
+**结论**：
+
+- **3 个通过三跑门禁**（三窗口超额全正、方向一致）：`low_beta_dividend`（test 回撤 26.3% 全表最低，防御价值）、`graham_defensive_value`（test +11.2%）、`smart_beta_multi_factor`（test +17.9% 最高，但 full/train 超额 +378%/+215% 异常高、衰减剧烈，**待排查持仓是否重仓小盘吃风格红利**）。
+- **追趋势族全输**（52周高/时序动量/唐奇安）：满仓（max_gross 1.0）+ 无止损（donchian 有 0.18 止损仍输）在 A 股高波动震荡市致命，回撤 49–87%。
+- **小盘族过拟合证伪**（小盘/反转/非流动/反彩票）：train 超额 +94~+350%、test 全负——2017 后 A 股小盘壳价值/流动性溢价消退，**与 §0.6.4 hold 证伪同模式，印证三跑门禁价值**。
+- **与自己的策略（§0.6.2–0.6.4 base/融合，同窗口同基准）横向对比**：smart_beta 全样本超额（+378.5%）> 融合（+307.7%）> base（+292.5%）；夏普 base 0.60 全表最高；test 超额 smart_beta +17.9% > base +12~16%。active 指针当前已是 `smart_beta_multi_factor`（seed 时设置）。
+- **风格 caveat（沿用 §0.6.5）**：low_beta/graham 为防御价值风格，其超额含红利风格 beta + 分红再投成分，真实 alpha 待全收益红利指数（H00922/H30269）验证；smart_beta 含 fifty_two_week_high/low_turnover 暴露，需防小盘风格回归。
+- 缓存保留集（3 候选引用算子，勿清）：`low_beta, dividend_yield, value, graham_value, low_volatility, fifty_two_week_high, low_turnover`。
+
 ## 8. 来源
 
 **A 股因子有效性(2025-2026)**
@@ -189,7 +219,7 @@
 2. **质量因子数据源**:若引入 baostock `query_profit_data`(ROE/净利率)或利润表,可补真正的
    `quality` 算子(本批用价格代理是权宜之计)。
 3. **三跑门禁验证**:对 10 个新策略跑全样本 2007–2026 + 两段子区间,产出正式绩效后再下结论
-   (**进行中**,见 §7;首版 8% 止损全出局 → 已按原文风控重跑)。
+   (**已完成**,见 §7.1;30/30 全跑完,3 候选通过 / 7 证伪;剩余:排查 smart_beta 持仓构成)。
 4. **`low_beta` 基准可配**:当前写死 `sh000300`;中小盘策略或可切 `sh000905`(中证500)做更贴合的 β。
 5. **执行/风控护栏(可选)**:本次踩坑显示,策略 yaml 缺 `risk:` 段会静默落引擎 8% 默认止损——可考虑
    无 risk 段时回测告警,或对 cap_and_rank 加换手上限护栏,防退化配置坑后来者。
