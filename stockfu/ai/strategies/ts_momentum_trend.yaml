@@ -1,0 +1,32 @@
+version: 1
+name: 时序动量趋势横截面(风险调整趋势+加速+确认)
+# Moskowitz-Ooi-Pedersen(2012)TSMOM 内核:用波动率归一的趋势强度(ret/vol)选票,
+# 自动惩罚暴涨暴跌型高波动票。三因子:ts_momentum(主)+ momentum_acceleration(动能
+# 加速)+ trend_strength(多头排列确认)。cap_and_rank 横截面选强趋势且加速的票。
+# 区别于 cn_momentum(原始动量):本策略是「风险调整后」的趋势,更稳健。数据依赖:close_qfq。
+operators:
+  - {id: ts_momentum,            type: math, weight: 1.0, params: {window: 120}}
+  - {id: momentum_acceleration,  type: math, weight: 0.6, params: {window: 120}}
+  - {id: trend_strength,         type: math, weight: 0.4}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.20
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  # MOP(2012)TSMOM 原文:无止损,风控=波动率目标缩放(target vol,此处折组合目标 0.15 年化),等权满仓。
+  stop_loss: 0
+  max_gross: 1.0
+  market_regime_target_vol: 0.15
+  market_regime_vol_window: 63
+  market_regime_vol_floor: 0.30

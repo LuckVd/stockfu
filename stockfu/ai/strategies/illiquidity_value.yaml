@@ -1,0 +1,30 @@
+version: 1
+name: Amihud流动性价值横截面(非流动溢价+低估)
+# Amihud(2002)非流动性因子:单位成交额推动的价格变动越大 → 流动性越差 → 要求流动性
+# 溢价(未来超额)。与价值因子同向(被冷落的低估票常兼流动性差)。
+# 三因子:illiquidity(主)+ value(低估)+ reversal(短期反转)。cap_and_rank 横截面。
+# 数据依赖:amount + close + PE。**注**:非流动票成交冲击成本高,实盘容量受限(回测需
+# 扣双边滑点),适合中小资金。与 low_turnover 高度相关,二选一即可,勿叠加过重。
+operators:
+  - {id: illiquidity, type: math, weight: 1.0, params: {window: 20}}
+  - {id: value,       type: math, weight: 0.8, params: {years: 5}}
+  - {id: reversal,    type: math, weight: 0.5, params: {window: 20}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.20
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  # Amihud(2002)原文:流动性溢价因子,无止损/无刹车,等权满仓;stop_loss=0,max_gross=1.0。
+  stop_loss: 0
+  max_gross: 1.0
