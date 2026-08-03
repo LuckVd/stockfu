@@ -36,6 +36,12 @@ def _cache_pragmas(conn, _record):
 
 def _ensure_cache_table() -> None:
     OperatorResult.__table__.create(cache_engine, checkfirst=True)
+    # 查询恒带 operator_id/fingerprint + as_of 范围 + asset_code IN,21M+ 行无索引 → 全表扫。
+    with cache_engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_operator_result_lookup "
+            "ON operator_result (operator_id, fingerprint, as_of, asset_code)"
+        ))
 
 
 @contextmanager
@@ -339,13 +345,13 @@ def save_operator_results_day(code_results: dict, as_of, operator_id: str,
 
 
 def save_operator_results_batch(as_of, entries: list) -> int:
-    """单日多算子批量 upsert:一次 session、一次 commit。
+    """单日多算子批量 upsert:一次 executemany(ON CONFLICT 天然幂等)。
 
     entries: [(code, operator_id, fingerprint, op_type, OpResult), ...]
-    回测冷启动把当日全部 miss 算子攒齐后调用(800 票 × 3 算子 → 1 次 commit,
-    取代逐 (code,as_of,算子) 的 save_operator_result)。字段映射与
-    save_operator_result / save_operator_results_day 逐字一致。
-    返回实际落库行数(失败结果 _is_failure 跳过)。
+    冷启动把当日全部 miss 算子攒齐后调用(800 票 × 3 算子 → 1 条 executemany),取代
+    旧 ORM 逐行 add+flush(20M+ 行表上 20 万级 INSERT 是冷首跑主瓶颈)。
+    语义与 save_operator_result 逐字一致(自然键 asset_code,as_of,operator_id,fingerprint
+    冲突即更新 → 缓存互通)。失败结果 _is_failure 跳过。返回实际落库行数。
     """
     valid: list[tuple] = []
     for item in entries or []:
@@ -355,39 +361,34 @@ def save_operator_results_batch(as_of, entries: list) -> int:
         valid.append((code, operator_id, fingerprint, op_type, result))
     if not valid:
         return 0
-    codes = list({e[0] for e in valid})
-    op_ids = list({e[1] for e in valid})
-    fps = list({e[2] for e in valid})
-    with cache_session_scope() as s:
-        existing = {
-            (r.asset_code, r.operator_id, r.fingerprint): r
-            for r in s.exec(select(OperatorResult).where(
-                OperatorResult.as_of == as_of,
-                OperatorResult.asset_code.in_(codes),
-                OperatorResult.operator_id.in_(op_ids),
-                OperatorResult.fingerprint.in_(fps),
-            )).all()
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    as_of_s = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
+    rows = [
+        {
+            "asset_code": code, "as_of": as_of_s,
+            "operator_id": operator_id, "operator_type": op_type,
+            "fingerprint": fingerprint,
+            "signal": result.signal, "score": result.score,
+            "confidence": result.confidence, "veto": result.veto,
+            "target_weight": result.target_weight, "value": result.value,
+            "detail": None, "updated_at": stamp,
         }
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        for code, operator_id, fingerprint, op_type, result in valid:
-            key = (code, operator_id, fingerprint)
-            row = existing.get(key) or OperatorResult(
-                asset_code=code, as_of=as_of,
-                operator_id=operator_id, fingerprint=fingerprint,
-            )
-            row.operator_type = op_type
-            row.signal = result.signal
-            row.score = result.score
-            row.confidence = result.confidence
-            row.veto = result.veto
-            row.target_weight = result.target_weight
-            row.value = result.value
-            row.detail = None
-            row.updated_at = stamp
-            if row.id is None:
-                s.add(row)
-                existing[key] = row  # 防 entries 内同 key 重复 add
-        s.commit()
+        for code, operator_id, fingerprint, op_type, result in valid
+    ]
+    sql = text(
+        "INSERT INTO operator_result "
+        "(asset_code, as_of, operator_id, operator_type, fingerprint, "
+        " signal, score, confidence, veto, target_weight, value, detail, updated_at) "
+        "VALUES (:asset_code, :as_of, :operator_id, :operator_type, :fingerprint, "
+        " :signal, :score, :confidence, :veto, :target_weight, :value, :detail, :updated_at) "
+        "ON CONFLICT (asset_code, as_of, operator_id, fingerprint) DO UPDATE SET "
+        "operator_type=excluded.operator_type, signal=excluded.signal, score=excluded.score, "
+        "confidence=excluded.confidence, veto=excluded.veto, "
+        "target_weight=excluded.target_weight, value=excluded.value, "
+        "detail=excluded.detail, updated_at=excluded.updated_at"
+    )
+    with cache_engine.begin() as conn:
+        conn.execute(sql, rows)
     return len(valid)
 
 
