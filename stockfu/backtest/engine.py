@@ -313,13 +313,19 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
 _QS_FIELD_KEY = {
     "open": "o", "high": "h", "low": "l", "close": "c", "close_raw": "c_raw",
     "close_hfq": "c_hfq", "open_hfq": "o_hfq",
+    # 非价格字段(amount/market_cap/turnover)也走列式预载 → size/low_turnover/
+    # illiquidity 等基本面点因子回测零 DB(quote_series 用同名 key 命中供给器)。
+    "amount": "amt", "market_cap": "mcap", "turnover": "turn",
 }
 
-# 列式 array 的 16 字段 key(顺序对应 _BI_* 下标);预载时按此填充 array('d')。
+# 列式 array 的字段 key;预载时按此填充 array('d')。前 16 个对应 _BI_* 下标
+# (旧 tuple 路径用);末尾 mcap/turn 为后加,仅供 size/low_turnover 等点因子读,
+# 不进 _bar_from_cols 当日 bar(按名访问,顺序无关)。
 _COL_KEYS = (
     "o", "h", "l", "c", "pct", "st", "ts", "amt",
     "o_raw", "h_raw", "l_raw", "c_raw", "pe", "pb",
     "c_hfq", "o_hfq",
+    "mcap", "turn",
 )
 
 # 列式预载结构:series={code: {col_key: array('d', len(dates))}}(缺失=nan),
@@ -720,17 +726,17 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCt
             "COALESCE(open_qfq, open), COALESCE(high_qfq, high), "
             "COALESCE(low_qfq, low), COALESCE(close_qfq, close), pct_chg, "
             "is_st, trade_status, amount, open_raw, high_raw, low_raw, close_raw, pe, pb, "
-            "close_hfq, open_hfq"
+            "close_hfq, open_hfq, market_cap, turnover"
         ),
         "etf_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
             "NULL as is_st, 1 as trade_status, amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb, "
-            "NULL as close_hfq, NULL as open_hfq"
+            "NULL as close_hfq, NULL as open_hfq, NULL as market_cap, NULL as turnover"
         ),
         "index_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
             "NULL as is_st, 1 as trade_status, NULL as amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb, "
-            "NULL as close_hfq, NULL as open_hfq"
+            "NULL as close_hfq, NULL as open_hfq, NULL as market_cap, NULL as turnover"
         ),
     }
     start_s = start.isoformat()
@@ -796,7 +802,7 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCt
                 for row in batch:
                     (asset_code, qdate, o, h, l, c, pct,
                      is_st, trade_status, amount, o_raw, h_raw, l_raw, close_raw, pe, pb,
-                     close_hfq, open_hfq) = row
+                     close_hfq, open_hfq, market_cap, turnover) = row
                     if isinstance(qdate, str):
                         qdate = date.fromisoformat(qdate[:10])
                     di = g_date_idx[qdate]
@@ -817,6 +823,8 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCt
                     colsd["pb"][di] = float(pb) if pb is not None else NAN
                     colsd["c_hfq"][di] = float(close_hfq) if close_hfq is not None else NAN
                     colsd["o_hfq"][di] = float(open_hfq) if open_hfq is not None else NAN
+                    colsd["mcap"][di] = float(market_cap) if market_cap is not None else NAN
+                    colsd["turn"][di] = float(turnover) if turnover is not None else NAN
                     valid[asset_code][di] = 1
     return _SeriesCtx(series=series, dates=g_dates, date_idx=g_date_idx, valid=valid)
 

@@ -1,0 +1,29 @@
+version: 1
+name: 小盘低换手横截面(规模+流动性异象)
+# A 股小盘主线(2025-2026 延续)+ 低换手异象:小市值票长期超额,低换手票筹码稳定未来跑赢。
+# 三因子:size(主,小盘)+ low_turnover(流动性)+ reversal(短期反转,滤高投机)。
+# cap_and_rank 横截面竞争 max_gross。**注**:小盘超额受微盘流动性风险扰动(2024 初微盘
+# 崩跌),low_turnover 反向过滤流动性陷阱。数据依赖:market_cap + turnover + close_qfq。
+operators:
+  - {id: size,          type: math, weight: 1.0}
+  - {id: low_turnover,  type: math, weight: 0.8, params: {window: 20}}
+  - {id: reversal,      type: math, weight: 0.5, params: {window: 20}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.20
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  # 规模因子原文无止损/无刹车,等权满仓;stop_loss=0 关闭默认 8%,max_gross=1.0。
+  stop_loss: 0
+  max_gross: 1.0
