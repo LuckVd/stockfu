@@ -26,4 +26,5 @@ debounce:
 risk:
   # Frazzini-Pedersen(2014)BAB 原文:无止损/无刹车(靠杠杆+波动率控制),等权满仓;stop_loss=0,max_gross=1.0。
   stop_loss: 0
+  portfolio_brake: 0
   max_gross: 1.0

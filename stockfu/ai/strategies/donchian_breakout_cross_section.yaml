@@ -26,6 +26,7 @@ debounce:
 risk:
   # 海龟原文:入场 2N(20日ATR)止损,A 股单票约折 15-20% → 0.18;趋势中按 ATR 倍数追踪离场(≈跌破通道)。
   stop_loss: 0.18
+  portfolio_brake: 0
   max_gross: 1.0
   take_profit:
     atr_trailing:

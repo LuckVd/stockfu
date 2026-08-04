@@ -1,0 +1,25 @@
+version: 1
+name: 涨停计数反转横截面(规避连板妖股)
+# 2026-08 网络调研第 2 批:涨停计数因子(制度性情绪极端信号)。
+# 配置:满仓+等权+无止损(与三跑门禁 §0.6.6 同款,便于横向对比)。
+operators:
+  - {id: limit_up_count, type: math, weight: 1.0}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.20
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  stop_loss: 0
+  portfolio_brake: 0
+  max_gross: 1.0

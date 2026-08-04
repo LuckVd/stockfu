@@ -28,4 +28,5 @@ risk:
   # George & Hwang(2004)原文:横截面因子无止损、无组合刹车,靠持有+定期再平衡。
   # stop_loss=0 显式关闭引擎默认 8% 止损;max_gross=1.0 满仓、max_w=0.20 等权 top ~5。
   stop_loss: 0
+  portfolio_brake: 0
   max_gross: 1.0

@@ -25,4 +25,5 @@ debounce:
 risk:
   # 低换手/反转异象原文无止损/无刹车,等权满仓;stop_loss=0 关闭默认 8%,max_gross=1.0。
   stop_loss: 0
+  portfolio_brake: 0
   max_gross: 1.0

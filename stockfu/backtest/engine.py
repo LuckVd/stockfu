@@ -1269,6 +1269,10 @@ def _metrics(equity_curve: list[dict], benchmark: list[dict],
         )
         _n_eq = len(eq) or 1
         out["underwater_basis"] = "initial_principal"
+        out["underwater_days_gt0"] = u0
+        out["underwater_days_ge10"] = u10
+        out["underwater_days_ge20"] = u20
+        out["underwater_days_ge30"] = u30
         out["underwater_pct_gt0"] = round(u0 / _n_eq * 100, 1)
         out["underwater_pct_ge10"] = round(u10 / _n_eq * 100, 1)
         out["underwater_pct_ge20"] = round(u20 / _n_eq * 100, 1)

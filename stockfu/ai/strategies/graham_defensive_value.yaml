@@ -26,6 +26,7 @@ debounce:
 risk:
   # 格雷厄姆原文:无止损,离场规则=「涨 50% 或持满 2-3 年未涨 50% 走」。hard_profit 0.50 实现之;等权满仓。
   stop_loss: 0
+  portfolio_brake: 0
   max_gross: 1.0
   take_profit:
     hard_profit: 0.50
