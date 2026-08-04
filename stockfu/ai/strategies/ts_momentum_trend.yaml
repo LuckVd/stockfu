@@ -26,6 +26,7 @@ debounce:
 risk:
   # MOP(2012)TSMOM 原文:无止损,风控=波动率目标缩放(target vol,此处折组合目标 0.15 年化),等权满仓。
   stop_loss: 0
+  portfolio_brake: 0
   max_gross: 1.0
   market_regime_target_vol: 0.15
   market_regime_vol_window: 63

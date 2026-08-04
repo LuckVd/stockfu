@@ -31,15 +31,38 @@ class LowVolatilityOperator(BaseOperator):
                             signal="hold", score=0.0, confidence=0.3,
                             reasoning="收益率样本不足")
 
-        def _std(seq: list[float]) -> float:
-            n = len(seq)
-            if n < 2:
-                return 0.0
-            mean = sum(seq) / n
-            return (sum((x - mean) ** 2 for x in seq) / n) ** 0.5
-
-        # 滚动 window 日 std 序列(历史);末位 = 当前 std
-        std_series = [_std(rets[i:i + window]) for i in range(len(rets) - window + 1)]
+        # 滚动 window 日 std 序列(历史);末位 = 当前 std。
+        # 优化(2026-08):原实现每窗口全遍历 O(N×window),window 越大越慢(lv_w30 比
+        # lv_w10 慢 3 倍);改为增量滑窗维护 sum/sumsq,每窗口 O(1),整段 O(N)。
+        # v2 修复:增量累积的浮点误差会让「停牌全 0 收益窗口」的 std 残留 ~1e-10
+        # (而非精确 0),绕过 cur_std<=0 守卫把停牌股误判为极低波强买入 ——
+        # gdv dy3 重跑收益 +187.9%→+146.9% 的元凶(000061 2007-06 停牌实证)。
+        # 维护非零收益计数 nz:窗口全 0 → std 精确 0(与旧实现逐位一致);
+        # 非全 0 窗口用滑窗值(误差 ~1e-17,分位 round 后无差)。
+        n = window
+        _s = 0.0
+        _ss = 0.0
+        nz = 0
+        for _x in rets[:n]:
+            _s += _x
+            _ss += _x * _x
+            if _x != 0.0:
+                nz += 1
+        std_series = []
+        for _i in range(len(rets) - n + 1):
+            if _i > 0:
+                _out, _inn = rets[_i - 1], rets[_i + n - 1]
+                _s += _inn - _out
+                _ss += _inn * _inn - _out * _out
+                if _out != 0.0:
+                    nz -= 1
+                if _inn != 0.0:
+                    nz += 1
+            if nz == 0:
+                std_series.append(0.0)
+            else:
+                _var = _ss / n - (_s / n) ** 2
+                std_series.append(max(_var, 0.0) ** 0.5)
         cur_std = std_series[-1] if std_series else 0.0
         if cur_std <= 0:
             return OpResult(operator=self.operator_id, type="math", value=None,

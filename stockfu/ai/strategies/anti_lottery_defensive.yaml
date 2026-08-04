@@ -27,4 +27,5 @@ debounce:
 risk:
   # Bali-Cakici-Whitelaw(2011)MAX 效应原文:横截面因子,无止损/无刹车,等权满仓;stop_loss=0,max_gross=1.0。
   stop_loss: 0
+  portfolio_brake: 0
   max_gross: 1.0

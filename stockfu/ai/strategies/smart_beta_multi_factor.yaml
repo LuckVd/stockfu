@@ -29,4 +29,5 @@ debounce:
 risk:
   # 多因子原文无止损/无刹车,靠分散+定期再平衡,等权满仓;stop_loss=0,max_gross=1.0。
   stop_loss: 0
+  portfolio_brake: 0
   max_gross: 1.0

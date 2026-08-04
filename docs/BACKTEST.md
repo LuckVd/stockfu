@@ -124,10 +124,10 @@
 
 | 指标 | 值 |
 |---|---|
-| 水下天数（权益 < 本金，underwater_pct_gt0） | 192 天（14.3%） |
-| 水下 ≥10%（< 90 万）天数 | 0 天（0.0%） |
-| 水下 ≥20%（< 80 万）天数 | 0 天（0.0%） |
-| 水下 ≥30%（< 70 万）天数 | 0 天（0.0%） |
+| 水下天数（权益 < 本金，`underwater_days_gt0` / `underwater_pct_gt0`） | 192 天（14.3%） |
+| 水下 ≥10%（< 90 万）天数（`underwater_days_ge10` / `underwater_pct_ge10`） | 0 天（0.0%） |
+| 水下 ≥20%（< 80 万）天数（`underwater_days_ge20` / `underwater_pct_ge20`） | 0 天（0.0%） |
+| 水下 ≥30%（< 70 万）天数（`underwater_days_ge30` / `underwater_pct_ge30`） | 0 天（0.0%） |
 
 > 另：若需「相对历史最高点」的回撤口径，回撤 >10% 为 209 天（15.6%）、>20% 为 0 天；两种口径含义不同，引用时须注明。
 
@@ -330,11 +330,13 @@ A、B 两段**较短的一段不得短于 5 年**（即两段均 ≥ 5 年），
 - 三跑收益均走研究模式口径（引擎默认 qfq 收益/净值、绝对值逻辑 raw），引用数字带口径头（见 §0.6.1），不得与旧 qfq/上证口径混用。
 - 子样本起止若早于数据可得起点，以实际可得历史为准并在结论里注明缩短；全样本本身不足 5 年（新上市品种）时，「5 年」下限按下调后可得历史，同样须记录。
 
-#### 0.6.7 调研 10 策略三跑门禁结论（2026-08-03）
+#### 0.6.7 调研 10 策略历史三跑预审（2026-08-03，配置审计前，不作最终结论）
 
-**背景**：2026-08 网络调研 10 策略（`docs/STRATEGY_RESEARCH_2026.md` §7.1 有完整对照表），按「完全符合原文」风控配置（满仓 `max_gross 1.0` + 等权 `max_w 0.20` + 9 个纯因子 `stop_loss 0`；ts_momentum 波动率目标 0.15 / graham `hard_profit 0.50` / donchian `stop_loss 0.18`+ATR 止盈）跑 30 轮（10 × {full/train/test}，raw，基准沪深300，与 §0.6.2–0.6.4 同窗口同基准可直接对比）。
+> **配置审计警告**：本节 30 轮运行时仍有 YAML 省略 `portfolio_brake`，引擎实际使用默认 `portfolio_brake_dd=0.10`。公开来源没有声明该组合刹车；之后 10 个策略已显式配置 `portfolio_brake: 0` 并重新完成 canonical full，最终全周期结果见 §0.6.10。本节的 train/test 没有按修正配置重跑，因此只能保留为历史预审记录，不能据此认定“通过”或“证伪”。
 
-**30/30 完成**（00:40–08:40，`data/backtest/run-20260803-*.json.gz`）：
+**背景**：2026-08 网络调研 10 策略（`docs/STRATEGY_RESEARCH_2026.md` §7.1 有完整对照表）原计划按来源映射的风控配置（总仓上限 `max_gross 1.0` + 单票上限 `max_w 0.20` + 9 个纯因子 `stop_loss 0`；ts_momentum 波动率目标 0.15 / graham `hard_profit 0.50` / donchian `stop_loss 0.18`+ATR 止盈；组合刹车意图关闭）跑 30 轮（10 × {full/train/test}，raw，基准沪深300，与 §0.6.2–0.6.4 同窗口同基准可直接对比）。实际持仓由 `cap_and_rank` 竞争额度，不保证原文固定 Top-N/严格等权；实际加载的默认组合刹车问题已在上方警告。
+
+**30/30 历史预审完成**（00:40–08:40，`data/backtest/run-20260803-*.json.gz`）：
 
 | 策略 | full 超额 | train 超额 | test 超额 | test 回撤 | 判定 |
 |---|---|---|---|---|---|
@@ -344,14 +346,14 @@ A、B 两段**较短的一段不得短于 5 年**（即两段均 ≥ 5 年），
 | fifty_two_week_high / ts_momentum / donchian | 负 | 负 | 负 | 49–60% | ❌ 追趋势族全输 |
 | small_cap / reversal / illiquidity / anti_lottery | +68~+284% | +93~+350% | **−33~−68%** | 40–57% | ❌ 小盘族 test 全崩（过拟合） |
 
-**结论（定论）**：
+**历史预审结论（已被配置审计覆盖）**：
 
-- **3 个通过**：`low_beta_dividend`（防御、test 回撤 26.3% 全表最低）、`graham_defensive_value`、`smart_beta_multi_factor`（test 超额 +17.9% 全表最高，但 full/train 异常高，**需排查是否重仓小盘吃风格红利**）。
+- 历史配置下曾标记 3 个候选，但该标记已撤销；修正配置后的 full 结论以 §0.6.10 为准，样本外保留仍需重新跑三跑。
 - **追趋势族（52周高/时序动量/唐奇安）满仓+无止损在 A 股全输**（回撤 49–87%），「原文配置」不适合 A 股直接落地。
 - **小盘族过拟合证伪**（train +94~+350% → test 全负）：2017 后小盘壳价值/流动性溢价消退，与 §0.6.4 hold 证伪同模式，**再次印证三跑门禁的必要性**。
 - **横向对比自己的策略**：smart_beta 全样本超额 +378.5% > 融合 +307.7% > base +292.5%；夏普 base 0.60 仍全表最高；test 超额 smart_beta +17.9% > base +12~16%。
 - **风格 caveat（沿用 §0.6.5）**：3 候选多为防御价值/多因子风格，超额含红利风格 beta + 分红再投成分，真实 alpha 待全收益红利（H00922/H30269）验证。
-- active 指针当前已是 `smart_beta_multi_factor`。
+- canonical 队列结束后 active 指针已恢复为安全参考策略 `graham_defensive_value`。
 
 #### 0.6.8 smart_beta_multi_factor 持仓排查结论（2026-08-03）
 
@@ -389,6 +391,81 @@ A、B 两段**较短的一段不得短于 5 年**（即两段均 ≥ 5 年），
 - **test 段 +17.9% 超额相对真实**：来自防御风格贡献（2021/2022 防御年 +17/+18.3pp，当时小盘占比仅 17–19%），水平与 base（+12~16%）同档。
 - **风格依赖仍明确**：2009（−26.8pp）/ 2020（−23.9pp）两个大盘年大幅跑输——低波/价值/小盘因子在蓝筹行情集体失灵。
 - **判定**：「全样本超额 +378.5%」不可信为 alpha；smart_beta 从「最强候选」**降级为待验证参照**（需 size 中性化：市值分层后选股，验证真实 alpha）。active 指针不应再以「已验证最优」语义指向它。
+
+### 0.6.9 历史全周期判定表（2026-08-04，旧快照）
+
+**背景**：2026-08-04 补齐全部正式策略全周期（2007-01-04→2026-07-21，基准沪深300 +129.27%）回测（`data/backtest/run-tune-*-full.json.gz`，raw 口径），用 `.local/audit_full_results.py` 统一判定：`total_return > 129.27%` 保留，否则清除。**以下为最终结论（清除策略的数据缓存已删除，判定以本表为准）**。
+
+> 这是 2026-08-04 的历史快照；其中与公开新策略第一批 10 个 ID 重叠的数字已被后续风险配置审计和 canonical full 重跑覆盖，当前应以 §0.6.10 为准。本节的“22/10”只描述当时快照，不作为本轮 10 个新策略的验收结果。
+
+| 策略 | full TR | 超额 | 判定 |
+|---|---|---:|---|
+| dividend_cross_section_partial_exposure_brake_regime_trend_take_profit | +539.2% | +409.9% | ✅ 保留 |
+| smart_beta_multi_factor | +507.7% | +378.5% | ✅ 保留 |
+| dividend_cross_section#sl30 | +507.5% | +378.2% | ✅ 保留 |
+| dividend_cross_section_partial_exposure_brake_take_profit#deep | +444.8% | +315.5% | ✅ 保留 |
+| dividend_cross_section_partial_exposure_add_gated_take_profit | +436.9% | +307.7% | ✅ 保留 |
+| dividend_cross_section_partial_exposure_brake_take_profit | +421.8% | +292.5% | ✅ 保留 |
+| dividend_cross_section_partial_exposure_brake_take_profit#rec125 | +421.8% | +292.5% | ✅ 保留 |
+| small_cap_low_turnover | +413.6% | +284.3% | ✅ 保留 |
+| dividend_cross_section_partial_exposure_brake_hold_take_profit | +381.0% | +251.7% | ✅ 保留 |
+| dividend_cross_section_partial_exposure_add_gated_hold_take_profit | +350.6% | +221.4% | ✅ 保留 |
+| dividend_cross_section_take_profit | +334.5% | +205.2% | ✅ 保留 |
+| dividend_cross_section_partial_gentle_brake_take_profit | +319.8% | +190.5% | ✅ 保留 |
+| dividend_cross_section_partial_exposure_brake_regime_trendvol_take_profit | +280.7% | +151.4% | ✅ 保留 |
+| dividend_cross_section_partial_drawdown_add_gated_take_profit | +260.8% | +131.5% | ✅ 保留 |
+| dividend_cross_section_partial_exposure_brake_regime_vol_take_profit | +238.6% | +109.4% | ✅ 保留 |
+| low_turnover_reversal | +204.5% | +75.2% | ✅ 保留 |
+| illiquidity_value | +197.8% | +68.5% | ✅ 保留 |
+| low_beta_dividend | +188.9% | +59.6% | ✅ 保留 |
+| dividend_cross_section_atr_take_profit | +170.2% | +40.9% | ✅ 保留 |
+| graham_defensive_value | +143.7% | +14.4% | ✅ 保留 |
+| dividend_cross_section_partial_brake_take_profit | +140.5% | +11.2% | ✅ 保留 |
+| dividend_cross_section_atr_lagged_take_profit | +137.4% | +8.2% | ✅ 保留 |
+| dividend_cross_section_partial_take_profit | +127.7% | −1.5% | ❌ 清除 |
+| anti_lottery_defensive | +76.1% | −53.2% | ❌ 清除 |
+| dividend_cross_section_partial_selective_brake_take_profit | +49.4% | −79.9% | ❌ 清除 |
+| dual_bollinger | +21.0% | −108.3% | ❌ 清除 |
+| fifty_two_week_high_cross_section | −2.4% | −131.6% | ❌ 清除 |
+| cn_momentum_cross_section | −31.4% | −160.7% | ❌ 清除 |
+| donchian_breakout_cross_section | −36.7% | −166.0% | ❌ 清除 |
+| ts_momentum_trend | −49.3% | −178.6% | ❌ 清除 |
+| momentum_breakout | −55.2% | −184.5% | ❌ 清除 |
+| overnight_reversal | −56.1% | −185.4% | ❌ 清除 |
+
+**历史结论**：当时 32 个有全周期回测的策略中 **保留 22 / 清除 10**；本轮第一批 10 个策略的最新 canonical 结论见 §0.6.10。
+
+### 0.6.10 第一批 10 个策略 canonical full 审计（2026-08-05，10/10）
+
+**口径**：2007-01-04→2026-07-21、4749 个交易日、raw、沪深300基准 +129.27%、历史沪深300/中证500时点成分宇宙、`cap_and_rank`、`max_gross=1.0`、单票 `max_w=0.20`、T+1 开盘卖优先。水下指标以**初始本金**为基准，百分比以 4749 个交易日为分母；完整原始结果在 `data/backtest/run-tune-{strategy}-full.json.gz` 与 `.meta.json`。
+
+| 策略 | 总收益 | 年化 | 超额 | 最大回撤 | 回本天数/状态 | 夏普 | 索提诺 | Calmar | 交易笔数 | 判定 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `low_beta_dividend` | 719.19% | 11.81% | 589.92% | 55.02% | 453/已回本 | 0.62 | 0.59 | 0.21 | 1304 | ✅ |
+| `graham_defensive_value` | 725.49% | 11.85% | 596.22% | 68.65% | 257/已回本 | 0.57 | 0.55 | 0.17 | 1995 | ✅ |
+| `smart_beta_multi_factor` | 710.68% | 11.74% | 581.41% | 59.57% | 349/已回本 | 0.56 | 0.55 | 0.20 | 1970 | ✅ |
+| `fifty_two_week_high_cross_section` | 66.61% | 2.75% | −62.66% | 74.39% | —/未回本 | 0.23 | 0.22 | 0.04 | 2283 | ❌ |
+| `ts_momentum_trend` | −18.57% | −1.08% | −147.84% | 71.30% | —/未回本 | 0.09 | 0.09 | −0.02 | 3263 | ❌ |
+| `donchian_breakout_cross_section` | −94.21% | −14.03% | −223.48% | 97.95% | —/未回本 | −0.34 | −0.31 | −0.14 | 4303 | ❌ |
+| `small_cap_low_turnover` | 1191.76% | 14.54% | 1062.49% | 66.56% | 1450/已回本 | 0.65 | 0.63 | 0.22 | 1368 | ✅ |
+| `low_turnover_reversal` | 488.08% | 9.86% | 358.81% | 61.17% | 245/已回本 | 0.49 | 0.48 | 0.16 | 2881 | ✅ |
+| `illiquidity_value` | 345.00% | 8.24% | 215.73% | 76.25% | 1475/已回本 | 0.42 | 0.39 | 0.11 | 5228 | ✅ |
+| `anti_lottery_defensive` | 639.00% | 11.20% | 509.73% | 63.47% | 283/已回本 | 0.56 | 0.54 | 0.18 | 3332 | ✅ |
+
+| 策略 | 水下 >0 天数（比例） | 水下 ≥10% 天数（比例） | 水下 ≥20% 天数（比例） | 水下 ≥30% 天数（比例） | 止损/止盈笔数 | 风控配置 |
+|---|---:|---:|---:|---:|---:|---|
+| `low_beta_dividend` | 7 (0.1%) | 0 (0.0%) | 0 (0.0%) | 0 (0.0%) | 0/0 | brake=0, SL=0 |
+| `graham_defensive_value` | 115 (2.4%) | 80 (1.7%) | 30 (0.6%) | 8 (0.2%) | 0/4 | brake=0, 硬止盈 50% |
+| `smart_beta_multi_factor` | 0 (0.0%) | 0 (0.0%) | 0 (0.0%) | 0 (0.0%) | 0/0 | brake=0, SL=0 |
+| `fifty_two_week_high_cross_section` | 976 (20.6%) | 504 (10.6%) | 120 (2.5%) | 27 (0.6%) | 0/0 | brake=0, SL=0 |
+| `ts_momentum_trend` | 2483 (52.3%) | 1477 (31.1%) | 865 (18.2%) | 448 (9.4%) | 0/0 | brake=0, 波动率目标 15% |
+| `donchian_breakout_cross_section` | 4405 (92.8%) | 4402 (92.7%) | 4399 (92.6%) | 4370 (92.0%) | 27/162 | brake=0, SL=18% + ATR 止盈 |
+| `small_cap_low_turnover` | 0 (0.0%) | 0 (0.0%) | 0 (0.0%) | 0 (0.0%) | 0/0 | brake=0, SL=0 |
+| `low_turnover_reversal` | 19 (0.4%) | 0 (0.0%) | 0 (0.0%) | 0 (0.0%) | 0/0 | brake=0, SL=0 |
+| `illiquidity_value` | 18 (0.4%) | 3 (0.1%) | 0 (0.0%) | 0 (0.0%) | 0/0 | brake=0, SL=0 |
+| `anti_lottery_defensive` | 23 (0.5%) | 1 (0.0%) | 0 (0.0%) | 0 (0.0%) | 0/0 | brake=0, SL=0 |
+
+**审计结论**：10/10 个策略均已实现并完成 canonical full，7/10 的总收益超过 HS300，满足本轮“5 个胜出或 10 个完整回测”的停止条件。由于修正后的 train/test 尚未重跑，本表不等同于样本外保留集；若要正式宣称样本外通过，必须按 §0.6.6 重新跑两段子样本。10 个结果均显式 `max_gross=1.0`、`max_w=0.20`、`portfolio_brake=0`；特殊风险仅为 Graham 硬止盈、Donchian 18%+ATR 止盈、TS momentum 15% 波动率目标。
 
 ### 0.7 旧方案降级声明
 
