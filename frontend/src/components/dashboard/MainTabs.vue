@@ -5,28 +5,32 @@ import HoldingsTable from './HoldingsTable.vue'
 import WatchlistTable from './WatchlistTable.vue'
 import FundFlow from './FundFlow.vue'
 import TradePanel from './TradePanel.vue'
+import SignalsTable from './SignalsTable.vue'
 
-type Tab = 'holdings' | 'watchlist' | 'sentiment'
+type Tab = 'holdings' | 'watchlist' | 'sentiment' | 'signals'
 
 const tabs: { key: Tab; label: string }[] = [
   { key: 'holdings', label: '持仓' },
   { key: 'watchlist', label: '自选' },
   { key: 'sentiment', label: '资金流向' },
+  { key: 'signals', label: '策略评分' },
 ]
 
 const store = usePortfolioStore()
 const curTab = ref<Tab>('holdings')
 const refreshing = ref(false)
 // holdings 由 App.vue 初始 fetch，标 true 避免切回重复；watchlist/sentiment 懒加载。
-const loaded = ref<Record<Tab, boolean>>({ holdings: true, watchlist: false, sentiment: false })
+const loaded = ref<Record<Tab, boolean>>({ holdings: true, watchlist: false, sentiment: false, signals: false })
 
 const watchlistRef = ref<{ refresh: () => Promise<void> }>()
 const fundflowRef = ref<{ refresh: () => Promise<void> }>()
+const signalsRef = ref<{ refresh: () => Promise<void> }>()
 
 async function loadTab(t: Tab) {
   if (t === 'holdings') await store.fetch()
   else if (t === 'watchlist') await watchlistRef.value?.refresh()
   else if (t === 'sentiment') await fundflowRef.value?.refresh()
+  else if (t === 'signals') await signalsRef.value?.refresh()
   loaded.value[t] = true
 }
 
@@ -66,6 +70,7 @@ async function onRefresh() {
       <div v-show="curTab === 'holdings'"><HoldingsTable /></div>
       <div v-show="curTab === 'watchlist'"><WatchlistTable ref="watchlistRef" /></div>
       <div v-show="curTab === 'sentiment'"><FundFlow ref="fundflowRef" /></div>
+      <div v-show="curTab === 'signals'"><SignalsTable ref="signalsRef" /></div>
     </div>
     <div class="main-right">
       <TradePanel @switch-tab="switchTab" />

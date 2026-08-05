@@ -21,6 +21,8 @@
         # 全周期重跑更新到最新(固化验收口径;不选策略=目录全部)
     python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md）
     python main.py --recommend --strategies a,b [--as-of] [--cash]  # 空仓重建荐股(次日开盘执行参考)
+    python main.py --scan-signals --date YYYY-MM-DD [--strategies a,b]  # 800只成分每日0–100评分
+    python main.py --test-signal-mail  # 发送最近一次策略评分推荐邮件
     python main.py --backfill-universe  # 回补 security_master(list_date/board, baostock)
     python main.py --audit-corporate-actions  # 只读审计公司行为覆盖/重复/异常（正式回测前置）
     python main.py --backfill-quote-status  # 补历史状态 + 最新交易日全量(baostock)
@@ -242,6 +244,34 @@ def run_test_mail() -> None:
     start_embedded_server()          # 内嵌 web：--test-mail 自包含，无需另开 --serve
     time.sleep(2.5)                  # 等 serve 就绪再渲染
     print(f"✓ 邮件任务结果: {run_mail_job()}")
+
+
+def run_signal_scan_cli(date_str: str | None, strategies: str | None) -> None:
+    import sys
+
+    if not date_str:
+        print("✗ --scan-signals 必须带 --date YYYY-MM-DD", file=sys.stderr)
+        raise SystemExit(2)
+    from stockfu.services.quote_writer import validate_ingest_date
+    try:
+        signal_date = validate_ingest_date(date_str)
+    except ValueError as exc:
+        print(f"✗ 拒绝扫描：{exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    strategy_ids = [value.strip() for value in (strategies or "").split(",") if value.strip()] or None
+    from stockfu.scheduler.jobs import run_signal_pipeline
+    print(f"✓ 策略评分完成: {run_signal_pipeline(signal_date, strategy_ids=strategy_ids)}")
+
+
+def run_test_signal_mail() -> None:
+    import time
+
+    from stockfu.scheduler.jobs import start_embedded_server
+    from stockfu.services.signal_mail import run_signal_mail_job
+
+    start_embedded_server()
+    time.sleep(2.5)
+    print(f"✓ 推荐邮件任务结果: {run_signal_mail_job(force=True)}")
 
 
 def run_config() -> None:
@@ -898,6 +928,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--vacuum", action="store_true",
                    help="VACUUM INTO 原子重建主库(先备份 .bak.G09);停 daemon/回测时跑,回收空闲页")
     p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件")
+    p.add_argument("--scan-signals", action="store_true",
+                   help="刷新并扫描信号日沪深300+中证500（必带 --date；策略默认读页面配置）")
+    p.add_argument("--test-signal-mail", action="store_true",
+                   help="立即把最近一次扫描生成推荐卡片并发送测试邮件")
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
     p.add_argument("--backtest", metavar="STRATEGY", default=None,
                    help="回测策略ID（如 macd_cross / bollinger_reversion）；详见 docs/BACKTEST.md")
@@ -1048,6 +1082,10 @@ def main() -> None:
         run_vacuum()
     elif args.test_mail:
         run_test_mail()
+    elif args.scan_signals:
+        run_signal_scan_cli(args.date, args.strategies)
+    elif args.test_signal_mail:
+        run_test_signal_mail()
     elif args.config:
         run_config()
     elif args.list_strategies:
