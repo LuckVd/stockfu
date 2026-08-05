@@ -1,64 +1,66 @@
-# stockfu AI skill 体系
+# StockFu AI skill 体系
 
-主线架构:**4 个风格正交的常驻顾问 + 多个技术分析工具**,不抄 TradingAgents 的辩论框架,也不抄 daily 的 15 策略路由。
+StockFu 的 AI 链路由 4 个风格正交的常驻顾问、7 个本地技术分析工具和一个确定性汇总器组成。顾问只使用 StockFu 已有的数据与工具；LLM 负责解释，规则负责打分和最终信号。
+
+## 链路
 
 ```
-[取数层] compute_stock/market/sector → AdvisorContext(纯数据包)
+build_context(code)
     ↓
-[顾问层] 趋势 / 逆向 / 风险 / 估值  ── 各出一份 Opinion(常驻,每次都跑)
+run_with_tools() → 趋势 / 逆向 / 风险 / 估值顾问
     ↓
-[综合层] synthesis 把 4 份 Opinion 合成最终建议(TODO)
+aggregate() → 总分 + 风险一票否决 + final_signal
     ↓
-[记忆层] reflection 落库 + 下次注入(TODO)
+narrate() → 可选的 LLM 中文润色
 ```
+
+实盘入口是 `stockfu.ai.analyze.analyze`。回测不调用这条 LLM 链路，回测规则统一见 `docs/BACKTEST.md`。
 
 ## 4 个顾问
 
-| 顾问 | 立场 | 主用数据 | 参考 |
-|---|---|---|---|
-| 趋势 `trend.py` | 顺势,能不能跟 | ma_alignment/heat/today_chg | TradingAgents technical_analyst + daily 趋势理念 |
-| 逆向 `contrarian.py` ⭐ | 情绪极端唱反调 | 三层 fear/greed | TradingAgents bear_researcher(只借"强制找反面"技巧) |
-| 风险 `risk.py` | 永远挑刺,一票否决 | volatility/估值过热/三层过热 | TradingAgents risk_mgmt + daily 风险排查 |
-| 估值 `valuation.py` | 贵不贵 | PE/PB 分位/股息率 | TradingAgents fundamentals_analyst + daily 估值 |
+| 顾问 | 立场 | 主用数据 |
+|---|---|---|
+| 趋势 `trend.py` | 顺势，判断能否跟随 | 均线排列、热度、涨跌、量价 |
+| 逆向 `contrarian.py` | 情绪极端时寻找反向证据 | 个股/市场/板块恐贪分位、MACD、RSI |
+| 风险 `risk.py` | 主动挑出硬风险 | 波动率、布林带、估值过热、三层热度 |
+| 估值 `valuation.py` | 判断价格是否昂贵 | PE/PB 分位、股息率 |
 
-逆向顾问是 stockfu 的差异化点 —— TradingAgents 的 bear 靠新闻/Reddit 找利空,我们的 bear 靠**自己的情绪分位**(greed≥75=过热该跌),数字更硬。
+4 位顾问等权输出 `Opinion`，每位可以调整 -20 到 +20 分。汇总阈值为：`strong_buy >= 15`、`buy >= 5`、`hold >= -5`、`sell >= -15`，其余为 `strong_sell`。风险顾问给出 `sell` 或 `strong_sell` 时，一票否决总分信号。
 
-## daily 15 策略的归属(详见对话结论)
+## 7 个本地工具
 
-15 个策略**不作为独立 skill**,而是:有用的"判断条件"融化进顾问,需要 stockfu 没有的数据(筹码/缠论/题材/新闻)的直接弃用。
+| 工具 | 作用 | 可见顾问 |
+|---|---|---|
+| `ma_alignment` | 判断短中长均线多空排列 | 趋势、风险 |
+| `macd` | 判断金叉/死叉、零轴与柱线 | 趋势、逆向、风险 |
+| `rsi` | 判断超买、超卖或中性 | 逆向、风险 |
+| `bollinger` | 判断轨道位置与带宽 | 趋势、逆向、风险 |
+| `volume_price` | 判断量价配合、背离与异常放量 | 趋势 |
+| `support_resistance` | 计算支撑/阻力价位与触碰次数 | 趋势、逆向 |
+| `volatility` | 计算 ATR 与历史波动率分位 | 风险 |
 
-| daily 策略 | 去向 |
-|---|---|
-| bull_trend / ma_golden_cross / volume_breakout | → 趋势顾问 checklist |
-| shrink_pullback(缩量回踩买点) | → 趋势顾问买点判断 |
-| bottom_volume(地量见底) | → 逆向顾问佐证 |
-| growth_quality | → 估值顾问 |
-| chan_theory / wave_theory / dragon_head / hot_theme / emotion_cycle / event_driven / expectation_repricing / one_yang_three_yin | ❌ 弃用(数据不支持) |
+工具是纯本地分析函数，不直接接收股票代码；框架注入上下文并按 `USED_BY` 控制可见范围。完整调用记录保存在 `Opinion.tools_used`。
 
-## 数据接口(真实,对应 services)
+## 目录
 
-`AdvisorContext` 字段全部来自 `composite.compute_stock()` 返回 + 其 `components`:
+```
+stockfu/ai/
+├── client.py                 # OpenAI 兼容调用、重试与 function calling
+├── context.py                # 从本地快照构建 AdvisorContext
+├── analyze.py                # 取数、顾问工具循环、汇总、润色
+├── synthesis.py              # 确定性汇总与 LLM 叙述
+└── skills/
+    ├── constitution.py       # 统一字段与分档口径
+    ├── advisors/             # 4 个顾问及 Opinion 解析
+    └── tools/                # 工具注册表与 7 个分析工具
+```
 
-| 顾问字段 | 来源 |
-|---|---|
-| fear/greed/heat | `compute_stock(code)["fear"/"greed"/"heat"]` |
-| market_fear/greed | `compute_market()["fear"/"greed"]` |
-| sector_fear/greed | `compute_sector(etf, name)["fear"/"greed"]` |
-| pe_pct/pb_pct | `compute_stock(code)["components"]["pe_pct"/"pb_pct"]` |
-| volatility_pct | `components["volatility_pct"]` |
-| today_chg | `compute_stock(code)["today_chg"]` |
-| 分位计算 | `services.factors.percentile(series, value)`(样本<10 返回 None) |
+配置通过 `.env` 提供 `LLM_BASE_URL`、`LLM_API_KEY` 和 `LLM_MODEL`。缺失数据必须输出“无信号”，不能由前端或 LLM 臆造。
 
-## 还没做(TODO)
+## daily 15 策略的取舍
 
-- [ ] `stockfu/ai/client.py` —— OpenAI 兼容调用 + json_repair 容错 + 超时重试
-- [ ] `stockfu/ai/skills/tools/` —— 技术分析工具(均线排列算 `ma_alignment`、MACD/RSI),供顾问调用
-- [ ] `stockfu/ai/synthesis.py` —— 综合 4 顾问 Opinion 出最终建议(参考 TradingAgents research_manager 的合成思想,但不抄辩论)
-- [ ] `stockfu/ai/reflection.py` —— 决策反思落库 + 下次注入(借 TradingAgents "2-4 句精简"哲学)
-- [ ] 取数适配器 —— 把 `compute_stock` 等结果填进 `AdvisorContext` 的函数
+可由现有数据表达的条件融入顾问：趋势、均线金叉、量价突破、缩量回踩进入趋势顾问；地量见底进入逆向顾问；成长质量进入估值顾问。缠论、波浪、龙头、题材、事件驱动等需要 StockFu 当前没有的数据，因此不作为独立 skill。
 
-## 参考与合规
+## 尚未实现
 
-- 参考资料(只读不抄)在仓库根 `references/`:TradingAgents / PRISM-INSIGHT / FinRobot
-- `references/` 建议加入 `.gitignore`(外部代码拷贝不进自己 git 历史)
-- 顾问 prompt 全部用 stockfu 口径中文重写,**不是**任何参考项目的英文原文
+`reflection`（决策反思落库并注入下一次分析）仍是后续能力；它不影响当前 4 顾问、工具、规则汇总和 API/前端报告链路。
