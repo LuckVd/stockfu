@@ -1,0 +1,32 @@
+version: 1
+name: 格雷厄姆防御价值横截面(PE+PB+股息复合)
+# 格雷厄姆《聪明的投资者》防御型投资者选股:低 PE、低 PB、PE×PB<22.5、有正分红。
+# graham_value 算子已复合 PE/PB 分位 + TTM 股息 → ±20;再叠加 dividend_yield(收入确认)
+# 与 low_volatility(防御)做横截面。三因子:graham_value(主)+ dividend_yield + low_volatility。
+# 数据依赖:PE/PB(baostock 全市场)+ 股息 + close。深低估且派息的稳健票优先。
+operators:
+  - {id: graham_value,    type: math, weight: 1.0, params: {years: 5}}
+  - {id: dividend_yield,  type: math, weight: 0.6, params: {high_yield: 5.0, price_basis: raw, yield_cap: 20.0}}
+  - {id: low_volatility,  type: math, weight: 0.5, params: {window: 20, hist_years: 3}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.20
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  # 格雷厄姆原文:无止损,离场规则=「涨 50% 或持满 2-3 年未涨 50% 走」。hard_profit 0.50 实现之;等权满仓。
+  stop_loss: 0
+  portfolio_brake: 0
+  max_gross: 1.0
+  take_profit:
+    hard_profit: 0.50

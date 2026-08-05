@@ -43,22 +43,24 @@ class TestSectorPulse(TestCase):
         self.assertEqual(result["rows"][0]["name"], "完整行业")
         self.assertEqual(result["rows"][0]["state"], "连续流入")
 
-    def test_same_day_flow_uses_cross_section_rank_from_first_day(self):
+    def test_flow_cross_section_enters_heat_not_fear_or_greed(self):
         for i in range(10):
             name = f"行业{i}"
             self._seed(name)
             row = self.session.exec(select(SectorFlowSnapshot).where(
                 SectorFlowSnapshot.sector_name == name,
                 SectorFlowSnapshot.snap_date == self.day)).one()
-            row.net_inflow = float(i - 5)
+            row.net_inflow = float(i * 10 if i else 0.1)
         self.session.commit()
         with mock.patch("stockfu.services.sector_pulse.session_scope", self._scope):
             from stockfu.services.sector_pulse import build
             result = build(self.day)
         rows = {r["name"]: r for r in result["rows"]}
         self.assertEqual(result["count"], 10)
-        self.assertGreater(rows["行业9"]["fund_rank"], rows["行业0"]["fund_rank"])
-        self.assertIsNotNone(rows["行业9"]["greed"])
+        self.assertGreater(rows["行业9"]["flow_heat"], rows["行业0"]["flow_heat"])
+        self.assertGreater(rows["行业9"]["heat"], rows["行业0"]["heat"])
+        self.assertEqual(rows["行业9"]["fear"], rows["行业0"]["fear"])
+        self.assertEqual(rows["行业9"]["greed"], rows["行业0"]["greed"])
 
     def test_single_flow_day_is_not_labeled_continuous(self):
         from stockfu.services.sector_pulse import _state
@@ -115,3 +117,21 @@ class TestSectorKlineRetry(TestCase):
         self.assertEqual(len(bars), 2)
         self.assertEqual([b.date for b in bars], [date(2026, 1, 5), date(2026, 1, 6)])
         self.assertEqual(rg.call_count, 1)          # 成功不重试
+
+    def test_merges_today_js_when_yearly_archive_is_t_plus_one(self):
+        day = date.today()
+        archive = 'cb({"data":"%s,10,11,9,10.5,1000,10000"})' % (
+            (day - timedelta(days=1)).strftime("%Y%m%d"))
+        today = ('cb({"bk_881155":{"1":"%s","7":"11","8":"12",'
+                 '"9":"10","11":"11.5","13":2000,"19":"30000"}})' %
+                 day.strftime("%Y%m%d"))
+        src, cat_patch = self._src_with_catalog()
+        with cat_patch, \
+             mock.patch("stockfu.data.akshare_source.direct_connection", self._noop_cm), \
+             mock.patch("requests.get", side_effect=[_FakeResp(archive), _FakeResp(today)]) as rg:
+            bars = src.get_sector_kline_period("银行", (day - timedelta(days=1)).strftime("%Y%m%d"),
+                                               day.strftime("%Y%m%d"))
+        self.assertEqual([b.date for b in bars], [day - timedelta(days=1), day])
+        self.assertEqual(bars[-1].close, 11.5)
+        self.assertEqual(bars[-1].amount, 30000.0)
+        self.assertEqual(rg.call_count, 2)

@@ -765,7 +765,7 @@ def run_scheduled_fetch(target_date) -> dict:
     print("=== [fetch] 3/6 sector pulse ===", flush=True)
     from stockfu.services import backfill as bf
     sector_pulse = _call_timeout(
-        lambda: bf.refresh_sector_pulse_today(td), 45, "sector_pulse", default={},
+        lambda: bf.refresh_sector_pulse_today(td), 300, "sector_pulse", default={},
     ) or {}
 
     # 后半段：分红 / ETF 份额 / 三层指数
@@ -863,6 +863,60 @@ def run_scheduled_fetch(target_date) -> dict:
     return summary
 
 
+def run_mail_fetch(target_date) -> dict:
+    """刷新邮件分享卡片实际依赖的市场、行业数据，不触及个股。
+
+    手工 ``--fetch`` 仍走 ``run_scheduled_fetch``，用于更新组合、分红和个股情绪。
+    定时邮件则只需要三大指数、行业当日行情/资金流及市场/板块情绪；绝不能因为
+    自选股的 baostock 抓取或分红补数失败而拖慢、阻断日报。
+    """
+    import time as _t
+
+    from stockfu.services.quote_writer import validate_ingest_date
+
+    init_db()
+    td = validate_ingest_date(target_date)
+    started = _t.time()
+
+    print(f"=== [mail-fetch] 1/3 indices as_of={td} ===", flush=True)
+    index_updates: dict[str, int] = {}
+    for code in ("sh000001", "sz399006", "sh000688"):
+        try:
+            index_updates[code] = update_index_benchmark(code, td)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [err] index:{code}: {type(exc).__name__}: {exc}", flush=True)
+            index_updates[code] = -1
+
+    print("=== [mail-fetch] 2/3 sector pulse ===", flush=True)
+    from stockfu.services import backfill as bf
+    sector_pulse = _call_timeout(
+        lambda: bf.refresh_sector_pulse_today(td), 300, "sector_pulse", default={},
+    ) or {}
+
+    print("=== [mail-fetch] 3/3 market + sector composite ===", flush=True)
+    from stockfu.services import composite
+    # 空列表刻意禁止 compute_all 进入 compute_stock；仍保留市场和板块情绪。
+    comp = _call_timeout(
+        lambda: composite.compute_all([], td), 90, "compute_mail_composite", default=None,
+    )
+
+    from stockfu.services.share import export_readiness
+    export_data = export_readiness(td, include_watch=False)
+    if not export_data["ok"]:
+        print(f"  [export blocked] stale={export_data['stale'][:8]}", flush=True)
+
+    summary = {
+        "index_updates": index_updates,
+        "sector_pulse": sector_pulse,
+        "composite_levels": len(comp) if isinstance(comp, dict) else 0,
+        "export_ready": export_data["ok"],
+        "export_stale": export_data["stale"],
+        "elapsed_sec": round(_t.time() - started, 1),
+    }
+    print(f"=== [mail-fetch] done {summary} ===", flush=True)
+    return summary
+
+
 def start_embedded_server() -> str:
     """后台线程起 uvicorn（daemon，随主进程退出），供 playwright 渲染本进程页面 →
     单进程即可出图发信，无需另开 --serve。--schedule / --test-mail 复用。返回 base_url。"""
@@ -906,11 +960,10 @@ def run_schedule() -> None:
     from stockfu.services.mail import run_mail_job
 
     def _fetch_then_mail() -> dict:
-        """抓取 + 分红/ETF/三层指数 → 全部完后自动发邮件（不等定时）。
+        """刷新邮件需要的市场/行业数据后自动发邮件（不等定时）。
 
-        守护进程无人传参：取「已收盘的最近交易日」(过收盘分界才有今天，否则前一交易日)
-        并过 validate_ingest_date；非法(如 daily_fetch_time 设在盘前)→ 跳过本次并告警，
-        绝不用裸 date.today() 当入库日。
+        不调用全量个股抓取、分红或个股情绪；这些保留给手工 ``--fetch``。守护进程
+        取已收盘的最近交易日并过 validate_ingest_date，避免裸 date.today() 错标入库。
         """
         from stockfu.services.quote_writer import (
             latest_closed_trade_day, validate_ingest_date,
@@ -920,7 +973,7 @@ def run_schedule() -> None:
         except ValueError as _e:
             print(f"  [skip fetch] 目标日非法，跳过本次调度: {_e}", flush=True)
             return {"skipped": str(_e)}
-        result = run_scheduled_fetch(td)
+        result = run_mail_fetch(td)
         # 分享数据不是同一交易日则不发，避免把混合日期卡片当作当日日报。
         if get_mail_enabled() and is_mail_ready() and result.get("export_ready"):
             try:

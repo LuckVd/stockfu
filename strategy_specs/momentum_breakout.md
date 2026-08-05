@@ -9,7 +9,7 @@
 |---|---|
 | strategy_id | momentum_breakout |
 | rebalancer | top_n_picker |
-| universe | universe_788(固定 788 只列表) |
+| universe | 全周期目录默认 `historical_indices`；`universe_788` 仅为兼容入口 |
 | 估值/成交价格口径 | 前复权 `*_qfq` |
 | 基准 | sh000001 |
 | 初始资金 | 1,000,000 |
@@ -85,17 +85,20 @@
 
 ### 2.8 宇宙规则
 
-universe_rules = None(strict=False)。
+全周期更新由目录注入 `historical_indices` 宇宙；独立调用未传入宇宙规则时，才使用默认的无额外过滤路径。
 
 ## 3. 选股宇宙
 
-基础池 = `data/backtest/universe-788.txt`(固定 788 只)。每个交易日 T:
+canonical 全周期基础池 = 沪深300 + 中证500 的历史时点成分并集。旧的
+`universe_788` 入口仍可显式使用 `data/backtest/universe-788.txt`；仓库未提供该可选文件时，
+实现会回退到大盘池，不应把它写成固定 788 只的当前口径。每个交易日 T:
 
 ```
 U(T) = { code | code ∈ 池 且 当日有 close }
 ```
 
-(strict=False:engine 用 `set(close_prices.keys())`,无 ST/停牌/上市天数/成交额过滤。)板块判定:`688`→star;`300`/`301`→chinext;`8`/`4`(长度 6)→bse;其余→main。
+历史成分宇宙按 `UniverseRules` 执行；兼容的无规则路径用
+`set(close_prices.keys())`，无 ST/停牌/上市天数/成交额过滤。板块判定:`688`→star;`300`/`301`→chinext;`8`/`4`(长度 6)→bse;其余→main。
 
 ## 4. 因子算子
 

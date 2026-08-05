@@ -42,6 +42,21 @@
 | reversal_cross_section | 反转横截面 | reversal + mean_reversion + value | — |
 | bollinger_reversion_cross_section | 布林回归横截面 | daily_bollinger + weekly_bollinger + mean_reversion + trend_strength | — |
 
+#### 2026-08 网络调研新增族(10 个,规格见 [`NEW_STRATEGIES_2026.md`](NEW_STRATEGIES_2026.md))
+
+| strategy_id | 名称 | 主因子 |
+|---|---|---|
+| fifty_two_week_high_cross_section | 52周新高横截面 | fifty_two_week_high + momentum + trend_strength |
+| small_cap_low_turnover | 小盘低换手 | size + low_turnover + reversal |
+| low_turnover_reversal | 低换手反转 | low_turnover + reversal + value |
+| illiquidity_value | Amihud流动性价值 | illiquidity + value + reversal |
+| anti_lottery_defensive | 反彩票防御 | lottery_max + low_volatility + value |
+| low_beta_dividend | 低贝塔红利 | low_beta + dividend_yield + value |
+| ts_momentum_trend | 时序动量趋势 | ts_momentum + momentum_acceleration + trend_strength |
+| graham_defensive_value | 格雷厄姆防御价值 | graham_value + dividend_yield + low_volatility |
+| donchian_breakout_cross_section | 唐奇安突破横截面 | donchian_breakout + ts_momentum + trend_strength |
+| smart_beta_multi_factor | 智能贝塔多因子 | 52w_high + low_vol + value + low_turnover + graham_value |
+
 ### 轮动 / 锁仓(top_n_picker rebalancer)
 
 | strategy_id | 名称 | 因子 | spec |
@@ -60,3 +75,6 @@
 
 - ✅ 已完成规格文档
 - — 待补
+
+未列入本索引的 YAML 可能是研究模板或历史兼容策略；它们不代表当前 canonical 产品策略，
+也不应在没有回测门禁的情况下引用绩效结论。

@@ -17,10 +17,11 @@ analyze_fn 由调用方注入(scheduler: temp=0 + prefetch 批量缓存 + 算子
 """
 from __future__ import annotations
 
+import logging
 import math
 from array import array
 from bisect import bisect_left, bisect_right
-from collections import namedtuple
+from collections import deque, namedtuple
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -29,6 +30,8 @@ from sqlmodel import select, and_
 
 from stockfu.db import session_scope
 from stockfu.backtest.cash_scaler import scale_buys_to_cash
+
+logger = logging.getLogger(__name__)
 
 INITIAL_CASH = 1_000_000.0
 COMMISSION_RATE = 0.0003      # 券商佣金 万3(双边)
@@ -56,6 +59,7 @@ def stamp_duty_rate(as_of: date | None) -> float:
 DEFAULT_MAX_GROSS = 0.90      # Σ目标权重上限(留 10% 现金;对所有 rebalancer 生效)
 DEFAULT_STOP_LOSS = 0.08      # 个股成本止损:浮亏达此比例 → 强制清仓
 DEFAULT_PORTFOLIO_BRAKE = 0.10  # 组合回撤刹车:equity 较峰值回撤达此值 → 全局临时降仓一半
+DEFAULT_PORTFOLIO_BRAKE_SCALE = 0.50  # 组合回撤刹车触发后保留的目标仓位比例
 HFQ_COVERAGE_MIN = 0.995      # hfq 口径门禁:回测窗口内有 hfq 数据的股票,close_hfq 非空率下限
 
 
@@ -66,6 +70,12 @@ class Position:
     lots: list[tuple[int, date]] = field(default_factory=list)  # (shares, buy_date), FIFO for dividend tax
     # 已除权但尚未上市的送转股。它们计入经济权益，但在上市日前不得卖出。
     receivable_shares: int = 0
+    # 持仓期间最高收盘价，供分级追踪止盈。清仓后下次买入会重置。
+    peak_close: float = 0.0
+    # 分段止盈锚点与已触发阶段。分段减仓后限制目标仓位，避免次日被选股逻辑买回。
+    take_profit_anchor_shares: int = 0
+    take_profit_fired: set[str] = field(default_factory=set)
+    take_profit_cap_shares: int | None = None
 
 
 class VirtualAccount:
@@ -135,6 +145,12 @@ class VirtualAccount:
             new_total = pos.shares + shares
             pos.avg_cost = (pos.avg_cost * pos.shares + cost) / new_total  # 移动加权平均
             pos.shares = new_total
+            # 新开仓从成交价重新计峰；加仓保留已有峰值，避免“回撤”被人为抹平。
+            if pos.shares == shares:
+                pos.peak_close = price
+            if not pos.take_profit_fired:
+                pos.take_profit_anchor_shares = new_total
+                pos.take_profit_cap_shares = None
             pos.lots.append((shares, as_of or date.today()))
             self.cash -= (cost + fee)
             self.fee_paid += fee
@@ -166,6 +182,13 @@ class VirtualAccount:
             self.fee_paid += fee
             if pos.shares == 0:
                 pos.avg_cost = 0.0
+                pos.peak_close = 0.0
+                pos.take_profit_anchor_shares = 0
+                pos.take_profit_fired.clear()
+                pos.take_profit_cap_shares = None
+            elif not pos.take_profit_fired:
+                pos.take_profit_anchor_shares = pos.shares
+                pos.take_profit_cap_shares = None
             return {"kind": action, "code": code, "shares": -shares, "price": price,
                     "fee": round(fee, 2), "pnl": round(realized, 2)}
 
@@ -290,13 +313,19 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
 _QS_FIELD_KEY = {
     "open": "o", "high": "h", "low": "l", "close": "c", "close_raw": "c_raw",
     "close_hfq": "c_hfq", "open_hfq": "o_hfq",
+    # 非价格字段(amount/market_cap/turnover)也走列式预载 → size/low_turnover/
+    # illiquidity 等基本面点因子回测零 DB(quote_series 用同名 key 命中供给器)。
+    "amount": "amt", "market_cap": "mcap", "turnover": "turn",
 }
 
-# 列式 array 的 16 字段 key(顺序对应 _BI_* 下标);预载时按此填充 array('d')。
+# 列式 array 的字段 key;预载时按此填充 array('d')。前 16 个对应 _BI_* 下标
+# (旧 tuple 路径用);末尾 mcap/turn 为后加,仅供 size/low_turnover 等点因子读,
+# 不进 _bar_from_cols 当日 bar(按名访问,顺序无关)。
 _COL_KEYS = (
     "o", "h", "l", "c", "pct", "st", "ts", "amt",
     "o_raw", "h_raw", "l_raw", "c_raw", "pe", "pb",
     "c_hfq", "o_hfq",
+    "mcap", "turn",
 )
 
 # 列式预载结构:series={code: {col_key: array('d', len(dates))}}(缺失=nan),
@@ -620,6 +649,36 @@ def _bar_from_cols(cols: dict, di: int) -> dict:
     }
 
 
+def _update_atr_percent(
+    bar: dict,
+    previous_close: float | None,
+    tr_history: deque[float],
+    period: int,
+) -> tuple[float | None, float | None]:
+    """用复权 OHLC 更新 ATR 百分比状态,返回(本日收盘, ATR/收盘)。
+
+    真实波幅采用复权 high/low/close,因此 raw 估值回测也不会把现金分红除息
+    造成的价格跳变放大成波动。当前 bar 只使用截至 as_of 的数据,可直接用于
+    T 日收盘止盈判断;period 未满时返回 None,避免用不足样本的 ATR。
+    """
+    close = bar.get("close")
+    high = bar.get("high")
+    low = bar.get("low")
+    if (close is None or close <= 0 or high is None or low is None
+            or high <= 0 or low <= 0 or high < low):
+        return close, None
+    base = previous_close if previous_close and previous_close > 0 else close
+    true_range = max(
+        high - low,
+        abs(high - previous_close) if previous_close and previous_close > 0 else 0.0,
+        abs(low - previous_close) if previous_close and previous_close > 0 else 0.0,
+    )
+    tr_history.append(true_range / base)
+    if len(tr_history) < period:
+        return close, None
+    return close, sum(tr_history) / len(tr_history)
+
+
 def _bar_from_row(r) -> dict:
     """ORM 行情行 → 日 bar dict(字段缺失时用 getattr 默认,兼容 ETF/指数表无 is_st 等列)。"""
     return _bar_from_tuple(_pack_bar_row(r))
@@ -667,17 +726,17 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCt
             "COALESCE(open_qfq, open), COALESCE(high_qfq, high), "
             "COALESCE(low_qfq, low), COALESCE(close_qfq, close), pct_chg, "
             "is_st, trade_status, amount, open_raw, high_raw, low_raw, close_raw, pe, pb, "
-            "close_hfq, open_hfq"
+            "close_hfq, open_hfq, market_cap, turnover"
         ),
         "etf_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
             "NULL as is_st, 1 as trade_status, amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb, "
-            "NULL as close_hfq, NULL as open_hfq"
+            "NULL as close_hfq, NULL as open_hfq, NULL as market_cap, NULL as turnover"
         ),
         "index_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
             "NULL as is_st, 1 as trade_status, NULL as amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb, "
-            "NULL as close_hfq, NULL as open_hfq"
+            "NULL as close_hfq, NULL as open_hfq, NULL as market_cap, NULL as turnover"
         ),
     }
     start_s = start.isoformat()
@@ -743,7 +802,7 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCt
                 for row in batch:
                     (asset_code, qdate, o, h, l, c, pct,
                      is_st, trade_status, amount, o_raw, h_raw, l_raw, close_raw, pe, pb,
-                     close_hfq, open_hfq) = row
+                     close_hfq, open_hfq, market_cap, turnover) = row
                     if isinstance(qdate, str):
                         qdate = date.fromisoformat(qdate[:10])
                     di = g_date_idx[qdate]
@@ -764,6 +823,8 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCt
                     colsd["pb"][di] = float(pb) if pb is not None else NAN
                     colsd["c_hfq"][di] = float(close_hfq) if close_hfq is not None else NAN
                     colsd["o_hfq"][di] = float(open_hfq) if open_hfq is not None else NAN
+                    colsd["mcap"][di] = float(market_cap) if market_cap is not None else NAN
+                    colsd["turn"][di] = float(turnover) if turnover is not None else NAN
                     valid[asset_code][di] = 1
     return _SeriesCtx(series=series, dates=g_dates, date_idx=g_date_idx, valid=valid)
 
@@ -851,6 +912,80 @@ def _get_day_market(codes: list[str], as_of: date,
     return close_prices, open_prices, day_bars
 
 
+def _preload_bench_closes(code: str, start: date, end: date) -> dict:
+    """基准指数(code)在 [start, end] 的 {dates, closes}(升序、一一对应,跳过 None 收盘)。
+
+    供大盘 regime 门禁算 MA / 已实现波动率:一次 SQL,日循环 bisect 取窗,零查库。
+    """
+    from stockfu.models import IndexQuoteDaily
+    with session_scope() as s:
+        rows = s.exec(select(IndexQuoteDaily).where(
+            IndexQuoteDaily.asset_code == code,
+            IndexQuoteDaily.quote_date >= start,
+            IndexQuoteDaily.quote_date <= end,
+        ).order_by(IndexQuoteDaily.quote_date)).all()
+    dates, closes = [], []
+    for r in rows:
+        if r.close is None:
+            continue
+        dates.append(r.quote_date)
+        closes.append(float(r.close))
+    return {"dates": dates, "closes": closes}
+
+
+def _bench_closes_asof(pre: dict, as_of: date, lookback: int = 252) -> list[float]:
+    """as_of 及之前最多 lookback 根基准收盘(含 as_of);无数据 → []。"""
+    dates, closes = pre.get("dates") or [], pre.get("closes") or []
+    if not dates:
+        return []
+    i = bisect_right(dates, as_of) - 1
+    if i < 0:
+        return []
+    lo = max(0, i - lookback + 1)
+    return closes[lo:i + 1]
+
+
+def _market_throttle_step(
+    bench_window: list[float], *, bear_latched: bool,
+    ma_days: int | None, enter_band: float, exit_band: float, bear_gross: float,
+    target_vol: float | None, vol_window: int, vol_floor: float,
+    max_gross: float,
+) -> tuple[float, bool]:
+    """大盘趋势 regime 门禁:算当日敞口 cap + 更新后的 bear_latched。
+
+    - trend(ma_days>0):收盘跌破 N 日均线进 bear(敞口压到 bear_gross),
+      涨破均线×(1+exit_band)解除;不对称带宽防 whipsaw。样本不足 → 不拦。
+    - vol(target_vol>0):近 vol_window 日已实现波动率(年化)缩放,
+      cap = max_gross × min(1, target_vol/realvol),下限 vol_floor。
+    - 两信号都配 → 取更严 min(双门禁)。返回 (cap, new_bear_latched);cap≥max_gross=不限制。
+    """
+    cap = max_gross
+    px = bench_window[-1] if bench_window else 0.0
+    # trend:长均线滞回状态机(仿 portfolio_brake_latched,前瞻性降仓)。
+    if ma_days and ma_days > 0 and len(bench_window) >= max(5, ma_days // 4) and px > 0:
+        w = min(ma_days, len(bench_window))
+        ma = sum(bench_window[-w:]) / w
+        if not bear_latched and px < ma * (1.0 - enter_band):
+            bear_latched = True
+        elif bear_latched and px > ma * (1.0 + exit_band):
+            bear_latched = False
+        if bear_latched:
+            cap = min(cap, bear_gross)
+    # vol targeting:已实现波动率飙升 → 等比缩总敞口(vol cluster 危机防御)。
+    if target_vol and target_vol > 0 and len(bench_window) > vol_window:
+        seg = bench_window[-(vol_window + 1):]
+        rets = [seg[i] / seg[i - 1] - 1.0
+                for i in range(1, len(seg)) if seg[i - 1] > 0]
+        if len(rets) >= max(10, vol_window // 2):
+            mean_r = sum(rets) / len(rets)
+            var = sum((r - mean_r) ** 2 for r in rets) / len(rets)
+            realvol = (var ** 0.5) * (252.0 ** 0.5)
+            if realvol > 0:
+                vscale = max(min(1.0, target_vol / realvol), vol_floor)
+                cap = min(cap, max_gross * vscale)
+    return cap, bear_latched
+
+
 def _apply_gross_cap(final: dict[str, float | None], max_gross: float) -> dict[str, float | None]:
     """总仓位安全阀:若 Σ正值权重 > max_gross,等比缩放所有正值权重到 Σ=max_gross。
 
@@ -863,6 +998,210 @@ def _apply_gross_cap(final: dict[str, float | None], max_gross: float) -> dict[s
         return final
     factor = max_gross / gross
     return {c: (w * factor if w else w) for c, w in final.items()}
+
+
+def _apply_portfolio_brake(
+    final: dict[str, float | None],
+    current: dict[str, float],
+    meta: dict[str, dict],
+    *,
+    scale: float,
+    mode: str,
+    brake_max_gross: float | None,
+    keep_ratio: float | None = None,
+    add_min_score: float | None = None,
+    max_weight: float = 0.15,
+) -> dict[str, float | None]:
+    """组合回撤期目标仓位调节(规则化风控,增强路径)。
+
+    - mode=block_new_buys:保持旧语义(禁新买/加仓,放行减仓与风险退出)。
+    - scale<1(平滑刹车):正目标 ×scale;维持(None)仓显式落为 current(不再 ×scale,
+      避免长刹车期每日等比压缩把组合逐步清光),总敞口由调用方 _apply_gross_cap
+      压到 brake_max_gross —— 组合级敞口真正下降(旧实现只缩正目标、维持仓 +
+      cap_and_rank 每日重新填满,总敞口实际不降)。
+    - scale>1(回撤加仓):只放大未满单股上限的正目标;add_min_score 设置时仅
+      raw 分数≥ 阈值的票放大(质量门控)。
+    - keep_ratio:刹车期只保留 raw 分数最高的 keep_ratio 比例正目标,其余清 0。
+    - 结尾把显式化后的维持仓并入 brake_max_gross 总敞口(未设则交给调用方兜底)。
+    """
+    if mode == "block_new_buys":
+        return _block_portfolio_new_buys(final, current)
+
+    # 质量门控:只保留 raw 分数最高的 keep_ratio 比例正目标,其余清 0。
+    if keep_ratio is not None and 0 < keep_ratio < 1:
+        pos = [(c, w) for c, w in final.items() if w and w > 0]
+        pos.sort(key=lambda x: -float((meta or {}).get(x[0], {}).get("raw") or 0.0))
+        keep_n = max(1, int(len(pos) * keep_ratio))
+        keep = {c for c, _ in pos[:keep_n]}
+        final = {c: (w if c in keep else 0.0) for c, w in final.items()}
+
+    if scale <= 1.0:
+        # 平滑刹车:正目标 ×scale;维持仓显式落为 current(供总敞口 cap 一并压缩)。
+        out: dict[str, float | None] = {}
+        for c, w in final.items():
+            if w is None:
+                out[c] = current.get(c, 0.0)
+            elif w:
+                out[c] = w * scale
+            else:
+                out[c] = w
+        final = out
+    else:
+        # 回撤加仓:只放大未满单股上限的正目标;可选 strong_buy 质量门控。
+        out = {}
+        for c, w in final.items():
+            if not w or w <= 0:
+                out[c] = w
+                continue
+            if add_min_score is not None:
+                raw = (meta or {}).get(c, {}).get("raw") or 0.0
+                if float(raw) < add_min_score:
+                    out[c] = w  # 不放大
+                    continue
+            if max_weight > 0 and w < max_weight:
+                out[c] = min(w * scale, max_weight)
+            else:
+                out[c] = w
+        final = out
+
+    # 组合级总敞口安全阀:刹车期收窄到 brake_max_gross(含被显式化的维持仓)。
+    if brake_max_gross is None:
+        return final
+    return _apply_gross_cap(final, brake_max_gross)
+
+
+def _block_portfolio_new_buys(
+    final: dict[str, float | None], current: dict[str, float],
+) -> dict[str, float | None]:
+    """组合刹车期间禁止新建仓/加仓,但放行正常减仓与风险退出。"""
+    return {
+        c: (current.get(c, 0.0) if w and w > current.get(c, 0.0) else w)
+        for c, w in final.items()
+    }
+
+
+def _take_profit_tier_parts(tier: tuple[float, ...]) -> tuple[float, float, float] | None:
+    """兼容旧的二元 tier，并把卖出比例规范到(0,1]。"""
+    if len(tier) < 2:
+        return None
+    profit = float(tier[0])
+    drawdown = float(tier[1])
+    sell_fraction = float(tier[2]) if len(tier) >= 3 else 1.0
+    if sell_fraction <= 0:
+        return None
+    return profit, drawdown, min(sell_fraction, 1.0)
+
+
+def _take_profit_stage(profit: float, drawdown: float) -> str:
+    return f"take_profit_trailing_{profit:g}_{drawdown:g}"
+
+
+def _take_profit_atr_parts(tier: tuple[float, ...]) -> tuple[float, float, float] | None:
+    """解析 ATR tier=(收益门槛, ATR 倍数, 卖出比例)。"""
+    if len(tier) < 2:
+        return None
+    profit = float(tier[0])
+    multiple = float(tier[1])
+    sell_fraction = float(tier[2]) if len(tier) >= 3 else 1.0
+    if multiple <= 0 or sell_fraction <= 0:
+        return None
+    return profit, multiple, min(sell_fraction, 1.0)
+
+
+def _take_profit_atr_stage(profit: float, multiple: float) -> str:
+    return f"take_profit_atr_{profit:g}_{multiple:g}"
+
+
+def tiered_take_profit_action(
+    avg_cost: float, peak_close: float, close: float,
+    tiers: tuple[tuple[float, ...], ...] = (),
+    hard_profit_pct: float | None = None,
+    fired_tiers: set[str] | frozenset[str] = frozenset(),
+) -> tuple[str, float, str | None] | None:
+    """返回应触发的分级追踪止盈原因，或 None。
+
+    门槛和峰值都以同一持仓周期的收盘价、相对移动平均成本计算：
+    先到达硬止盈收益率即卖；否则取已跨越的最高收益档，并检查当前价相对
+    峰值的回撤。返回(原因, 本次卖出比例, 阶段ID)；卖出比例按首次触发前
+    持仓的比例解释。日频系统无法知道日内先后顺序，故统一在收盘判断、次日
+    开盘尝试执行。
+    """
+    if avg_cost <= 0 or peak_close <= 0 or close <= 0:
+        return None
+    current_profit = close / avg_cost - 1.0
+    if hard_profit_pct is not None and current_profit + 1e-12 >= hard_profit_pct:
+        return f"take_profit_hard_{hard_profit_pct:g}", 1.0, None
+    peak_profit = peak_close / avg_cost - 1.0
+    parsed = [parts for tier in tiers
+              if (parts := _take_profit_tier_parts(tier)) is not None]
+    for profit, drawdown, sell_fraction in sorted(parsed, reverse=True):
+        stage = _take_profit_stage(profit, drawdown)
+        if stage in fired_tiers:
+            continue
+        if (peak_profit + 1e-12 >= profit
+                and close / peak_close - 1.0 <= -drawdown + 1e-12):
+            return stage, sell_fraction, stage
+    return None
+
+
+def atr_take_profit_action(
+    avg_cost: float, peak_close: float, close: float, atr_pct: float | None,
+    tiers: tuple[tuple[float, ...], ...] = (),
+    hard_profit_pct: float | None = None,
+    fired_tiers: set[str] | frozenset[str] = frozenset(),
+) -> tuple[str, float, str | None] | None:
+    """按 ATR 百分比触发分级追踪止盈。
+
+    tier 的第二个字段是 ATR 倍数,实际回撤门槛为 ``atr_pct * multiple``;
+    阶段 ID 只含配置倍数而不含每日 ATR 值,避免波动率变化后重复触发同一档。
+    """
+    if avg_cost <= 0 or peak_close <= 0 or close <= 0:
+        return None
+    current_profit = close / avg_cost - 1.0
+    if hard_profit_pct is not None and current_profit + 1e-12 >= hard_profit_pct:
+        return f"take_profit_hard_{hard_profit_pct:g}", 1.0, None
+    if atr_pct is None or atr_pct <= 0:
+        return None
+    peak_profit = peak_close / avg_cost - 1.0
+    parsed = [parts for tier in tiers
+              if (parts := _take_profit_atr_parts(tier)) is not None]
+    for profit, multiple, sell_fraction in sorted(parsed, reverse=True):
+        stage = _take_profit_atr_stage(profit, multiple)
+        if stage in fired_tiers:
+            continue
+        drawdown = atr_pct * multiple
+        if (peak_profit + 1e-12 >= profit
+                and close / peak_close - 1.0 <= -drawdown + 1e-12):
+            return stage, sell_fraction, stage
+    return None
+
+
+def _take_profit_remaining_fraction(
+    tiers: tuple[tuple[float, ...], ...], fired_tiers: set[str] | frozenset[str],
+    atr: bool = False,
+) -> float:
+    """根据已触发阶段计算原始持仓剩余比例。"""
+    sold = 0.0
+    for tier in tiers:
+        parts = _take_profit_tier_parts(tier)
+        if parts is None:
+            continue
+        profit, drawdown, sell_fraction = parts
+        stage = (_take_profit_atr_stage(profit, drawdown)
+                 if atr else _take_profit_stage(profit, drawdown))
+        if stage in fired_tiers:
+            sold += sell_fraction
+    return max(0.0, 1.0 - min(sold, 1.0))
+
+
+def tiered_take_profit_reason(avg_cost: float, peak_close: float, close: float,
+                              tiers: tuple[tuple[float, ...], ...] = (),
+                              hard_profit_pct: float | None = None) -> str | None:
+    """兼容旧调用方：只返回止盈原因，不暴露分段卖出比例。"""
+    action = tiered_take_profit_action(
+        avg_cost, peak_close, close, tiers, hard_profit_pct,
+    )
+    return action[0] if action else None
 
 
 # =====================================================================
@@ -930,6 +1269,10 @@ def _metrics(equity_curve: list[dict], benchmark: list[dict],
         )
         _n_eq = len(eq) or 1
         out["underwater_basis"] = "initial_principal"
+        out["underwater_days_gt0"] = u0
+        out["underwater_days_ge10"] = u10
+        out["underwater_days_ge20"] = u20
+        out["underwater_days_ge30"] = u30
         out["underwater_pct_gt0"] = round(u0 / _n_eq * 100, 1)
         out["underwater_pct_ge10"] = round(u10 / _n_eq * 100, 1)
         out["underwater_pct_ge20"] = round(u20 / _n_eq * 100, 1)
@@ -1035,6 +1378,31 @@ def run_backtest(codes: list[str], start: date, end: date,
                  max_gross: float = DEFAULT_MAX_GROSS,
                  stop_loss_pct: float = DEFAULT_STOP_LOSS,
                  portfolio_brake_dd: float = DEFAULT_PORTFOLIO_BRAKE,
+                 portfolio_brake_scale: float = DEFAULT_PORTFOLIO_BRAKE_SCALE,
+                 portfolio_brake_mode: str = "scale_all",
+                 portfolio_brake_max_gross: float | None = None,
+                 portfolio_brake_keep_ratio: float | None = None,
+                 portfolio_brake_add_min_score: float | None = None,
+                 portfolio_brake_recover_dd: float | None = None,
+                 portfolio_brake_recover_high_days: int = 0,
+                 portfolio_brake_tiers: tuple[tuple[float, float], ...] = (),
+                 # 大盘趋势 regime 门禁(前瞻性风控,与组合回撤刹车正交 min 叠加):
+                 # trend:基准收盘跌破 N 日均线 → 敞口压到 market_regime_max_gross,
+                 #        涨破均线×(1+exit_band)解除(滞回防 whipsaw);
+                 # vol:近 vol_window 日已实现波动率缩放(target_vol 年化)。任一配即启用。
+                 market_regime_code: str | None = None,
+                 market_regime_ma_days: int | None = None,
+                 market_regime_enter_band: float = 0.0,
+                 market_regime_exit_band: float = 0.03,
+                 market_regime_max_gross: float = 0.50,
+                 market_regime_target_vol: float | None = None,
+                 market_regime_vol_window: int = 63,
+                 market_regime_vol_floor: float = 0.30,
+                 take_profit_tiers: tuple[tuple[float, ...], ...] = (),
+                 take_profit_hard_pct: float | None = None,
+                 take_profit_atr_period: int | None = None,
+                 take_profit_atr_tiers: tuple[tuple[float, ...], ...] = (),
+                 take_profit_atr_lagged: bool = False,
                  universe_rules=None,
                  execution_rules=None,
                  valuation_basis: str = "qfq") -> dict:
@@ -1084,14 +1452,107 @@ def run_backtest(codes: list[str], start: date, end: date,
         if _v is not None: stop_loss_pct = _v
         _v = getattr(debounce, "portfolio_brake_dd", None)
         if _v is not None: portfolio_brake_dd = _v
+        _v = getattr(debounce, "portfolio_brake_scale", None)
+        if _v is not None: portfolio_brake_scale = _v
+        _v = getattr(debounce, "portfolio_brake_mode", None)
+        if _v is not None: portfolio_brake_mode = _v
+        _v = getattr(debounce, "portfolio_brake_max_gross", None)
+        if _v is not None: portfolio_brake_max_gross = _v
+        _v = getattr(debounce, "portfolio_brake_keep_ratio", None)
+        if _v is not None: portfolio_brake_keep_ratio = _v
+        _v = getattr(debounce, "portfolio_brake_add_min_score", None)
+        if _v is not None: portfolio_brake_add_min_score = _v
+        _v = getattr(debounce, "portfolio_brake_recover_dd", None)
+        if _v is not None: portfolio_brake_recover_dd = _v
+        _v = getattr(debounce, "portfolio_brake_recover_high_days", None)
+        if _v is not None: portfolio_brake_recover_high_days = _v
+        _v = getattr(debounce, "portfolio_brake_tiers", None)
+        if _v is not None: portfolio_brake_tiers = _v
+        _v = getattr(debounce, "take_profit_tiers", None)
+        if _v is not None: take_profit_tiers = _v
+        _v = getattr(debounce, "take_profit_hard_pct", None)
+        if _v is not None: take_profit_hard_pct = _v
+        _v = getattr(debounce, "take_profit_atr_period", None)
+        if _v is not None: take_profit_atr_period = _v
+        _v = getattr(debounce, "take_profit_atr_tiers", None)
+        if _v is not None: take_profit_atr_tiers = _v
+        _v = getattr(debounce, "take_profit_atr_lagged", None)
+        if _v is not None: take_profit_atr_lagged = _v
+        _v = getattr(debounce, "market_regime_code", None)
+        if _v is not None: market_regime_code = _v
+        _v = getattr(debounce, "market_regime_ma_days", None)
+        if _v is not None: market_regime_ma_days = _v
+        _v = getattr(debounce, "market_regime_enter_band", None)
+        if _v is not None: market_regime_enter_band = _v
+        _v = getattr(debounce, "market_regime_exit_band", None)
+        if _v is not None: market_regime_exit_band = _v
+        _v = getattr(debounce, "market_regime_max_gross", None)
+        if _v is not None: market_regime_max_gross = _v
+        _v = getattr(debounce, "market_regime_target_vol", None)
+        if _v is not None: market_regime_target_vol = _v
+        _v = getattr(debounce, "market_regime_vol_window", None)
+        if _v is not None: market_regime_vol_window = _v
+        _v = getattr(debounce, "market_regime_vol_floor", None)
+        if _v is not None: market_regime_vol_floor = _v
+    portfolio_brake_scale = min(max(float(portfolio_brake_scale), 0.0), 1.5)
+    if portfolio_brake_max_gross is not None:
+        portfolio_brake_max_gross = min(
+            max(float(portfolio_brake_max_gross), 0.0), 1.0,
+        )
+    if portfolio_brake_keep_ratio is not None:
+        portfolio_brake_keep_ratio = min(
+            max(float(portfolio_brake_keep_ratio), 0.0), 1.0,
+        )
+    if portfolio_brake_recover_dd is not None:
+        portfolio_brake_recover_dd = min(
+            max(float(portfolio_brake_recover_dd), 0.0), 1.0,
+        )
+    portfolio_brake_recover_high_days = max(
+        int(portfolio_brake_recover_high_days or 0), 0,
+    )
+    # 深度分级刹车:((回撤阈值, 该档敞口上限), ...)按回撤深度升序;最深档兜底。
+    if portfolio_brake_tiers:
+        _norm = []
+        for t in portfolio_brake_tiers:
+            dd, cap = (float(t[0]), float(t[1])) if not isinstance(t, dict) else (
+                float(t["drawdown"]), float(t["max_gross"]),
+            )
+            _norm.append((min(max(dd, 0.0), 1.0), min(max(cap, 0.0), 1.0)))
+        portfolio_brake_tiers = tuple(sorted(_norm, key=lambda x: x[0]))
+    if portfolio_brake_mode not in ("scale_all", "block_new_buys"):
+        raise ValueError(
+            "portfolio_brake_mode 必须是 scale_all 或 block_new_buys"
+        )
+    # 大盘趋势 regime 门禁参数规范化(前瞻性风控,与组合回撤刹车正交):
+    # trend(ma_days)/ vol(target_vol)任一配置即启用;code 默认沪深300(回测基准)。
+    if market_regime_ma_days is not None:
+        market_regime_ma_days = max(int(market_regime_ma_days), 0)
+    market_regime_enter_band = max(float(market_regime_enter_band), 0.0)
+    market_regime_exit_band = max(float(market_regime_exit_band), 0.0)
+    market_regime_max_gross = min(max(float(market_regime_max_gross), 0.0), 1.0)
+    if market_regime_target_vol is not None:
+        market_regime_target_vol = max(float(market_regime_target_vol), 0.0)
+    market_regime_vol_window = max(int(market_regime_vol_window), 2)
+    market_regime_vol_floor = min(max(float(market_regime_vol_floor), 0.0), 1.0)
+    _regime_enabled = (
+        (market_regime_ma_days is not None and market_regime_ma_days > 0)
+        or (market_regime_target_vol is not None and market_regime_target_vol > 0)
+    )
+    if _regime_enabled and (market_regime_code is None or not market_regime_code):
+        market_regime_code = BENCHMARK
     # 仓位调整层:独立基础架构,从 app_config 取(解耦于策略)
     from stockfu.ai.rebalancers import get_active_rebalancer, get_rebalancer_params
     rebalancer = get_active_rebalancer()
     rebalancer_params = get_rebalancer_params()
-    # max_gross 优先级:app_config rebalancer_params > yaml debounce > 默认。让 cap_and_rank
-    # 内部竞争额度与 engine 层安全阀用同一值,避免 pass_through/top_n_picker 不限仓导致现金被吃光。
+    # max_gross 优先级:yaml risk 显式配置(debounce.max_gross)> app_config rebalancer_params
+    # > 默认。让 cap_and_rank 内部竞争额度与 engine 层安全阀用同一值,避免 pass_through/
+    # top_n_picker 不限仓导致现金被吃光。YAML 显式配置(如 8 成仓)时优先,否则沿用 app_config。
+    _yaml_max_gross = getattr(debounce, "max_gross", None) if debounce is not None else None
     _mp = rebalancer_params.get("max_gross")
-    if _mp is not None:
+    if _yaml_max_gross is not None:
+        max_gross = float(_yaml_max_gross)
+        rebalancer_params = {**rebalancer_params, "max_gross": max_gross}
+    elif _mp is not None:
         max_gross = float(_mp)
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from stockfu.ai.action import PositionManager, resolve_action, compute_target_weight
@@ -1119,6 +1580,7 @@ def run_backtest(codes: list[str], start: date, end: date,
     limit_reject_sells = 0
     fill_rejects = 0
     deferred_orders = 0
+    analyze_failures = 0   # analyze_fn 抛错被吞的次数(可观测:失败标的不进 results 当日静默 hold)
 
     equity_curve: list[dict] = []
     holdings_curve: list[dict] = []          # 每日逐票持仓快照(完整持仓记录,供直观回看)
@@ -1127,13 +1589,42 @@ def run_backtest(codes: list[str], start: date, end: date,
     pending_signal: dict[str, str | None] = {}  # 同生命周期:挂单的 signal(止损等),穿透到成交单
     last_close: dict[str, float] = {}       # code → 最近有收盘价交易日的价(停牌日估值用)
     peak_equity: float = float(initial_cash)  # 组合回撤刹车:追踪回测内权益峰值
+    brake_latched: bool = False   # 刹车滞回:触发后需满足解除条件(防频繁开关)
+    brake_eq_window: deque[float] = deque(  # 近期权益序列(解除参考 = 滚动 N 日新高)
+        maxlen=max(int(portfolio_brake_recover_high_days), 1) or 1
+    )
     cash_constraint_hits: int = 0             # 当日买单触发现金缩放的天数(可观测,对标 backtrader Margin)
+
+    _atr_period = int(take_profit_atr_period or 0)
+    _atr_enabled = _atr_period > 0 and bool(take_profit_atr_tiers)
+    _atr_ranges: dict[str, deque[float]] = {}
+    _atr_previous_close: dict[str, float] = {}
+
 
     # D: 区间行情列式预载(一次 SQL → _SeriesCtx:全局日历 + per-code array);日循环零扫库。
     # 预载起点提前 _PRELOAD_LOOKBACK_DAYS,覆盖算子最大回看(low_volatility ~1160 历日),
     # 使 _backtest_series_ctx 能从内存零查库喂给 quote_series(与 DB 逐值一致)。
     _pre_start = start - timedelta(days=_PRELOAD_LOOKBACK_DAYS)
     sctx = _preload_market_range(list(codes), _pre_start, end) if days else None
+    # 用 start 之前已预载的行情预热 ATR,避免回测起点恰好落在波动期时产生
+    # 人为的 20 日冷启动差异;只读取 <start 的历史,仍无未来函数。
+    if _atr_enabled and sctx:
+        for code, cols in sctx.series.items():
+            history = deque(maxlen=_atr_period)
+            previous = None
+            valid_code = sctx.valid.get(code)
+            for di, hist_date in enumerate(sctx.dates):
+                if hist_date >= start:
+                    break
+                if valid_code is None or not valid_code[di]:
+                    continue
+                previous, _ = _update_atr_percent(
+                    _bar_from_cols(cols, di), previous, history, _atr_period,
+                )
+            if history:
+                _atr_ranges[code] = history
+            if previous and previous > 0:
+                _atr_previous_close[code] = previous
     # 分红预载:研究模式(non-strict 主线)只读 dividend_event。qfq/hfq 三复权价已含
     # 分红再投+送转(002594 实证:除权日 qfq/hfq 不跌),无需手动入账/调仓,再补=重复计息;
     # 仅 raw 口径(不复权)需把现金分红补进账户、把送转显式调股数。
@@ -1145,6 +1636,13 @@ def run_backtest(codes: list[str], start: date, end: date,
     )
     stock_dividends = (_preload_stock_dividends(list(codes), start, end)
                        if sctx and credit_dividends else {})
+    # 大盘趋势 regime 门禁:预载基准收盘序列(trend 算 MA / vol 算已实现波动率),
+    # 一次 SQL;日循环 bisect 取窗,零查库(_pre_start 已含 1900 历日回看,覆盖 200 日均线)。
+    _regime_bench = (_preload_bench_closes(market_regime_code, _pre_start, end)
+                     if (_regime_enabled and sctx) else {"dates": [], "closes": []})
+    _regime_bear_latched = False
+    _regime_bear_days = 0
+    _regime_throttle_days = 0
     if valuation_basis == "hfq" and sctx:
         cov, hit, tot = _hfq_coverage(sctx, start, end)
         if tot and cov < HFQ_COVERAGE_MIN:
@@ -1157,32 +1655,55 @@ def run_backtest(codes: list[str], start: date, end: date,
     # 整段回测复用一个线程池(旧:每天 with 创建/销毁;冷 miss 并行在 prefetch 内,
     # analyze 热路径有 prefill 时串行,池仅兜底无 prefill 路径)。
     # _backtest_series_ctx 挂内存行情供给器 → 算子 quote_series 零查库(冷启提速核心)。
-    # 1% 粒度进度日志(BACKTEST_PROGRESS=1 启用):每完成 1% 天数打印一行,含本 1% 耗时;flush 实时落日志。
+    # 1% 粒度进度日志:每完成 1% 天数打印一行,含本 1% 耗时 + 当前交易日 as_of;flush 实时落日志。
+    # 默认开启(BACKTEST_PROGRESS=0 可关)。长周期大票池回测耗时数十分钟,日志全程可见才能判断
+    # 是在推进还是卡死——带上 as_of 即使某天算子很慢,下一行的日期推进也能证明活着。
     import os, time
-    _prog_on = bool(os.environ.get("BACKTEST_PROGRESS"))
+    _prog_on = os.environ.get("BACKTEST_PROGRESS", "1") != "0"
     _prog_total = len(days)
     _prog_step = max(1, _prog_total // 100) if _prog_total else 1
     _prog_i = 0
     _prog_last = -1
     _prog_t0 = time.time()
+    _prog_t0_wall = time.time()   # 主循环墙钟起点(含逐日执行;不含预载)
     with _backtest_series_ctx(sctx, dividend_index), ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
       for as_of in days:
         _prog_i += 1
-        if _prog_on and _prog_i % _prog_step == 0:
+        if _prog_on and (_prog_i == 1 or _prog_i % _prog_step == 0):
             _pct = _prog_i * 100 // _prog_total
             if _pct != _prog_last:
                 _now = time.time()
-                print(f"  进度 {_pct}% ({_prog_i}/{_prog_total}) 本1%耗时 {round(_now - _prog_t0, 1)}s", flush=True)
+                print(f"  进度 {_pct}% ({_prog_i}/{_prog_total}) as_of={as_of} 本1%耗时 {round(_now - _prog_t0, 1)}s", flush=True)
                 _prog_t0 = _now
                 _prog_last = _pct
         close_prices, open_prices_day, day_bars = _get_day_market(
             list(codes), as_of, sctx=sctx, valuation_basis=valuation_basis)
         if not close_prices:
             continue
+        atr_pct_by_code: dict[str, float] = {}
+        if _atr_enabled:
+            for code, bar in day_bars.items():
+                history = _atr_ranges.setdefault(code, deque(maxlen=_atr_period))
+                prior_atr_pct = (
+                    sum(history) / len(history)
+                    if len(history) >= _atr_period else None
+                )
+                previous, atr_pct = _update_atr_percent(
+                    bar, _atr_previous_close.get(code), history, _atr_period,
+                )
+                if previous and previous > 0:
+                    _atr_previous_close[code] = previous
+                selected_atr_pct = prior_atr_pct if take_profit_atr_lagged else atr_pct
+                if selected_atr_pct is not None:
+                    atr_pct_by_code[code] = selected_atr_pct
         # 公司行为结算(研究模式 non-strict 主线):仅 raw 口径门控(详见 settle_dividends)。
         trades.extend(settle_dividends(acct, as_of, cash_dividends,
                                        stock_dividends, credit_dividends))
         last_close.update(close_prices)   # 停牌日 close 缺失时,沿用上一交易日价估值(不记 0)
+        # 持仓峰值只在持仓期间更新；新开仓/清仓重置由 VirtualAccount.apply_action 处理。
+        for code, pos in acct.positions.items():
+            if pos.shares > 0 and close_prices.get(code, 0.0) > pos.peak_close:
+                pos.peak_close = close_prices[code]
 
         # ---- Phase 1: 执行前日挂单(T+1 开盘价;停牌/涨跌停顺延或拒绝)----
         # 先卖后买 + 买单等比缩放到可用现金(对标 rqalpha order_target_portfolio_smart):
@@ -1326,16 +1847,18 @@ def run_backtest(codes: list[str], start: date, end: date,
                         results[c] = _analyze(c, as_of, snap[c]["holding"], prefill)
                     else:
                         results[c] = _analyze(c, as_of, snap[c]["holding"])
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("backtest analyze 失败 code=%s as_of=%s: %r", c, as_of, e)
+                    analyze_failures += 1
         else:
             fut = {pool.submit(_analyze, c, as_of, snap[c]["holding"]): c for c in to_run}
             for f in as_completed(fut):
                 c = fut[f]
                 try:
                     results[c] = f.result()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("backtest analyze 失败(线程池) code=%s as_of=%s: %r", c, as_of, e)
+                    analyze_failures += 1
 
         # ---- Phase 3: 仓位层(信号→desired→组合层→目标仓位→边沿触发→冷却) ----
         # 3a. 逐标的算 desired。宇宙外持仓走 exit-only：仍跑卖出/止损/减仓，
@@ -1381,9 +1904,14 @@ def run_backtest(codes: list[str], start: date, end: date,
                 risk_vetoed = _risk_streak[code] >= risk_confirm_days
 
             # 信号→目标仓位(discrete=阶跃查表;continuous=total 连续映射+滞回死区)
+            # 买卖权重不对称(opt-in):runner 已归一化买入分 total_score_norm 与卖出分
+            # total_sell_score(±100 刻度)时用双总分滞回;否则回退原始 total_score(旧路径)。
+            total_score_norm = agg.get("total_score_norm")
+            total_sell_score = agg.get("total_sell_score")
             target_weight = compute_target_weight(
                 risk_vetoed, current_w, ai_target,
-                total_score=total_score,
+                total_score=total_score_norm if total_score_norm is not None else total_score,
+                total_sell_score=total_sell_score,
                 max_w=max_weight, dead=total_dead,
                 score_full=debounce.score_full if debounce else 20.0,
             )
@@ -1405,6 +1933,80 @@ def run_backtest(codes: list[str], start: date, end: date,
                     target_weight = 0.0
                     signal = "stop_loss"
 
+            # 分级追踪止盈是可选风控；二元 tier 仍按旧语义全清，带 sell_fraction 的
+            # tier 则按首次触发前持仓分段减仓，并把剩余仓位设为上限，防止次日买回。
+            _pos = acct.positions.get(code)
+            _px = close_prices.get(code, 0.0)
+            _active_tp_tiers = (
+                take_profit_atr_tiers if _atr_enabled else take_profit_tiers
+            )
+            _has_partial_tp = any(
+                (parts := (_take_profit_atr_parts(tier)
+                           if _atr_enabled else _take_profit_tier_parts(tier))) is not None
+                and parts[2] < 1.0
+                for tier in _active_tp_tiers
+            )
+            if (_pos and current_w > 0
+                    and (target_weight not in (0.0, None)
+                         or (target_weight is None and _has_partial_tp))):
+                if _atr_enabled:
+                    _tp_action = atr_take_profit_action(
+                        _pos.avg_cost, _pos.peak_close, _px,
+                        atr_pct_by_code.get(code), take_profit_atr_tiers,
+                        take_profit_hard_pct, _pos.take_profit_fired,
+                    )
+                else:
+                    _tp_action = tiered_take_profit_action(
+                        _pos.avg_cost, _pos.peak_close, _px,
+                        take_profit_tiers, take_profit_hard_pct,
+                        _pos.take_profit_fired,
+                    )
+                if _tp_action:
+                    _tp_reason, _sell_fraction, _tp_stage = _tp_action
+                    signal = _tp_reason
+                    if _sell_fraction >= 1.0 - 1e-12:
+                        target_weight = 0.0
+                    else:
+                        if _pos.take_profit_anchor_shares <= 0:
+                            _pos.take_profit_anchor_shares = _pos.shares
+                        if _tp_stage:
+                            _pos.take_profit_fired.add(_tp_stage)
+                        _remaining = _take_profit_remaining_fraction(
+                            _active_tp_tiers, _pos.take_profit_fired,
+                            atr=_atr_enabled,
+                        )
+                        _cap_shares = int(
+                            _pos.take_profit_anchor_shares * _remaining / 100
+                        ) * 100
+                        if _remaining > 0 and _cap_shares <= 0:
+                            _cap_shares = min(100, _pos.shares)
+                        if _pos.take_profit_cap_shares is None:
+                            _pos.take_profit_cap_shares = _cap_shares
+                        else:
+                            _pos.take_profit_cap_shares = min(
+                                _pos.take_profit_cap_shares, _cap_shares,
+                            )
+                        _eq = acct.equity(last_close)
+                        _cap_value = (
+                            _pos.take_profit_cap_shares + _pos.receivable_shares
+                        ) * _px
+                        _cap_weight = _cap_value / _eq if _eq > 0 else 0.0
+                        target_weight = (
+                            _cap_weight if target_weight is None
+                            else min(target_weight, _cap_weight)
+                        )
+
+            # 已经分段减仓的持仓保持在该阶段的仓位上限内；正常因子目标可以
+            # 进一步减仓，但不能把已兑现的仓位重新补回去。
+            if (_pos and _pos.take_profit_cap_shares is not None
+                    and target_weight not in (0.0, None) and _px > 0):
+                _eq = acct.equity(last_close)
+                _cap_value = (
+                    _pos.take_profit_cap_shares + _pos.receivable_shares
+                ) * _px
+                _cap_weight = _cap_value / _eq if _eq > 0 else 0.0
+                target_weight = min(target_weight, _cap_weight)
+
             # 调出后的持仓：让策略的正常卖出、止损、减仓生效，但任何正向目标都
             # 不得超过现有仓位。exit_only 也传给 TopN，确保它不占用新选名额、不会
             # 被组合层按排名当作候选股重新加仓。
@@ -1421,29 +2023,143 @@ def run_backtest(codes: list[str], start: date, end: date,
 
         # 3b. 仓位调整层:desired全集 + current全集 → 最终目标仓位(独立基础架构,从 app_config 取)
         current_weights = {c: s["weight"] for c, s in snap.items()}   # 全集(含未覆盖持仓)
-        final = rebalancer.adjust(
-            desired, current_weights, meta,
-            equity=acct.equity(last_close),
-            params=rebalancer_params,
+        # 增强刹车参数是否显式配置(opt-in):配置任一即走组合级敞口刹车新路径;
+        # 全部未配时保持旧语义(仅缩正目标/禁新买,rebalancer 每轮仍填满 max_gross)。
+        _enhanced_brake = (
+            portfolio_brake_max_gross is not None
+            or bool(portfolio_brake_tiers)
+            or portfolio_brake_keep_ratio is not None
+            or portfolio_brake_add_min_score is not None
+            or portfolio_brake_recover_dd is not None
+            or portfolio_brake_recover_high_days > 0
+            or _regime_enabled
         )
+        _cur_eq = acct.equity(last_close)
+        peak_equity = max(peak_equity, _cur_eq)
+        _below_brake = (
+            portfolio_brake_dd > 0
+            and peak_equity > 0
+            and _cur_eq / peak_equity - 1 <= -portfolio_brake_dd
+        )
+        # 滞回解除(仅增强路径,防频繁开关):
+        #   - recover_high_days>0:权益创出滚动 N 日新高即解除(临时熔断,自释放);
+        #   - 否则 recover_dd 设置时需恢复到峰值 -recover_dd 以内;
+        #   - 两者都未配时回到触发线上方即解除(旧语义)。
+        _rolling_high = max(brake_eq_window) if brake_eq_window else 0.0
+        if _below_brake:
+            brake_latched = True
+        elif portfolio_brake_recover_high_days > 0:
+            if brake_latched and _cur_eq >= _rolling_high:
+                brake_latched = False
+        elif portfolio_brake_recover_dd is None:
+            brake_latched = False
+        elif brake_latched and _cur_eq / peak_equity - 1 > -portfolio_brake_recover_dd:
+            brake_latched = False
+        _brake_active = bool(_below_brake or brake_latched)
+        # 记录当日权益进滚动窗口(滚到解除判定之后,避免当日自身成新高)。
+        brake_eq_window.append(_cur_eq)
 
-        # 宇宙外持仓:禁止加仓(target 上限 = current);允许 exit-only 信号减仓/清仓。
-        for code, tw in list(final.items()):
-            if code in u or tw is None:
-                continue
-            cur = current_weights.get(code, 0.0)
-            if tw > cur + 1e-9:
-                final[code] = cur
-
-        # 组合回撤刹车(规则化风控):equity 较回测峰值回撤达阈值 → 全局临时降仓一半(风险优先)。
-        if portfolio_brake_dd > 0:
-            _cur_eq = acct.equity(last_close)
-            peak_equity = max(peak_equity, _cur_eq)
-            if peak_equity > 0 and _cur_eq / peak_equity - 1 <= -portfolio_brake_dd:
-                final = {c: (w * 0.5 if w else w) for c, w in final.items()}
-        # 总仓安全阀:Σ目标权重 ≤ max_gross(留 1-max_gross 现金,对所有 rebalancer 生效)→
-        # 保证执行层买单总额 ≤ 可投资现金,不夹断丢目标。超限等比缩放所有正值权重。
-        final = _apply_gross_cap(final, max_gross)
+        if not _enhanced_brake:
+            # 旧路径(逐字节保持):rebalancer 用原 max_gross;刹车只缩正目标/禁新买。
+            final = rebalancer.adjust(
+                desired, current_weights, meta,
+                equity=acct.equity(last_close),
+                params=rebalancer_params,
+            )
+            # 宇宙外持仓:禁止加仓(target 上限 = current);允许 exit-only 信号减仓/清仓。
+            for code, tw in list(final.items()):
+                if code in u or tw is None:
+                    continue
+                cur = current_weights.get(code, 0.0)
+                if tw > cur + 1e-9:
+                    final[code] = cur
+            if _brake_active:
+                if portfolio_brake_mode == "block_new_buys":
+                    # 选择性刹车:新增仓/已有仓加仓被压回当前仓位;正常减仓、止损、止盈放行。
+                    final = _block_portfolio_new_buys(final, current_weights)
+                else:
+                    final = {c: (w * portfolio_brake_scale if w else w)
+                             for c, w in final.items()}
+            final = _apply_gross_cap(final, max_gross)
+        else:
+            # 组合级敞口刹车:刹车期把 rebalancer 竞争额度收紧到有效 max_gross,
+            # 否则 cap_and_rank 先按 max_gross 填满、之后单票缩放被每日重新填满
+            # → 总敞口实际不降(2008 实测根因)。
+            _effective_max_gross = max_gross
+            _day_rebalancer_params = rebalancer_params
+            if _brake_active:
+                if portfolio_brake_tiers:
+                    # 深度分级:按当前回撤深度取对应敞口上限(越深越紧,自然随反弹放松)。
+                    _dd = _cur_eq / peak_equity - 1.0
+                    _effective_max_gross = max_gross
+                    for _t_dd, _t_cap in portfolio_brake_tiers:
+                        if _dd <= -_t_dd:
+                            _effective_max_gross = min(_t_cap, max_gross)
+                        else:
+                            break
+                elif portfolio_brake_max_gross is not None:
+                    # 显式配的组合级敞口:平滑刹车(<max_gross)或回撤加仓(>max_gross)共用。
+                    _effective_max_gross = portfolio_brake_max_gross
+                elif portfolio_brake_mode == "block_new_buys":
+                    _effective_max_gross = max_gross
+                else:
+                    _effective_max_gross = min(
+                        max_gross * portfolio_brake_scale, max_gross,
+                    )
+                _day_rebalancer_params = dict(rebalancer_params)
+                _day_rebalancer_params["max_gross"] = _effective_max_gross
+            # 大盘趋势 regime 门禁:前瞻性敞口 cap,min 叠加在组合回撤刹车之上
+            # (brake 不 active 时也独立生效;温市满仓、危机初期降仓)。
+            if _regime_enabled:
+                _win = _bench_closes_asof(
+                    _regime_bench, as_of,
+                    max(market_regime_ma_days or 0, market_regime_vol_window + 1, 252),
+                )
+                _cap, _regime_bear_latched = _market_throttle_step(
+                    _win, bear_latched=_regime_bear_latched,
+                    ma_days=market_regime_ma_days,
+                    enter_band=market_regime_enter_band,
+                    exit_band=market_regime_exit_band,
+                    bear_gross=market_regime_max_gross,
+                    target_vol=market_regime_target_vol,
+                    vol_window=market_regime_vol_window,
+                    vol_floor=market_regime_vol_floor,
+                    max_gross=max_gross,
+                )
+                if _cap < _effective_max_gross - 1e-12:
+                    _effective_max_gross = _cap
+                    _day_rebalancer_params = dict(_day_rebalancer_params)
+                    _day_rebalancer_params["max_gross"] = _effective_max_gross
+                if market_regime_ma_days and _regime_bear_latched:
+                    _regime_bear_days += 1
+                if _cap < max_gross - 1e-9:
+                    _regime_throttle_days += 1
+            final = rebalancer.adjust(
+                desired, current_weights, meta,
+                equity=acct.equity(last_close),
+                params=_day_rebalancer_params,
+            )
+            # 宇宙外持仓:禁止加仓(target 上限 = current);允许 exit-only 信号减仓/清仓。
+            for code, tw in list(final.items()):
+                if code in u or tw is None:
+                    continue
+                cur = current_weights.get(code, 0.0)
+                if tw > cur + 1e-9:
+                    final[code] = cur
+            # 刹车期保留配置比例目标仓位:组合级敞口收窄 / 质量门控 / 回撤加仓门控。
+            if _brake_active:
+                final = _apply_portfolio_brake(
+                    final, current_weights, meta,
+                    scale=portfolio_brake_scale,
+                    mode=portfolio_brake_mode,
+                    brake_max_gross=_effective_max_gross,
+                    keep_ratio=portfolio_brake_keep_ratio,
+                    add_min_score=portfolio_brake_add_min_score,
+                    max_weight=max_weight,
+                )
+            # 总仓安全阀:Σ目标权重 ≤ max_gross(留 1-max_gross 现金,对所有 rebalancer 生效)→
+            # 保证执行层买单总额 ≤ 可投资现金,不夹断丢目标。超限等比缩放所有正值权重。
+            final = _apply_gross_cap(final, _effective_max_gross)
 
         # 3c. 边沿触发 + 冷却(遍历 final 全集;未覆盖维持的 code 过 should_act 是 no-op)
         # sorted by code:final 经 rebalancer 的 set 构造、顺序随哈希随机化漂移;
@@ -1498,6 +2214,8 @@ def run_backtest(codes: list[str], start: date, end: date,
             "positions": day_pos,
         })
       # for as_of 结束;with 退出时 pool.shutdown
+    if _prog_on:
+        print(f"  进度 100% ({_prog_total}/{_prog_total}) 回测主循环总耗时 {round(time.time() - _prog_t0_wall, 1)}s", flush=True)
 
     # ---- 绩效 ----
     benchmark, bench_window = _benchmark_curve(BENCHMARK, days)
@@ -1521,6 +2239,9 @@ def run_backtest(codes: list[str], start: date, end: date,
     metrics["stop_loss_realized_loss"] = round(
         sum((t.get("pnl") or 0.0) for t in _sl_filled), 2
     )  # 负数=亏损(元);pnl 符号:盈>0 亏<0(与上方 win/loss 判定一致)
+    _tp_filled = [t for t in filled if str(t.get("signal", "")).startswith("take_profit_")]
+    metrics["take_profit_count"] = len(_tp_filled)
+    metrics["take_profit_realized_pnl"] = round(sum((t.get("pnl") or 0.0) for t in _tp_filled), 2)
     metrics["total_fee"] = round(acct.fee_paid, 2)
     metrics["cash_dividend_gross"] = round(acct.dividend_received, 2)
     metrics["dividend_tax_paid"] = round(acct.dividend_tax_paid, 2)
@@ -1551,10 +2272,16 @@ def run_backtest(codes: list[str], start: date, end: date,
     metrics["annual_turnover"] = (round((_tov_total / _years) / _avg_n, 2)
                                   if _years > 0 and _avg_n > 0 else None)
     metrics["cash_constraint_hits"] = cash_constraint_hits   # 买单被现金缩放的天数(可观测)
+    metrics["market_regime_bear_days"] = _regime_bear_days if _regime_enabled else 0
+    metrics["market_regime_throttle_days"] = _regime_throttle_days if _regime_enabled else 0
+    metrics["market_regime_bear_ratio"] = (
+        round(_regime_bear_days / len(days), 4) if _regime_enabled and days else None
+    )
     metrics["limit_reject_buys"] = limit_reject_buys
     metrics["limit_reject_sells"] = limit_reject_sells
     metrics["fill_rejects"] = fill_rejects
     metrics["deferred_orders"] = deferred_orders
+    metrics["analyze_failures"] = analyze_failures
     metrics["final_equity"] = round(
         acct.equity(last_close) if last_close else initial_cash, 2
     )
@@ -1571,6 +2298,27 @@ def run_backtest(codes: list[str], start: date, end: date,
         "max_gross": max_gross,
         "stop_loss_pct": stop_loss_pct,
         "portfolio_brake_dd": portfolio_brake_dd,
+        "portfolio_brake_scale": portfolio_brake_scale,
+        "portfolio_brake_mode": portfolio_brake_mode,
+        "portfolio_brake_max_gross": portfolio_brake_max_gross,
+        "portfolio_brake_keep_ratio": portfolio_brake_keep_ratio,
+        "portfolio_brake_add_min_score": portfolio_brake_add_min_score,
+        "portfolio_brake_recover_dd": portfolio_brake_recover_dd,
+        "portfolio_brake_recover_high_days": portfolio_brake_recover_high_days,
+        "portfolio_brake_tiers": [list(t) for t in portfolio_brake_tiers],
+        "market_regime_code": market_regime_code if _regime_enabled else None,
+        "market_regime_ma_days": market_regime_ma_days,
+        "market_regime_enter_band": market_regime_enter_band,
+        "market_regime_exit_band": market_regime_exit_band,
+        "market_regime_max_gross": market_regime_max_gross,
+        "market_regime_target_vol": market_regime_target_vol,
+        "market_regime_vol_window": market_regime_vol_window,
+        "market_regime_vol_floor": market_regime_vol_floor,
+        "take_profit_tiers": take_profit_tiers,
+        "take_profit_hard_pct": take_profit_hard_pct,
+        "take_profit_atr_period": take_profit_atr_period,
+        "take_profit_atr_tiers": take_profit_atr_tiers,
+        "take_profit_atr_lagged": take_profit_atr_lagged,
         "execution": "T+1_open_sell_first",
         "rebalancer": rebalancer.rebalancer_id,
         "universe": uni_ctx.summary(universe_sizes),

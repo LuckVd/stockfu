@@ -27,6 +27,10 @@ class TestMetricsRecovery(unittest.TestCase):
         self.assertEqual(m["underwater_pct_ge10"], 50.0)  # 2/4
         self.assertEqual(m["underwater_pct_ge20"], 25.0)  # 1/4
         self.assertEqual(m["underwater_pct_ge30"], 0.0)   # 0/4
+        self.assertEqual(m["underwater_days_gt0"], 2)
+        self.assertEqual(m["underwater_days_ge10"], 2)
+        self.assertEqual(m["underwater_days_ge20"], 1)
+        self.assertEqual(m["underwater_days_ge30"], 0)
 
     def test_no_recovery_still_underwater(self):
         # 100→80→90:回撤 20%,期末 90 未收回前高 100 → 未回本。

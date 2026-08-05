@@ -1,13 +1,13 @@
 """分享图的行业全景：只汇总同日、同分类的原始行情与主力资金流。"""
 from __future__ import annotations
 
-import math
 from datetime import date
 
 from sqlmodel import select
 
 from stockfu.db import session_scope
 from stockfu.models import SectorFlowSnapshot, SectorSnapshot
+from stockfu.services import composite as C
 from stockfu.services import factors as F
 
 
@@ -16,21 +16,15 @@ def _pct(values: list[float], value: float | None) -> float | None:
 
 
 def _vol(closes: list[float], n: int = 20) -> list[float]:
-    if len(closes) <= n:
-        return []
-    ret = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))
-           if closes[i - 1] > 0]
-    return [math.sqrt(sum(x * x for x in ret[i - n:i]) / n) * math.sqrt(252)
-            for i in range(n, len(ret) + 1)]
+    return C._rolling_vol(closes, n)
 
 
 def _change(closes: list[float], n: int = 5) -> list[float]:
-    return [closes[i] / closes[i - n] - 1 for i in range(n, len(closes))]
+    return C._rolling_chg(closes, n)
 
 
 def _activity(amounts: list[float], n: int = 20) -> list[float]:
-    return [amounts[i] / (sum(amounts[i - n:i]) / n) for i in range(n, len(amounts))
-            if sum(amounts[i - n:i]) > 0]
+    return C._rolling_relative_activity(amounts, n)
 
 
 def _mean(values: list[float | None]) -> float | None:
@@ -80,10 +74,8 @@ def build(as_of: date) -> dict:
         net = [x.net_inflow for x in fs if x.net_inflow is not None]
         if len(closes) < 26:
             continue
-        vols, chgs, acts = _vol(closes), _change(closes), _activity(amounts)
-        v, c = (_pct(vols, vols[-1]) if vols else None,
-                _pct(chgs, chgs[-1]) if chgs else None)
-        a = _pct(acts, acts[-1]) if acts else None
+        price_pcts = C.price_factor_percentiles(closes, amounts)
+        chgs = _change(closes)
         rows.append({
             "name": name, "day_chg": qs[-1].pct_chg,
             "perf_5d": round(chgs[-1] * 100, 2) if chgs else None,
@@ -91,20 +83,23 @@ def build(as_of: date) -> dict:
             "net_inflow_pct": fs[-1].net_inflow_pct,
             "leading_stock": fs[-1].leading_stock or None,   # 领涨股名（空串/None 统一为 None）
             "leading_chg": fs[-1].leading_chg,               # 领涨股涨跌幅%
-            "_vol": v, "_momentum": c, "_net": fs[-1].net_inflow,
-            "heat": a, "state": _state(net),
+            "_vol": price_pcts["volatility_pct"],
+            "_momentum": price_pcts["momentum_pct"],
+            "_activity": price_pcts["relative_activity_pct"],
+            "_net": fs[-1].net_inflow, "state": _state(net),
         })
-    # 免费源没有行业历史资金流；以同日完整行业的横截面排名表达当天资金偏好。
-    # 这不能被误读为持续流入，连续性仍只由 _state 的真实本地日序列决定。
+    # 资金流是当日行业轮动信号：用同日横截面净流入排名表达资金聚集程度。
+    # 它只进入热度，不改变基于自身历史价格分位的恐慌/贪婪。
     net_values = [r["_net"] for r in rows if r["_net"] is not None]
     for r in rows:
-        fp = _pct(net_values, r["_net"]) if len(net_values) >= 10 else None
-        vol, momentum = r.pop("_vol"), r.pop("_momentum")
+        flow_heat = (_pct(net_values, r["_net"])
+                     if r["_net"] is not None and len(net_values) >= 10 else None)
+        vol, momentum, activity = r.pop("_vol"), r.pop("_momentum"), r.pop("_activity")
         r.pop("_net")
-        r["fear"] = _mean([vol, 100 - momentum if momentum is not None else None,
-                            100 - fp if fp is not None else None])
-        r["greed"] = _mean([momentum, fp])
-        r["fund_rank"] = fp
+        r["fear"] = _mean([vol, 100 - momentum if momentum is not None else None])
+        r["greed"] = _mean([momentum])
+        r["heat"] = _mean([activity, flow_heat])
+        r["flow_heat"] = flow_heat
     rows.sort(key=lambda x: (x["net_inflow"] is not None, x["net_inflow"] or 0), reverse=True)
     up = sum(1 for x in rows if (x["day_chg"] or 0) > 0)
     down = sum(1 for x in rows if (x["day_chg"] or 0) < 0)

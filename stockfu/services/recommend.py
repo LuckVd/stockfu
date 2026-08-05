@@ -405,11 +405,13 @@ def pick_strategy(
             continue
         agg = r["aggregate"]
         total = agg.get("total_score")
+        total_norm = agg.get("total_score_norm")
         conf = agg.get("confidence")
         risk = agg.get("risk_vetoed", False)
         tw = compute_target_weight(
             risk, 0.0, agg.get("ai_target_weight"),
-            total_score=total,
+            total_score=total_norm if total_norm is not None else total,
+            total_sell_score=agg.get("total_sell_score"),
             max_w=deb.max_weight,
             dead=deb.total_dead,
             score_full=deb.score_full,

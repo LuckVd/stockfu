@@ -145,17 +145,33 @@ def resolve_action(current_weight: float, target_weight: float) -> str:
 
 
 def _total_to_weight(total: float | None, max_w: float = 0.15,
-                     dead: float = 3.0, score_full: float = 20.0) -> float | None:
+                     dead: float = 3.0, score_full: float = 20.0,
+                     total_sell: float | None = None,
+                     held: bool = False) -> float | None:
     """total_score → 目标仓位 连续映射(替代 _SIGNAL_TARGET 阶跃查表)。
 
-    消除阈值穿越抖动 + 内建双向滞回死区(业界机制7连续映射 + 机制2滞回):
-      total <= -dead   → 0.0(清仓)
-      -dead < t < dead → None(死区,维持当前)  ← 双向滞回带,治 buy/sell 阈值横跳
-      total >= +dead   → 线性增到 max_w(total=+20 满仓)
-    例:max_w=0.15,dead=3 → total=+5→3.75% / +10→7.5% / +20→15% / ∈(-3,3)→维持 / ≤-3→清仓。
+    两种模式:
+    - 旧路径(total_sell 未配):对称滞回死区(业界机制7连续映射 + 机制2滞回):
+        total <= -dead   → 0.0(清仓)
+        -dead < t < dead → None(死区,维持当前)
+        total >= +dead   → 线性增到 max_w(total=score_full 满仓)
+    - 双总分路径(total_sell 配置,归一化 ±100 刻度):买卖不对称滞回——空仓用
+      total(买入总分)判定建仓线 +dead;持仓用 total_sell(卖出总分)判定清仓线
+      -dead,买入总分 ≥ dead 仍可继续加仓,否则维持。避免持仓后分数小降即被清。
     """
     if total is None:
         return None
+    if total_sell is not None:
+        # 买卖不对称滞回(归一化刻度):建仓看 total,清仓看 total_sell。
+        if held:
+            if total_sell <= -dead:
+                return 0.0
+            if total < dead:
+                return None  # 维持:卖出分未破线、买入分不足加仓
+            return round(max_w * min(total / score_full, 1.0), 4)
+        if total < dead:
+            return None  # 空仓:买入分不足建仓
+        return round(max_w * min(total / score_full, 1.0), 4)
     if total <= -dead:
         return 0.0
     if total < dead:
@@ -167,6 +183,7 @@ def compute_target_weight(risk_vetoed: bool,
                           current_weight: float,
                           ai_target_weight: float | None = None,
                           total_score: float | None = None,
+                          total_sell_score: float | None = None,
                           max_w: float = 0.15, dead: float = 3.0,
                           score_full: float = 20.0) -> float | None:
     """计算目标仓位(信号层→仓位层的桥梁)。
@@ -176,12 +193,17 @@ def compute_target_weight(risk_vetoed: bool,
       total_score is not None    → _total_to_weight 连续映射(满仓刻度 score_full→max_w)
       否则                       → 透传 ai_target_weight(或 None=维持)
 
+    total_sell_score: 卖出总分(买入/卖出权重不对称时配置,归一化 ±100 刻度)。
+      设置后进入买卖不对称滞回:持仓 current_weight>0 用 total_sell_score 判定清仓线。
+
     score_full: 满仓刻度(total_score≥此值→满仓 max_w);按算子集量纲配,默认 20。
     """
     if risk_vetoed:
         return 0.0
     if total_score is not None:
-        return _total_to_weight(total_score, max_w, dead, score_full)
+        return _total_to_weight(total_score, max_w, dead, score_full,
+                                total_sell=total_sell_score,
+                                held=current_weight > 0)
     return ai_target_weight if ai_target_weight is not None else None
 
 

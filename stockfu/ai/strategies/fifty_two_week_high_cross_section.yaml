@@ -1,0 +1,32 @@
+version: 1
+name: 52周新高横截面(近高点+动量确认)
+# George & Hwang(2004):「距 52 周高点近度」对未来收益预测力强于传统动量。
+# 横截面范式:每期全市场按 fifty_two_week_high(主)+ momentum(确认)+ trend_strength
+# (多头排列)打分,cap_and_rank 按横截面百分位×confidence 竞争 max_gross,头部近高点
+# 且动能强的票优先建仓。满仓刻度 score_full=8(52w 20×1.0 + mom 20×0.6 + trend 20×0.4=36)。
+# 数据依赖:仅 close_qfq(已全市场回补)。
+operators:
+  - {id: fifty_two_week_high, type: math, weight: 1.0, params: {lookback: 250, lo: 0.70}}
+  - {id: momentum,            type: math, weight: 0.6, params: {window: 120}}
+  - {id: trend_strength,      type: math, weight: 0.4}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.20
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  # George & Hwang(2004)原文:横截面因子无止损、无组合刹车,靠持有+定期再平衡。
+  # stop_loss=0 显式关闭引擎默认 8% 止损;max_gross=1.0 满仓、max_w=0.20 等权 top ~5。
+  stop_loss: 0
+  portfolio_brake: 0
+  max_gross: 1.0

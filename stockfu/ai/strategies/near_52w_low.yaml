@@ -1,0 +1,26 @@
+version: 1
+name: 52周低点反转横截面(贴近低点优先)
+# 2026-08 网络调研第 2 批:52 周低点距离因子(反转效应 A 股长期实证)。
+# 与已测 fifty_two_week_high(距高点,追涨,已证伪)相反:距 52 周低点越近,
+# 悲观定价越充分,均值回归空间越大。注意:超跌可能延续,成立与否由回测判定。
+operators:
+  - {id: distance_from_low, type: math, weight: 1.0, params: {window: 252, hist_years: 3}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.20
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  stop_loss: 0
+  portfolio_brake: 0
+  max_gross: 1.0

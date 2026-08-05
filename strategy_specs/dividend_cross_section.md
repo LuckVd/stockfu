@@ -1,7 +1,8 @@
 # dividend_cross_section 策略规格
 
-对应配置:`stockfu/ai/strategies/dividend_cross_section.yaml`(含 `risk.stop_loss: 0.30`)。
+对应配置:`stockfu/ai/strategies/dividend_cross_section.yaml`。
 本文档为策略机制的客观规格,不含回测绩效。参数来源:策略 YAML、rebalancer 运行配置、`stockfu/backtest/engine.py` 常量。
+注:全周期验收实测用 `#sl30` 变体(stop_loss=0.30 经实证优于 base 默认);base 无 stop_loss。
 
 ## 1. 标识
 
@@ -9,11 +10,13 @@
 |---|---|
 | strategy_id | dividend_cross_section |
 | rebalancer | cap_and_rank |
-| universe | cn_large_pool_v1 |
-| 估值/成交价格口径 | 前复权 `*_qfq` |
-| 股息率分母口径 | 不复权 `close_raw` |
-| 基准 | sh000001(上证综指) |
+| universe | historical_indices（沪深300+中证500 时点成分，历史并集 2023 只、日均过滤到 ~800 只） |
+| 估值/成交价格口径 | raw（不复权 + 现金分红入账）；研究模式默认 qfq 可切换 |
+| 股息率分母口径 | 不复权 `close_raw`（各估值口径下恒定，禁用前复权，防虚高与分红前视） |
+| 基准 | 沪深300 `sh000300`（2026-07 由上证综指切换） |
 | 初始资金 | 1,000,000 |
+
+> 口径变更（2026-07-28 研究模式切换）：基准由上证综指改为沪深300；全周期验收口径为 **historical_indices + raw**。qfq/hfq 口径下分红折进价格、`cash_dividend_gross=0`，与 raw 收益结构不同（见 `docs/BACKTEST.md` §0.6.1）。
 
 ## 2. 配置参数总表
 
