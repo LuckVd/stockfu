@@ -184,7 +184,7 @@ python3 -c "from stockfu.ai.analyze import analyze; import json; print(json.dump
 
 顾问据此判断：缺失数据如实说「无信号」，严禁编造。
 
-## 当前状态（2026-07-03）
+## 当前状态（2026-08-05）
 
 ### 已完成并验证
 
@@ -199,13 +199,13 @@ python3 -c "from stockfu.ai.analyze import analyze; import json; print(json.dump
 - ✅ **工具调用记录**：每次分析记录 `tools_used[{tool, args, result}]`
 - ✅ **PE/PB 口径确认**：baostock 返回 0-100 分位（实测 0.18 → 18% 偏便宜）
 - ✅ **dividend_yield 口径确认**：per_share_cash 已是每股值（数据源已 ÷10），勿再除
+- ✅ **API/前端报告**：`POST /ai/{code}`、`GET /ai/result/{code}`、`GET /quote/kline/{code}` 已接入持仓表 AI 按钮与报告弹窗
 
 ### 待办
 
 - ⬜ **reflection**：决策反思落库 + 下次注入（借 TradingAgents「2-4 句精简」哲学）
-- ⬜ **API/前端**：`/ai_report/{code}` 端点 + 持仓表 AI 解读列
 - ⬜ **美股数据补全**：AAPL 等 quote_snapshot 为空，需修 yfinance 抓取
-- ⬜ **板块轮动工具**(future)：等 sector_flow_snapshot 累积足够历史后加
+- ⬜ **板块轮动工具**：等 sector_flow_snapshot 累积足够历史后再评估
 
 ## 参考来源（只借思想，不抄代码）
 

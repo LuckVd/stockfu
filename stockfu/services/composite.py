@@ -4,7 +4,9 @@
 - K线派生因子(volatility/momentum/relative_activity)：从行情序列算 rolling 序列 → 分位（立即可用）
 - 外部因子(连板/两融/ERP/资金流/涨跌家数)：取当日值，分位从 factor_snapshot 历史算
   （首日无历史→跳过，随每日 --fetch 积累后生效；越跑越准）
-方向：fear=下行(vol高/跌/资金流出/ERP高)，greed=上行(涨/连板/两融升/资金流入)，heat=相对活跃(相对均量/连板数)。
+核心口径：fear=下行（高波动/低动量），greed=上行（高动量），两者只使用对象
+自身的价格历史分位，确保市场、行业和个股的 0–100 分数同义。heat 衡量活跃度，
+可额外纳入资金流、涨停等层级特有的当日参与信号。
 """
 from __future__ import annotations
 
@@ -76,6 +78,25 @@ def _pct(series, value):
     if value is None:
         return None
     return F.percentile(series, value)[0]
+
+
+def price_factor_percentiles(closes, amounts, volumes=None) -> dict[str, float | None]:
+    """统一的价格历史因子：所有层级的 fear/greed 均只从这里取值。
+
+    每项都是对象相对自身近五年历史的位置；资金流不在这里，以免行业的当日
+    横截面排名改变恐慌/贪婪的纵向语义。
+    """
+    if len(closes) < 30:
+        return {"volatility_pct": None, "momentum_pct": None,
+                "relative_activity_pct": None}
+    vols, chgs = _rolling_vol(closes), _rolling_chg(closes)
+    vol_pct = _pct(vols, vols[-1]) if vols else None
+    chg_pct = _pct(chgs, chgs[-1]) if chgs else None
+    amt_series = amounts if len(amounts) >= 21 else (volumes or [])
+    activity = _rolling_relative_activity(amt_series)
+    activity_pct = _pct(activity, activity[-1]) if activity else None
+    return {"volatility_pct": vol_pct, "momentum_pct": chg_pct,
+            "relative_activity_pct": activity_pct}
 
 
 def _ext_pct(level, scope, factor, today_val, as_of=None):
@@ -161,18 +182,12 @@ def compute_for(code, level, scope, ext=None, val_pcts=None, ext_pcts=None, as_o
     volumes = F.quote_series(code, "volume", MID, as_of=as_of)
     comps, fp, gp, hp, ext_raws = {}, [], [], [], {}
 
-    if len(closes) >= 30:
-        vols, chgs = _rolling_vol(closes), _rolling_chg(closes)
-        vol_pct = _pct(vols, vols[-1]) if vols else None
-        chg_pct = _pct(chgs, chgs[-1]) if chgs else None
-        # 热度只衡量相对自身近期均量的放量程度；优先成交额，缺失时回退成交量。
-        # 相对 20 日均量至少需要 21 个有效值；部分指数只补了近期成交额，
-        # 此时应回退到完整的成交量，不能因此把热度显示为空。
-        amt_series = amounts if len(amounts) >= 21 else volumes
-        activity = _rolling_relative_activity(amt_series)
-        activity_pct = _pct(activity, activity[-1]) if activity else None
-        comps.update(volatility_pct=vol_pct, momentum_pct=chg_pct,
-                     relative_activity_pct=activity_pct)
+    price_pcts = price_factor_percentiles(closes, amounts, volumes)
+    comps.update(price_pcts)
+    vol_pct = price_pcts["volatility_pct"]
+    chg_pct = price_pcts["momentum_pct"]
+    activity_pct = price_pcts["relative_activity_pct"]
+    if any(v is not None for v in price_pcts.values()):
         if vol_pct is not None:
             fp.append(vol_pct)
         if chg_pct is not None:
@@ -227,42 +242,10 @@ def _ensure_bench_kline(min_bars: int = 60) -> None:
 
 
 def compute_market(as_of=None):
-    from stockfu.services import market_data as md
-
     _ensure_bench_kline()
-    from stockfu.services.snapshot import latest_snapshot
-    snap = latest_snapshot(BENCH)
-    ext = {}
-    try:
-        lu = md.limit_up_board() or {}
-        if lu.get("highest_chain") is not None:
-            ext["limit_chain"] = (lu["highest_chain"], "greed")
-        if lu.get("limit_up_count") is not None:
-            ext["limit_count"] = (lu["limit_up_count"], "heat")
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        mt = md.margin_total() or {}
-        if mt.get("balance"):
-            ext["margin_balance"] = (mt["balance"], "greed")
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        if snap and snap.pe:
-            er = md.erp(snap.pe) or {}
-            if er.get("erp") is not None:
-                ext["erp"] = (er["erp"], "fear")
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        mb = md.market_breadth() or {}
-        if mb.get("up_ratio") is not None:
-            ext["breadth_up"] = (mb["up_ratio"], "greed")
-        if mb.get("down_ratio") is not None:
-            ext["breadth_down"] = (mb["down_ratio"], "fear")
-    except Exception:  # noqa: BLE001
-        pass
-    return compute_for(BENCH, "market", "MARKET", ext, as_of=as_of)
+    # 不把 ERP、连板、两融、广度混入核心 fear/greed：行业并不具备等价因子。
+    # 它们可作为市场专属观察项另行展示；三层主分数严格使用统一价格历史口径。
+    return compute_for(BENCH, "market", "MARKET", as_of=as_of)
 
 
 def compute_stock(code, as_of=None):
