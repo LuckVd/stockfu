@@ -23,12 +23,6 @@
     python main.py --recommend --strategies a,b [--as-of] [--cash]  # 空仓重建荐股(次日开盘执行参考)
     python main.py --backfill-universe  # 回补 security_master(list_date/board, baostock)
     python main.py --audit-corporate-actions  # 只读审计公司行为覆盖/重复/异常（正式回测前置）
-    python main.py --stage-corporate-actions --corporate-action-codes 600519 --corporate-action-start-year 2007
-        # 受控抓取公司行为到来源证据表；不写 dividend_event、不改变回测
-    python main.py --stage-legacy-corporate-actions --corporate-action-codes 600519
-        # 将旧 dividend_event 作为第二条来源证据导入新表；不提升为正式事件
-    python main.py --stage-akshare-corporate-actions --corporate-action-codes 300024
-        # 按除权前旧股口径抓取 AkShare 送转/现金事件到来源证据表
     python main.py --backfill-quote-status  # 补历史状态 + 最新交易日全量(baostock)
     python main.py --backfill-adj-prices [--start] [--end]   # baostock 串行三复权(默认 Clash SOCKS)
     python main.py --clear-dividend-cache  # 清错误口径 dividend_yield 的 operator_result

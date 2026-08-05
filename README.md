@@ -1,6 +1,6 @@
 # StockFu · 资产管理终端 (stockfu)
 
-> 本地优先的**综合资产管理 + 市场情绪监控 + A股策略研究**终端。看板走 **Vue3 Web + FastAPI**，运维/研究走 **CLI**；数据层复用 [daily_stock_analysis](../daily_stock_analysis) 的多数据源 fallback 思想。
+> 本地优先的**综合资产管理 + 市场情绪监控 + A股策略研究**终端。看板走 **Vue3 Web + FastAPI**，运维/研究走 **CLI**；数据层采用多数据源 fallback。
 
 ## 它解决什么
 
@@ -15,7 +15,7 @@ StockFu 是一个面向个人的资产 + 市场情绪 + 策略研究终端，覆
 - **自选股评价矩阵**：通用股票评价引擎，多策略交叉评价自选池（`--watchlist-review`）
 - 借鉴：AI 决策报告、财经新闻、消息推送
 
-## 设计思想（来自 daily_stock_analysis）
+## 设计思想
 
 | 思想 | 本项目落点 |
 |------|-----------|
@@ -45,7 +45,7 @@ stockfu/
 │   │   └── rebalancers/ # 选股/仓位层（cap_and_rank / pass_through）
 │   └── backtest/        # 回测引擎（T+1 执行、raw/qfq 口径、operator_cache、三跑门禁）
 ├── frontend/            # Vue3 Web 看板
-├── strategy_specs/      # 策略规格文档（2026-08 网络调研 10 策略）
+├── strategy_specs/      # 策略规格文档（7 个已落地规格 + 2026-08 调研候选）
 └── data/stockfu.db      # SQLite（运行时生成；operator_cache.db 为算子缓存库）
 ```
 
@@ -58,6 +58,10 @@ python3 main.py               # 启动 Web（默认 127.0.0.1:8787）
 python3 main.py --serve       # 同上
 python3 main.py --fetch --date 2026-07-22   # 日更抓取（必带 --date；未来/未收盘/非交易日报错）
 
+# 前端开发/构建
+cd frontend && pnpm install && pnpm dev
+cd frontend && pnpm build    # 生成被 FastAPI 托管的 frontend/dist
+
 # 回测（研究模式；--valuation-basis raw = 不复权+现金分红入账）
 python3 main.py --backtest low_beta_dividend --start 2007-01-04 --end 2026-07-21 --valuation-basis raw
 python3 main.py --factor-diag low_beta --params '{"window":120}'   # 单因子诊断（IC/分位收益）
@@ -66,7 +70,7 @@ python3 main.py --watchlist-review --no-llm                          # 自选股
 
 ## 状态
 
-🔄 研究模式推进中。已完成：数据层(多源 fallback) → 存储 → 持仓/股息业务 → Web/API → 三层情绪指数 → 历史回补 → AI 4 顾问 → 四层架构回测引擎 → **20+ 横截面因子算子 + 10 网络调研策略 + 三跑门禁验证（2026-08）**。
+🔄 研究模式推进中。已完成：数据层(多源 fallback) → 存储 → 持仓/股息业务 → Web/API → 三层情绪指数 → 历史回补 → AI 4 顾问 → 四层架构回测引擎 → **20+ 横截面因子算子 + 调研候选策略 + 三跑门禁验证（2026-08）**。
 
 **回测研究现状**（`docs/BACKTEST.md` §0.6，raw 口径，基准沪深300，2007–2026）：
 - 自家红利横截面系（`dividend_cross_section` base/融合）仍是主力：全样本超额 +292.5%/+307.7%，夏普 base 0.60 全表最高
