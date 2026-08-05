@@ -4,7 +4,7 @@
 - export_csv：表 → data/<table>.csv（与 sqlite3 .mode csv 格式兼容，可入 git）
 - import_csv：data/<table>.csv → 表（merge upsert，按主键/唯一约束合并，不删现有数据）
 
-默认表集 = 市场客观数据（与 commit a6052f0 那批 CSV 一致）；all_tables=True 扩展到
+默认表集 = 市场客观数据（与现有市场 CSV 集合一致）；all_tables=True 扩展到
 个人交易/持仓/新闻/配置。feat/sector-fundflow 的 sector_* 表合并后经反射自动支持。
 
 实现备注：表元数据统一从 ``SQLModel.metadata.tables`` 取（SQLAlchemy 注册表，稳定），
@@ -28,7 +28,7 @@ from sqlmodel import SQLModel, select
 from stockfu import models
 from stockfu.db import session_scope
 
-# 默认：市场客观数据（与 commit a6052f0 提交的那批 CSV 一致，可安全入 git/共享）
+# 默认：市场客观数据（可安全入 git/共享）
 MARKET_TABLES = [
     "asset", "quote_snapshot", "dividend_event",
     "index_snapshot", "factor_snapshot", "fundflow_snapshot",
