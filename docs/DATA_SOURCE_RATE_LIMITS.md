@@ -1,6 +1,6 @@
 # 数据源限流与安全频率参考
 
-> 最后更新：2026-07-29
+> 最后更新：2026-08-05
 >
 > **重要**：以下频率均为项目实际运行中迭代出的经验安全值，非服务商官方文档阈值。
 > 同花顺和 BaoStock 均未公开 rate limit 文档。
@@ -21,8 +21,8 @@
 - **JS 动态令牌**：akshare 使用 `py_mini_racer` 执行混淆后的 `ths.js` 生成 `Cookie: v=` 和 `hexin-v:` 头。
 - **资金流端点** (`data.10jqka.com.cn`) 强制要求 JS 令牌，已通过 akshare 封装处理。
 - **K线端点** (`d.10jqka.com.cn`) 目前不强制校验 JS 令牌，但项目 `get_sector_kline_period` 裸请求未带令牌。若同花顺升级反爬，此端点会首先失效。
-- **当日 K 线语义(2026-07-29)**：年度文件是 T+1 归档，不能用于判断当天是否有行业日线；`get_sector_kline_period` 会在请求范围包含本机当天时合并 `today.js`，以其 `1/7/8/9/11/13/19` 字段写入当日 OHLCV/成交额。历史日期不读取 `today.js`，避免错标数据。
-- **韧性(2026-07-29)**：`get_sector_kline_period` 加失败重试(初试+2次,退避 0.6/1.2s)+ WARNING log(catalog 缺失 / HTTP 非200 / 异常 / 正文解析失败 各自打点),端点故障不再静默 `return []`;`backfill_sector_pulse_history`(`backfill.py:330`) 连续 15 次无效请求中止回补 + 结束打印失败汇总。
+- **当日 K 线语义（当前实现）**：年度文件是 T+1 归档，不能用于判断当天是否有行业日线；`get_sector_kline_period` 会在请求范围包含本机当天时合并 `today.js`，以其 `1/7/8/9/11/13/19` 字段写入当日 OHLCV/成交额。历史日期不读取 `today.js`，避免错标数据。
+- **韧性（当前实现）**：`get_sector_kline_period` 加失败重试(初试+2次,退避 0.6/1.2s)+ WARNING log(catalog 缺失 / HTTP 非200 / 异常 / 正文解析失败 各自打点),端点故障不再静默 `return []`;`backfill_sector_pulse_history`(`backfill.py:330`) 连续 15 次无效请求中止回补 + 结束打印失败汇总。
 
 ### 频率特点
 

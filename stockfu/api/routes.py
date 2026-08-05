@@ -1,4 +1,4 @@
-"""FastAPI 路由：组合/行情/分红/网格/自选/指数/资金流/板块情绪。
+"""FastAPI 路由：组合/行情/分红/自选/指数/资金流/板块情绪。
 
 以 GET 只读为主，含交易/设置写端点（POST/PUT）。序列化用 jsonable_encoder，兼容 dataclass/date。
 """

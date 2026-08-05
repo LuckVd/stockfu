@@ -3,7 +3,7 @@
 补完行情后,用与验收一致的口径整段重跑 start→数据末日:
   - 当前默认 start=2021-01-01；正式长周期准入与目标区间见 docs/BACKTEST.md
   - end 默认取库内个股/ETF 行情 max(quote_date)
-  - 策略目录含 rebalancer/宇宙/strict(CLI --backtest 传不了 rebalancer 的缺口在此补齐)
+  - 策略目录含 rebalancer/宇宙等 CLI 单策略回测不会传入的目录参数,在此补齐
   - 可选只跑部分 strategy_id;不选 = 目录全部
 
 CLI:
@@ -30,8 +30,6 @@ DEFAULT_START = "2021-01-01"
 MIN_AMOUNT = 50_000_000  # 个股动态池成交额门槛(元)
 
 # top_n 轮动常用参数(与历史 run_*.py / 全周期表一致)
-_TOP_N_STD = {"top_n": 8, "lock_days": 20, "max_replace": 1, "max_w": 0.12, "max_gross": 0.90}
-_TOP_N_ETF = {"top_n": 5, "lock_days": 20, "max_replace": 1, "max_w": 0.18, "max_gross": 0.90}
 _TOP_N_BOLL = {"top_n": 10, "lock_days": 20, "max_replace": 1, "max_w": 0.20, "max_gross": 0.90}
 _TOP_N_MOM = {"top_n": 10, "lock_days": 20, "max_replace": 1, "max_w": 0.15, "max_gross": 0.90}
 _CS = {"max_gross": 0.95}
