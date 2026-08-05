@@ -113,6 +113,50 @@ def historical_member_codes(index_codes: Iterable[str] | None = None) -> list[st
     return sorted({c for c in rows if c})
 
 
+def current_member_snapshot(
+    as_of: date,
+    index_codes: Iterable[str] | None = None,
+) -> dict[str, dict]:
+    """读取每个指数不晚于 ``as_of`` 的最近一份完整快照。
+
+    推荐扫描必须使用这一口径，不能用 ``historical_member_codes`` 的历年并集。
+    返回值同时携带各指数采用的快照日期，供扫描批次审计。
+    """
+    wanted = normalize_index_codes(index_codes)
+    out: dict[str, dict] = {}
+    with session_scope() as s:
+        for index_code in wanted:
+            latest = s.exec(select(func.max(IndexConstituent.effective_from)).where(
+                IndexConstituent.index_code == index_code,
+                IndexConstituent.effective_from <= as_of,
+            )).one()
+            if latest is None:
+                out[index_code] = {"effective_from": None, "members": []}
+                continue
+            rows = s.exec(select(IndexConstituent.asset_code).where(
+                IndexConstituent.index_code == index_code,
+                IndexConstituent.effective_from == latest,
+            )).all()
+            members = sorted({c for c in rows if c and c not in INDEX_MEMBER_CODE_BLACKLIST})
+            out[index_code] = {
+                "effective_from": latest.isoformat(),
+                "members": members,
+            }
+    return out
+
+
+def current_member_codes(
+    as_of: date,
+    index_codes: Iterable[str] | None = None,
+) -> list[str]:
+    """信号日有效成分并集；缺任一指数快照即拒绝返回不完整股票池。"""
+    snapshots = current_member_snapshot(as_of, index_codes)
+    missing = [code for code, row in snapshots.items() if not row["members"]]
+    if missing:
+        raise ValueError(f"信号日 {as_of} 缺少指数成分快照: {missing}")
+    return sorted({code for row in snapshots.values() for code in row["members"]})
+
+
 def memberships_for(codes: Iterable[str], index_codes: Iterable[str] | None = None) -> dict[str, list[tuple[date, date | None]]]:
     code_list = sorted({normalize_code(c) for c in codes if normalize_code(c)})
     wanted = normalize_index_codes(index_codes)
