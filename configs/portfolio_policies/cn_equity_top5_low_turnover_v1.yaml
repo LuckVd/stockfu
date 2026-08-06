@@ -1,0 +1,17 @@
+# 组合政策:top5 等权 20% + 换手抑制(集中 + 低换手,复现 V1 low_beta_dividend 两特征)。
+# top5 已验证(86%/Sharpe1.05,集中度是主因);本 policy 叠加 drift/cooldown/min_holding,
+# 把 top5 的 1827 笔月调降下来,逼近 V1 的"选 5 只持有"语义。
+portfolio_policy_id: cn_equity_top5_low_turnover_v1
+version: 1
+rebalance: monthly
+selection: {method: top_n_above_score, n: 5, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.20
+max_gross: 1.0
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: 0.30
+rebalance_drift: 0.05           # 权重偏离 ≤ 5% 不调(边沿触发)
+cooldown_days: 20               # 买入后 20 日内不再加仓
+min_holding_days: 60            # 建仓后 60 日内不卖/不清(软锁,逼近 V1 持有)
+stop_loss_pct: 0.10             # 浮亏 ≥ 10% 豁免 min_holding(大跌该止损能卖,不扛回撤)
