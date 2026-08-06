@@ -26,6 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+import numpy as np
 from sqlmodel import select, and_
 
 from stockfu.db import session_scope
@@ -491,8 +492,11 @@ def _backtest_series_ctx(
                                           set_backtest_series_provider)
     from stockfu.services.dividend import (clear_backtest_dividend_provider,
                                            set_backtest_dividend_provider)
-    from stockfu.services.valuation import (clear_backtest_valuation_provider,
-                                            set_backtest_valuation_provider)
+    from stockfu.services.valuation import (
+        _ValWindow,
+        clear_backtest_valuation_provider,
+        set_backtest_valuation_provider,
+    )
     if not sctx or not sctx.series:
         yield
         return
@@ -533,36 +537,29 @@ def _backtest_series_ctx(
         return d_out, v_out
 
     def provide_valuation(code, start, ref_date):
-        """返回 PE/PB 估值窗口,供 value 算子零 DB 计算历史分位。
+        """返回 PE/PB 估值原生窗口(_ValWindow),供 value 算子零 DB 算历史分位。
 
-        close/pe/pb 出口把 nan 还原成 None(与旧 tuple 路径逐值一致),value 算子末端
-        的 >0 守卫对 None/nan 同样过滤。
+        向量化:array('d') 切片零拷贝 + numpy 检测 ETF/指数全 nan 回退,跳过旧逐行
+        建 tuple 循环。输出经 valuation_snapshot 的 numpy 过滤/排序路径,逐值等价旧
+        tuple 路径(test_valuation_equivalence 盯)。
         """
         cols = series.get(code)
         if cols is None:
-            return None
+            return None                       # code 不在预载宇宙 → 回落 DB
         lo = bisect_left(dates, start)
         hi = bisect_right(dates, ref_date)
-        pe_arr, pb_arr, c_arr = cols["pe"], cols["pb"], cols["c"]
-        out = []
-        any_pe_pb = False
-        for i in range(lo, hi):
-            pe = pe_arr[i]
-            pb = pb_arr[i]
-            if not (math.isnan(pe) and math.isnan(pb)):
-                any_pe_pb = True
-            cv = c_arr[i]
-            out.append((
-                dates[i],
-                None if math.isnan(cv) else cv,
-                None if math.isnan(pe) else pe,
-                None if math.isnan(pb) else pb,
-            ))
+        if hi <= lo:
+            return _ValWindow(array("d"), array("d"), array("d"), 0)  # 空窗 → snapshot 走 empty
+        pe_win = cols["pe"][lo:hi]            # array('d') 切片 → array('d')(非 list)
+        pb_win = cols["pb"][lo:hi]
+        c_win = cols["c"][lo:hi]
         # ETF/指数预载行没有 PE/PB(全 nan);valuation_snapshot 原路径只查
         # QuoteSnapshot,故此处回退 DB,避免把非个股 bar 误当估值样本。
-        if out and not any_pe_pb:
-            return None
-        return out
+        pe_np = np.frombuffer(pe_win, dtype=np.float64)
+        pb_np = np.frombuffer(pb_win, dtype=np.float64)
+        if np.all(np.isnan(pe_np) & np.isnan(pb_np)):
+            return None                       # 全 nan → 回退 DB(等价旧 any_pe_pb=False)
+        return _ValWindow(pe_win, pb_win, c_win, hi - lo - 1)
 
     def provide_dividends(code, start, ref_date):
         events = dividend_index.get(code)
