@@ -1,10 +1,11 @@
 # V2 点时行业不可用时的红利率 profile。
 # 相对 v1 移除 industry_history；非点时行业数据不得参与历史评分。
+# 窗口内确认没有现金分红时，raw 因子按有效 0% 处理；只有价格等原始字段缺失才阻塞。
 profile_id: dividend_yield_ttm_v2
-version: 1
+version: 2
 raw_metric:
   id: dividend_yield_ttm
-  params: {price_basis: raw, trailing_days: 365}
+  params: {price_basis: raw, trailing_days: 365, no_dividend_policy: zero}
 direction: higher_is_better
 raw_unit: percent
 mapping:

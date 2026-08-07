@@ -29,6 +29,9 @@ from stockfu.strategy.risk import RiskOverlay, risk_from_dict
 from stockfu.services.universe import UniverseRules
 
 CONFIGS = Path(__file__).resolve().parents[2] / "configs"
+ARCHIVE_MIGRATION_MAP = (
+    CONFIGS.parent / "docs" / "legacy" / "strategy-v1" / "migration-map.yaml"
+)
 
 
 class RawComputerSpec(NamedTuple):
@@ -42,11 +45,46 @@ class RawComputerSpec(NamedTuple):
 # raw_metric_id → 纯 raw 计算器 + 算法名(新因子迁移时在此登记)。
 # algo 必须与 raw 模块内 raw_fingerprint(...) 的 algo 参数一致。
 RAW_COMPUTERS = {
-    "dividend_yield_ttm": RawComputerSpec(compute_dividend_yield_ttm, "ttm_cash_over_close_raw"),
+    "dividend_yield_ttm": RawComputerSpec(
+        compute_dividend_yield_ttm, "ttm_cash_over_close_raw_zero_no_dividend"),
     "low_beta": RawComputerSpec(compute_low_beta, "cov_over_var_vs_bench"),
     "low_volatility_20d": RawComputerSpec(compute_low_volatility_20d, "std_ret_x_sqrt252_x100"),
     "value": RawComputerSpec(compute_value, "pe_percentile"),
 }
+
+# alpha 的默认 deployment。显式传入 --portfolio-v2/--risk-v2 仍可做对照实验；
+# 其他 alpha 继续沿用原有默认组合与风险政策，避免策略间相互污染。
+DEFAULT_V2_DEPLOYMENTS = {
+    "dividend_low_vol_v2": {
+        "portfolio_id": "cn_equity_top15_daily_softlock30_v2",
+        "risk_id": "dividend_low_vol_trailing_v2",
+    },
+}
+
+
+def _legacy_migration_map() -> dict:
+    if not ARCHIVE_MIGRATION_MAP.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(ARCHIVE_MIGRATION_MAP.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    mapping = data.get("mapping")
+    return mapping if isinstance(mapping, dict) else {}
+
+
+def validate_v2_alpha_id(alpha_id: str) -> None:
+    """在创建快照/初始化数据库前拒绝旧 V1 id，避免静默近似迁移。"""
+    path = CONFIGS / "alphas" / f"{alpha_id}.yaml"
+    if path.is_file():
+        return
+    if alpha_id in _legacy_migration_map():
+        raise ValueError(
+            f"V1 strategy_id {alpha_id!r} 已归档；请查阅 "
+            "docs/legacy/strategy-v1/migration-map.yaml"
+        )
+    available = sorted(p.stem for p in (CONFIGS / "alphas").glob("*.yaml"))
+    raise ValueError(f"未知 V2 alpha_id {alpha_id!r}；可选: {available}")
 
 
 def _load(rel: str) -> dict:
@@ -71,6 +109,7 @@ def build_v2_config(
     snapshots_dir: str | None = None,
     canonical: bool = False,
 ) -> V2RunConfig:
+    validate_v2_alpha_id(alpha_id)
     alpha = alpha_from_dict(_load(f"alphas/{alpha_id}.yaml"))
     profiles = {}
     for f in alpha.factors:
@@ -152,6 +191,25 @@ def historical_hs300_universe_rules() -> UniverseRules:
     )
 
 
+def historical_full_universe() -> list[str]:
+    """沪深300+中证500历史成分并集，供 V2 预加载。"""
+    from stockfu.services.index_universe import historical_member_codes
+
+    return historical_member_codes()
+
+
+def historical_full_universe_rules() -> UniverseRules:
+    """沪深300+中证500历史点时成员规则；每日按有效区间过滤。"""
+    from stockfu.services.index_universe import (
+        HISTORICAL_INDEX_CODES, HISTORICAL_UNIVERSE_ID,
+    )
+
+    return UniverseRules(
+        universe_id=HISTORICAL_UNIVERSE_ID,
+        index_codes=HISTORICAL_INDEX_CODES,
+    )
+
+
 def default_universe(eval_start: date, eval_end: date) -> list[str]:
     """默认回测池:区间内有行情的 A 股个股(00/30/60/68 开头,6 位)。
 
@@ -191,10 +249,11 @@ def run(alpha_id: str, *, eval_start: date, eval_end: date,
     数据快照在股票池解析前确定（阻塞①）：未提供时新建或从 resume 工件恢复；
     codes 省略（默认池）时解析必须在快照只读上下文内，确保候选池也来自快照。
     """
+    deployment = DEFAULT_V2_DEPLOYMENTS.get(alpha_id, {})
     if portfolio_id is None:
-        portfolio_id = "cn_equity_top15_v2"
+        portfolio_id = deployment.get("portfolio_id", "cn_equity_top15_v2")
     if risk_id is None:
-        risk_id = "no_overlay_v1"
+        risk_id = deployment.get("risk_id", "no_overlay_v1")
     from stockfu.backtest.v2_engine import canonical_preflight, resolve_snapshot
     # fail-closed 预检（§4.13.3-2）：canonical 门禁必须先于任何副作用——
     # 此处 resolve_snapshot 可能新建快照，故 preflight 必须在它之前。
