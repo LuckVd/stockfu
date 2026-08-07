@@ -1,0 +1,36 @@
+# 因子评分档案:TTM 股息率(设计 §7 示例、§11.2、§12)。
+# 不可变;改任何值 → 新 profile_id + version。
+profile_id: dividend_yield_ttm_v1
+version: 1
+raw_metric:
+  id: dividend_yield_ttm
+  params: {price_basis: raw, trailing_days: 365}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.50
+      knots: [[0, 0], [1, 20], [2, 40], [3, 50], [5, 75], [8, 90], [12, 100]]
+    market_history:
+      weight: 0.25
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 3000
+    industry_history:
+      weight: 0.15
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 300
+    self_history:
+      weight: 0.10
+      state: rolling
+      years: 5
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

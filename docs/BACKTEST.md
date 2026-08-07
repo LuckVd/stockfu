@@ -1,6 +1,6 @@
 # StockFu A 股回测：当前研究模式
 
-> 文档状态：2026-08-05 当前实现的唯一回测口径。旧的高可信 Raw 账户、独立公司行为账本和旧版 strict 账本方案已从主回测实现移除；仍有价值的风险提示保留在“研究经验”中。当前交易约束仍由宇宙与执行规则统一执行。
+> 文档状态：2026-08-07。旧的高可信 Raw 账户、独立公司行为账本和旧版 strict 账本方案已从主回测实现移除；仍有价值的风险提示保留在“研究经验”中。当前交易约束仍由宇宙与执行规则统一执行。**V2 修复前的回测数字已作废；修复后实现与正式 canonical 收尾状态见 §5。**
 
 ## 0. 当前口径
 
@@ -125,3 +125,50 @@ python3 main.py --update-backtests --strategies a,b --start 2007-01-04 --end 202
 - 是否把 full 结果误读成样本外结果。
 
 长窗回测需要观察 RSS；算子缓存数据库很大不代表每次回测都应全量加载，滚动预载是当前实现的内存边界。
+
+## 5. V2 因子评分与回测架构（2026-08 起核心落地）
+
+V2 是与 V1 并存的新评分/回测架构，目标是替换 V1 的量纲契约：统一 0–100 因子分、四层解耦（评分 alpha / 组合 portfolio / 风险 risk）、严格点时与 prefix invariance。完整设计见 `docs/SPECS/factor-strategy-score-v2.md`，实现决策与疑难见 `docs/SPECS/v2-implementation-notes.md`。V2 修复前生成的结果不再作为验收依据。
+
+### 5.1 范围与口径
+
+- **价格与公司行为沿用 §0**（qfq 估值、raw 信号、T+1 开盘执行、dividend_event、涨跌停/费用/整手）；V2 只重写评分编排，记账/撮合复用 `engine.py` 已验证单元。
+- 评分链路：raw 值 → 因子分（0–100，profile 映射）→ 策略分（alpha 加权）→ 目标仓位（portfolio）→ 风险覆盖（risk）。**同一 alpha 换 policy/risk，分数不变**。
+- 时间协议：前 1/5 观察期不交易，后 4/5 formal；t 日评分只读 cutoff<t 的历史，先评分后更新状态，信号 t 日产生最早 t+1 成交；prefix invariance 为硬约束（§16.8）。
+
+### 5.2 当前实现（核心 + 红利低波 vertical slice）
+
+- 已落地：`stockfu/scoring/`（contracts/mappings/profiles/history/scorer）、`stockfu/strategy/`（alpha/portfolio/rebalancer/risk）、`stockfu/factors/raw/`、`stockfu/backtest/v2_engine.py` + `v2_run.py`、V2 参数/成熟门禁/确定性回归测试。当前只绑定 4 个 raw metric；未迁移算子见 `docs/SPECS/v2-unmigrated-operators.md`。
+- canonical 因子档案为 `dividend_yield_ttm_v2`、`low_volatility_20d_v2`（hybrid 映射，当前行业字段不可点时追溯，因此不启用 `industry_history`）；旧的 `_v1` 档案仅保留作兼容复现。
+- 当前不作为 V2 阻塞项：其余旧因子迁移和 V1 物理归档删除；旧实现档案见
+  `docs/SPECS/v2-unmigrated-operators.md`。历史沪深300成分已按日生效过滤；行业点时比较、
+  全部 V1 风险变体和 2007–2026/三跑研究门禁另立任务。本阶段已提供 `no_overlay_v1` 基线
+  与 `v1_core_v1` V1-inspired 核心风险版。
+
+### 5.3 命令
+
+```bash
+python3 main.py --backtest-v2 dividend_low_vol_v2 \
+  --start 2021-01-01 --end 2026-08-05 --history-origin 2018-01-01 \
+  --observation-count 271 --codes hs300
+# --codes: hs300（历史生效成分，按日过滤）/ 逗号列表 / 省略=全 A 股
+# --portfolio-v2 / --risk-v2 可覆盖；--history-origin 默认 eval_start 前 5 年
+# 正式可比回测必须固定 --observation-count；省略时仅按本次区间的 20% 做探索性切分。
+# --checkpoint PATH：默认每 20 个交易日原子写入完整账户/历史/挂单/换手/risk 状态
+# --resume PATH：从完整 checkpoint 继续；固定 observation-count 后可延长 --end
+```
+
+### 5.4 修复后真实池非 canonical 复验（研究结果，非收益承诺）
+
+口径：`dividend_low_vol_v2`、沪深300历史点时成分并集按日过滤、2021-01-01 → 2026-08-05、预热 2018-01-01、固定观察期 271 日、qfq 估值、月调 top15。以下两组来自未提交工作树的 `non_canonical_dirty` 工程复验，用于核对行为回归，不是正式 canonical 工件；修复前 `_v1` 的 +43.41% / +18.29% 结果已作废，不与下表混用。
+
+| 风险配置 | 总收益 | 年化 | 最大回撤 | Sharpe | 超额(vs 沪深300 −1.08%) | 成交 |
+|---|---:|---:|---:|---:|---:|---:|
+| `no_overlay_v1` | +51.96% | +10.24% | 14.05% | 0.82 | +53.04% | 896 |
+| `v1_core_v1` | +28.26% | +5.97% | 11.73% | 0.67 | +29.34% | 1753 |
+
+两组 formal 期均为 1082 个交易日，首笔成交 2022-02-21，末笔成交 2026-08-04；股息 raw 缺失率 9.08%，低波为 0%。风控版触发 regime 631 次、组合刹车 47 次、止盈 15 次、止损 0 次。数字仅用于代码/数据口径下的研究复现，不代表策略优劣或实盘收益。
+
+### 5.5 V2 引擎可用性结论
+
+全量回归 `348 passed`，合成非空交易、月度调度、停牌延迟订单、风险缩放不累乘、raw 契约、终点采样、快照隔离、checkpoint/audit 恢复和 canonical fail-closed 均有覆盖；修复后的真实沪深300池 baseline 与 `v1_core_v1` 已作非 canonical 全程复验并精确复现。V2 在本 vertical slice 内可用于研究回测；正式 canonical 结论仍须从干净提交重新生成两组 checkpoint/audit 并独立核验，且不代表所有旧因子、行业点时比较、长周期策略门禁或实盘收益保证都已完成。

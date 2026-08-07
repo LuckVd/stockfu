@@ -1,5 +1,6 @@
 # StockFu · 项目配置
-# 包管理走裸 pip + requirements.txt;本文件目前仅用于 ruff(代码检查)。
+# 包管理走 uv + requirements.lock（唯一真源；requirements.txt 仅作更新锁的输入，
+# 不得用于部署/测试）。本文件目前仅用于 ruff(代码检查)。
 
 [tool.ruff]
 target-version = "py312"
