@@ -1438,6 +1438,8 @@ def run_backtest(codes: list[str], start: date, end: date,
     """
     if valuation_basis not in ("raw", "qfq", "hfq"):
         raise ValueError(f"valuation_basis 必须是 raw/qfq/hfq,Got {valuation_basis!r}")
+    from stockfu.backtest.v1_gate import ensure_v1_backtest_enabled
+    ensure_v1_backtest_enabled()
     credit_dividends = valuation_basis == "raw"   # raw 需显式补分红;qfq/hfq 已含分红,再入账=重复计息
     if debounce is not None:   # dataclass 覆盖各裸 kwargs(双入口向后兼容)
         buy_cool_down_days = debounce.buy_cool_down_days

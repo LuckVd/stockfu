@@ -1,0 +1,25 @@
+version: 1
+name: 双布林带(周+月)
+# 周线布林带(中周期)+月线布林带(长周期)双周期共振。
+# 周线出信号+月线方向一致 → 强信号；冲突 → 观望。
+operators:
+  - {id: weekly_bollinger, type: math, weight: 1.0, params: {window: 20, std_dev: 2.0}}
+  - {id: monthly_bollinger, type: math, weight: 0.8, params: {window: 20, std_dev: 2.0}}
+  - {id: momentum, type: math, weight: 0.4, params: {window: 20}}
+
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 10, buy: 4, hold: -4, sell: -10}
+
+position:
+  mode: continuous
+  max_w: 0.10
+  dead: 3.0
+
+debounce:
+  buy_cool_down_days: 5
+  max_target_step: 0.3
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  sell_cooldown_days: 3
+  conf_gate: 0.3

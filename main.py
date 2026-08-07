@@ -505,6 +505,8 @@ def run_update_backtests(
 
     strategies: 逗号分隔 strategy_id;None/空 = 目录全部。
     """
+    from stockfu.backtest.v1_gate import ensure_v1_backtest_enabled
+    ensure_v1_backtest_enabled()
     from stockfu.backtest.full_cycle_update import (
         print_catalog,
         update_backtests,
@@ -642,11 +644,16 @@ def run_v2_backtest_cli(alpha_id: str, start: str | None, end: str | None,
     # init_db 会写主库 schema，resolve_snapshot 可能创建 GB 级快照。
     from stockfu.backtest.v2_engine import canonical_preflight
     canonical_preflight(canonical)
+    from stockfu.backtest.v2_run import (
+        default_universe, historical_full_universe,
+        historical_full_universe_rules, historical_hs300_universe_rules,
+        hs300_universe, run,
+        validate_v2_alpha_id,
+    )
+    # 旧 V1 id 必须在 init_db/快照等副作用之前 fail-closed，明确指向归档映射。
+    validate_v2_alpha_id(alpha_id)
     from stockfu.db import init_db
     init_db()
-    from stockfu.backtest.v2_run import (
-        default_universe, historical_hs300_universe_rules, hs300_universe, run,
-    )
     from stockfu.services.universe import resolve_base_codes
 
     end_d = end or date.today().isoformat()
@@ -664,9 +671,13 @@ def run_v2_backtest_cli(alpha_id: str, start: str | None, end: str | None,
                             snapshots_dir=None)
     with use_read_engine(snapshot_engine(snap)):
         universe_rules = None
-        if codes and codes.lower() == "hs300":
+        low_codes = codes.lower() if codes else None
+        if low_codes == "hs300":
             code_list = hs300_universe()
             universe_rules = historical_hs300_universe_rules()
+        elif low_codes in ("historical_indices", "historical_index", "csi300_csi500"):
+            code_list = historical_full_universe()
+            universe_rules = historical_full_universe_rules()
         elif codes:
             code_list = resolve_base_codes(codes)
         else:
@@ -720,6 +731,8 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     --codes: 省略=沪深300+中证500时点成分宇宙；all/pool=大盘候选池；或逗号列表。
     估值口径默认 qfq(研究模式主线,已含分红再投);研究模式详见 docs/BACKTEST.md §0。
     """
+    from stockfu.backtest.v1_gate import ensure_v1_backtest_enabled
+    ensure_v1_backtest_enabled()
     from datetime import date, timedelta
 
     from stockfu.db import init_db, set_app_config, session_scope
@@ -1022,9 +1035,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="立即把最近一次扫描生成推荐卡片并发送测试邮件")
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
     p.add_argument("--backtest", metavar="STRATEGY", default=None,
-                   help="回测策略ID（如 macd_cross / bollinger_reversion）；详见 docs/BACKTEST.md")
+                   help="已禁用的 V1 回测入口；请使用 --backtest-v2")
     p.add_argument("--backtest-v2", metavar="ALPHA_ID", default=None,
-                   help="V2 回测:alpha_id(如 dividend_low_vol_v2);--codes hs300 使用历史成分；复用 --start/--end/--cash")
+                   help="V2 回测:alpha_id(如 dividend_low_vol_v2);"
+                        "--codes hs300 或 historical_indices 使用历史成分；"
+                        "复用 --start/--end/--cash")
     p.add_argument("--portfolio-v2", default=None,
                    help="V2 portfolio_policy_id(默认 cn_equity_top15_v2)")
     p.add_argument("--risk-v2", default=None,
@@ -1049,7 +1064,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--checkpoint-every", type=int, default=20,
                    help="V2 每隔多少个交易日写一次完整断点，默认 20（§4.8.4）")
     p.add_argument("--update-backtests", action="store_true",
-                   help="全周期重跑更新到最新(固化验收口径;配合 --strategies 可选子集,省略=全部)")
+                   help="已禁用的 V1 全周期回测入口；请使用 --backtest-v2")
     p.add_argument("--strategies", default=None, metavar="IDS",
                    help="逗号分隔 strategy_id。"
                         "--update-backtests:省略=目录全部;"

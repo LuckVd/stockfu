@@ -2,12 +2,24 @@
 
 本文件记录 V2 vertical slice 的明确边界。本阶段不做全量算子迁移；未列为 active 的算子不得被 V2 runtime 自动扫描，也不得把 V1 `score` 当作 V2 raw 或 factor score。
 
+## 范围决策（2026-08-07）
+
+V1 因子不要求全量迁移到 V2。V2 采用选择性迁移：只有明确的研究或业务需求、且完成
+raw 点时边界、单位/缺失规则、profile 映射、无未来测试和回归验收的因子，才进入 V2
+active registry。未迁移因子继续作为 V1 归档或兼容实现保留，不构成 V2 未完成的阻塞项，
+也不得为了追求覆盖率而把旧 `score` 静默接入 V2 评分链路。
+
+从本决定起，新的 V1 回测统一拒绝：`--backtest`、`--update-backtests`、V1
+`backtest.scheduler.run()` 和 `backtest.engine.run_backtest()` 均 fail-closed，后续回测
+必须使用 V2 alpha/config/portfolio/risk 链路。V1 策略、算子和历史产物暂保留用于兼容读取、
+信号/评估等尚未迁移的业务路径，不再作为新回测入口。
+
 ## 当前已绑定 raw metric
 
 | V2 raw metric | profile | 状态 | 说明 |
 |---|---|---|---|
 | `low_beta` | `low_beta_v1` | active | 120 日、qfq、指定基准；参数进入 raw fingerprint |
-| `dividend_yield_ttm` | `dividend_yield_ttm_v2` | active | 365 日 ex-date TTM、raw close；不启用当前行业历史分量 |
+| `dividend_yield_ttm` | `dividend_yield_ttm_v2` | active | 365 日 ex-date TTM、raw close；窗口内无现金分红按有效 0% 参与评分，不启用当前行业历史分量 |
 | `low_volatility_20d` | `low_volatility_20d_v2` | active | 20 日 qfq 年化波动率；不启用当前行业历史分量 |
 | `value` | `value_v1` | compatibility | 仍是 V1 PE 历史分位，仅用于 `low_beta_dividend_v2` 对照；不满足 earnings_yield/book_to_price 拆分要求 |
 
