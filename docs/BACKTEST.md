@@ -1,6 +1,6 @@
 # StockFu A 股回测：当前研究模式
 
-> 文档状态：2026-08-07。旧的高可信 Raw 账户、独立公司行为账本和旧版 strict 账本方案已从主回测实现移除；仍有价值的风险提示保留在“研究经验”中。当前交易约束仍由宇宙与执行规则统一执行。**V2 修复前的回测数字已作废；修复后实现与正式 canonical 收尾状态见 §5。**
+> 文档状态：2026-08-07。旧的高可信 Raw 账户、独立公司行为账本和旧版 strict 账本方案已从主回测实现移除；仍有价值的风险提示保留在“研究经验”中。当前交易约束仍由宇宙与执行规则统一执行。**V2 修复前的回测数字已作废；修复后正式 canonical 验收见 §5。**
 
 ## 0. 当前口径
 
@@ -158,9 +158,9 @@ python3 main.py --backtest-v2 dividend_low_vol_v2 \
 # --resume PATH：从完整 checkpoint 继续；固定 observation-count 后可延长 --end
 ```
 
-### 5.4 修复后真实池非 canonical 复验（研究结果，非收益承诺）
+### 5.4 修复后真实池 canonical 复验（研究结果，非收益承诺）
 
-口径：`dividend_low_vol_v2`、沪深300历史点时成分并集按日过滤、2021-01-01 → 2026-08-05、预热 2018-01-01、固定观察期 271 日、qfq 估值、月调 top15。以下两组来自未提交工作树的 `non_canonical_dirty` 工程复验，用于核对行为回归，不是正式 canonical 工件；修复前 `_v1` 的 +43.41% / +18.29% 结果已作废，不与下表混用。
+口径：`dividend_low_vol_v2`、沪深300历史点时成分并集按日过滤、2021-01-01 → 2026-08-05（快照数据到 2026-08-04，manifest 明确截断）、预热 2018-01-01、固定观察期 271 日、qfq 估值、月调 top15。两组均从干净提交 `98be076c2d2bcf1efc25d961dbe1b4d2608eafb7` 从头运行，`status=canonical`、`git_dirty=false`，绑定 lock SHA `ef8036cd…ab7` 与只读快照 `2ee50075…8cff`。修复前 `_v1` 的 +43.41% / +18.29% 结果已作废，不与下表混用。
 
 | 风险配置 | 总收益 | 年化 | 最大回撤 | Sharpe | 超额(vs 沪深300 −1.08%) | 成交 |
 |---|---:|---:|---:|---:|---:|---:|
@@ -171,4 +171,4 @@ python3 main.py --backtest-v2 dividend_low_vol_v2 \
 
 ### 5.5 V2 引擎可用性结论
 
-全量回归 `348 passed`，合成非空交易、月度调度、停牌延迟订单、风险缩放不累乘、raw 契约、终点采样、快照隔离、checkpoint/audit 恢复和 canonical fail-closed 均有覆盖；修复后的真实沪深300池 baseline 与 `v1_core_v1` 已作非 canonical 全程复验并精确复现。V2 在本 vertical slice 内可用于研究回测；正式 canonical 结论仍须从干净提交重新生成两组 checkpoint/audit 并独立核验，且不代表所有旧因子、行业点时比较、长周期策略门禁或实盘收益保证都已完成。
+全量回归 `348 passed`，合成非空交易、月度调度、停牌延迟订单、风险缩放不累乘、raw 契约、终点采样、快照隔离、checkpoint/audit 恢复和 canonical fail-closed 均有覆盖。两组磁盘工件分别为 `data/backtest/v2-canonical-{no-overlay,v1-core}-98be076.json` 及同名 audit/log；独立报告 `data/backtest/v2-canonical-verification-98be076.json` 对 finalized、provenance、state/全部组件/output/run_id、1353 行 audit 链、快照 SHA/权限和 939 只候选池 fingerprint 共 14 类检查全部通过。**V2 在当前 vertical slice 内通过工程正确性验收，可用于可复现研究回测**；这不代表其余旧因子、行业点时比较、长周期策略研究门禁或实盘收益保证已经完成。
