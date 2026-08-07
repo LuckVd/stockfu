@@ -877,3 +877,27 @@ UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system -r requirements.lock
 `ef8036cd7a8ef7ff03610bf5381a6646ded29dca69be2716e8eca6ec3ad04ab7`，解析 73 包且与环境匹配。
 既有快照 `stockfu-2ee50075f50c.db` 已从 0644 加固为 0444，内容 SHA 不变。本轮仍未提交、未重启
 生产、未生成两组当前代码的 canonical 工件；这些运维门禁完成前不恢复“工程正确性验收通过”。
+
+## 4.18 clean commit canonical 最终收尾（2026-08-07）
+
+代码与混合工作树已按逻辑提交：`00ef26c`（V2 引擎/配置/lock/测试/文档）、`0ae6330`
+（operator cache 幂等修复）、`98be076`（signal mail 长表）；随后工作树为空。canonical preflight
+确认 `git_commit=98be076c2d2bcf1efc25d961dbe1b4d2608eafb7`、`git_dirty=false`、lock SHA
+`ef8036cd7a8ef7ff03610bf5381a6646ded29dca69be2716e8eca6ec3ad04ab7`、当前环境与 73 包锁一致。
+
+从同一只读快照 `sha256:2ee50075f50c767b75b3bda095b4ba321a74ce0801cdf88ade183309e8748cff`
+并行从头运行两组 canonical，均 exit 0、formal 1082 日，结果与修复后的非 canonical 复验逐项一致：
+
+- `no_overlay_v1`：run_id `7b7c9fc1cccbb88a6e797668d3ae5399a685c71c788cf76cc5da8c70402332a6`，
+  896 笔，总收益 51.96%，年化 10.24%，最大回撤 14.05%，Sharpe 0.82，超额 53.04%。
+- `v1_core_v1`：run_id `1741d925d3adaf8975ef6a666bbb92f5bdcaa43aef9e1a59ebaacf4e5e7c737d`，
+  1753 笔，总收益 28.26%，年化 5.97%，最大回撤 11.73%，Sharpe 0.67，超额 29.34%。
+
+独立脚本只读磁盘工件重新构造 formal equity/benchmark/metrics/raw summary/score diagnostics，并重算
+state、trades、全部组件、output checksum、run_id；同时逐行重放 1353 行 audit checksum 链、复算
+offset/文件大小、2.1 GiB 快照 SHA/只读位以及快照中 939 只沪深300历史候选 fingerprint。两组 14 类
+检查全部为 true，报告为 `data/backtest/v2-canonical-verification-98be076.json`。
+
+至此 §4.8.6 的 10 项门禁全部满足，恢复结论：**V2 当前 vertical slice 通过工程正确性验收，可用于
+可复现研究回测。** 生产 Web 进程仍需单独部署重启与 HTTP/邮件/浏览器 smoke；这属于部署验收，
+不改变本次离线回测引擎 canonical 结论。
