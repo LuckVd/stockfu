@@ -312,6 +312,8 @@ def update_backtests(
     Returns:
         {start, end, planned, results, summary_path?}
     """
+    from stockfu.backtest.v1_gate import ensure_v1_backtest_enabled
+    ensure_v1_backtest_enabled()
     from stockfu.ai.operators.registry import discover_and_register
     from stockfu.ai.operators.seed import seed_operators_and_strategies
     from stockfu.db import init_db

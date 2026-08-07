@@ -1,0 +1,406 @@
+schema_version: 1
+mapping:
+  momentum_breakout:
+    disposition: keep
+    v2_target: null
+    note: 实质为动量追涨，不是布林回归
+    base_id: momentum_breakout
+    source_file: momentum_breakout.yaml
+    variant_key: null
+  cn_momentum_cross_section:
+    disposition: keep
+    v2_target: momentum_cross_section
+    note: ''
+    base_id: cn_momentum_cross_section
+    source_file: cn_momentum_cross_section.yaml
+    variant_key: null
+  dual_bollinger:
+    disposition: rebuild
+    v2_target: null
+    note: 均值回归与动量方向需重新审视
+    base_id: dual_bollinger
+    source_file: dual_bollinger.yaml
+    variant_key: null
+  dividend_cross_section:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: variants sl30/sl30w10/sl30w20；H1 只保留一个 alpha，止盈/刹车并入 policy/risk（§18.4）
+    base_id: dividend_cross_section
+    source_file: dividend_cross_section.yaml
+    variant_key: null
+  dividend_cross_section#sl30:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: 继承 base 策略 dividend_cross_section 的处置；variants sl30/sl30w10/sl30w20；H1 只保留一个
+      alpha，止盈/刹车并入 policy/risk（§18.4）
+    base_id: dividend_cross_section
+    source_file: dividend_cross_section.yaml
+    variant_key: sl30
+  dividend_cross_section#sl30w10:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: 继承 base 策略 dividend_cross_section 的处置；variants sl30/sl30w10/sl30w20；H1 只保留一个
+      alpha，止盈/刹车并入 policy/risk（§18.4）
+    base_id: dividend_cross_section
+    source_file: dividend_cross_section.yaml
+    variant_key: sl30w10
+  dividend_cross_section#sl30w20:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: 继承 base 策略 dividend_cross_section 的处置；variants sl30/sl30w10/sl30w20；H1 只保留一个
+      alpha，止盈/刹车并入 policy/risk（§18.4）
+    base_id: dividend_cross_section
+    source_file: dividend_cross_section.yaml
+    variant_key: sl30w20
+  dividend_cross_section_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHfull
+    base_id: dividend_cross_section_take_profit
+    source_file: dividend_cross_section_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHpartial
+    base_id: dividend_cross_section_partial_take_profit
+    source_file: dividend_cross_section_partial_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_atr_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHatr 并入 risk policy
+    base_id: dividend_cross_section_atr_take_profit
+    source_file: dividend_cross_section_atr_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_atr_lagged_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHatrLag 并入 risk policy
+    base_id: dividend_cross_section_atr_lagged_take_profit
+    source_file: dividend_cross_section_atr_lagged_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_brake_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHbrake 并入 risk policy
+    base_id: dividend_cross_section_partial_brake_take_profit
+    source_file: dividend_cross_section_partial_brake_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_gentle_brake_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHgentle
+    base_id: dividend_cross_section_partial_gentle_brake_take_profit
+    source_file: dividend_cross_section_partial_gentle_brake_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_selective_brake_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHselect
+    base_id: dividend_cross_section_partial_selective_brake_take_profit
+    source_file: dividend_cross_section_partial_selective_brake_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_exposure_brake_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHdeep；variant deep/rec125
+    base_id: dividend_cross_section_partial_exposure_brake_take_profit
+    source_file: dividend_cross_section_partial_exposure_brake_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_exposure_brake_take_profit#deep:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: 继承 base 策略 dividend_cross_section_partial_exposure_brake_take_profit 的处置；RHdeep；variant
+      deep/rec125
+    base_id: dividend_cross_section_partial_exposure_brake_take_profit
+    source_file: dividend_cross_section_partial_exposure_brake_take_profit.yaml
+    variant_key: deep
+  dividend_cross_section_partial_exposure_brake_take_profit#rec125:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: 继承 base 策略 dividend_cross_section_partial_exposure_brake_take_profit 的处置；RHdeep；variant
+      deep/rec125
+    base_id: dividend_cross_section_partial_exposure_brake_take_profit
+    source_file: dividend_cross_section_partial_exposure_brake_take_profit.yaml
+    variant_key: rec125
+  dividend_cross_section_partial_drawdown_add_gated_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHadd 简单版（max_gross=1.00）
+    base_id: dividend_cross_section_partial_drawdown_add_gated_take_profit
+    source_file: dividend_cross_section_partial_drawdown_add_gated_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_exposure_add_gated_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHadd 分级版
+    base_id: dividend_cross_section_partial_exposure_add_gated_take_profit
+    source_file: dividend_cross_section_partial_exposure_add_gated_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_exposure_brake_hold_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: H2 + RHhold
+    base_id: dividend_cross_section_partial_exposure_brake_hold_take_profit
+    source_file: dividend_cross_section_partial_exposure_brake_hold_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_exposure_add_gated_hold_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: H2 + RHaddHold
+    base_id: dividend_cross_section_partial_exposure_add_gated_hold_take_profit
+    source_file: dividend_cross_section_partial_exposure_add_gated_hold_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_exposure_brake_regime_trend_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHtrend 并入 risk policy
+    base_id: dividend_cross_section_partial_exposure_brake_regime_trend_take_profit
+    source_file: dividend_cross_section_partial_exposure_brake_regime_trend_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_exposure_brake_regime_vol_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHvol
+    base_id: dividend_cross_section_partial_exposure_brake_regime_vol_take_profit
+    source_file: dividend_cross_section_partial_exposure_brake_regime_vol_take_profit.yaml
+    variant_key: null
+  dividend_cross_section_partial_exposure_brake_regime_trendvol_take_profit:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: RHtrendvol
+    base_id: dividend_cross_section_partial_exposure_brake_regime_trendvol_take_profit
+    source_file: dividend_cross_section_partial_exposure_brake_regime_trendvol_take_profit.yaml
+    variant_key: null
+  fifty_two_week_high_cross_section:
+    disposition: archive_only
+    v2_target: null
+    note: 旧注释称满仓配置已证伪，先 archive_only
+    base_id: fifty_two_week_high_cross_section
+    source_file: fifty_two_week_high_cross_section.yaml
+    variant_key: null
+  small_cap_low_turnover:
+    disposition: rebuild
+    v2_target: null
+    note: 可靠市值与容量门禁就绪后重建
+    base_id: small_cap_low_turnover
+    source_file: small_cap_low_turnover.yaml
+    variant_key: null
+  low_turnover_reversal:
+    disposition: v2_candidate
+    v2_target: liquidity_size
+    note: ''
+    base_id: low_turnover_reversal
+    source_file: low_turnover_reversal.yaml
+    variant_key: null
+  illiquidity_value:
+    disposition: rebuild
+    v2_target: null
+    note: 需加容量硬门禁后重建
+    base_id: illiquidity_value
+    source_file: illiquidity_value.yaml
+    variant_key: null
+  anti_lottery_defensive:
+    disposition: rebuild
+    v2_target: null
+    note: value 拆分后重新研究
+    base_id: anti_lottery_defensive
+    source_file: anti_lottery_defensive.yaml
+    variant_key: null
+  low_beta_dividend:
+    disposition: rebuild
+    v2_target: defensive_family
+    note: value 拆分后重建 defensive 家族
+    base_id: low_beta_dividend
+    source_file: low_beta_dividend.yaml
+    variant_key: null
+  ts_momentum_trend:
+    disposition: v2_candidate
+    v2_target: momentum_trend
+    note: 另 target_vol=.15/vol_window=63/vol_floor=.30
+    base_id: ts_momentum_trend
+    source_file: ts_momentum_trend.yaml
+    variant_key: null
+  graham_defensive_value:
+    disposition: archive_only
+    v2_target: null
+    note: 存在股息重复，旧 alpha 不复用
+    base_id: graham_defensive_value
+    source_file: graham_defensive_value.yaml
+    variant_key: null
+  donchian_breakout_cross_section:
+    disposition: keep
+    v2_target: null
+    note: stop=.18/gross=1/brake=0；ATR20 止盈两档
+    base_id: donchian_breakout_cross_section
+    source_file: donchian_breakout_cross_section.yaml
+    variant_key: null
+  smart_beta_multi_factor:
+    disposition: archive_only
+    v2_target: null
+    note: value/graham 重复
+    base_id: smart_beta_multi_factor
+    source_file: smart_beta_multi_factor.yaml
+    variant_key: null
+  amplitude:
+    disposition: research
+    v2_target: amplitude
+    note: 单因子研究，归档后用 V2 amplitude 重建
+    base_id: amplitude
+    source_file: amplitude.yaml
+    variant_key: null
+  bias_reversal:
+    disposition: research
+    v2_target: null
+    note: 单因子研究
+    base_id: bias_reversal
+    source_file: bias_reversal.yaml
+    variant_key: null
+  bollinger_reversion:
+    disposition: rebuild
+    v2_target: null
+    note: 意图 top_n，V2 重组
+    base_id: bollinger_reversion
+    source_file: bollinger_reversion.yaml
+    variant_key: null
+  bollinger_reversion_cross_section:
+    disposition: rebuild
+    v2_target: null
+    note: 意图 cap_and_rank
+    base_id: bollinger_reversion_cross_section
+    source_file: bollinger_reversion_cross_section.yaml
+    variant_key: null
+  cn_momentum_rotation:
+    disposition: archive_only
+    v2_target: null
+    note: 通用策略已证伪（年化 4.34%/Sharpe .30/回撤 31.62%）
+    base_id: cn_momentum_rotation
+    source_file: cn_momentum_rotation.yaml
+    variant_key: null
+  cross_section_factor:
+    disposition: v2_candidate
+    v2_target: reversal_value
+    note: ''
+    base_id: cross_section_factor
+    source_file: cross_section_factor.yaml
+    variant_key: null
+  dividend_low_vol:
+    disposition: v2_candidate
+    v2_target: dividend_quality_value
+    note: 意图 top_n lock20
+    base_id: dividend_low_vol
+    source_file: dividend_low_vol.yaml
+    variant_key: null
+  etf_momentum_cross_section:
+    disposition: keep
+    v2_target: etf_momentum_cross_section
+    note: ETF market_scope 单列
+    base_id: etf_momentum_cross_section
+    source_file: etf_momentum_cross_section.yaml
+    variant_key: null
+  etf_momentum_rotation:
+    disposition: keep
+    v2_target: null
+    note: 意图 top5 lock20
+    base_id: etf_momentum_rotation
+    source_file: etf_momentum_rotation.yaml
+    variant_key: null
+  intraday_return:
+    disposition: research
+    v2_target: null
+    note: 单因子研究
+    base_id: intraday_return
+    source_file: intraday_return.yaml
+    variant_key: null
+  limit_up_count:
+    disposition: research
+    v2_target: null
+    note: V2 作为单边惩罚研究
+    base_id: limit_up_count
+    source_file: limit_up_count.yaml
+    variant_key: null
+  low_downside_vol:
+    disposition: research
+    v2_target: null
+    note: 单因子研究
+    base_id: low_downside_vol
+    source_file: low_downside_vol.yaml
+    variant_key: null
+  low_skewness:
+    disposition: research
+    v2_target: null
+    note: 因子方向需实证（downside_skewness 已从注册表下线）
+    base_id: low_skewness
+    source_file: low_skewness.yaml
+    variant_key: null
+  macd_cross:
+    disposition: rebuild
+    v2_target: null
+    note: 离散因子删除后按日/周连续强度重建
+    base_id: macd_cross
+    source_file: macd_cross.yaml
+    variant_key: null
+  momentum_breakout_cross_section:
+    disposition: keep
+    v2_target: null
+    note: ''
+    base_id: momentum_breakout_cross_section
+    source_file: momentum_breakout_cross_section.yaml
+    variant_key: null
+  near_52w_low:
+    disposition: research
+    v2_target: null
+    note: 单因子研究
+    base_id: near_52w_low
+    source_file: near_52w_low.yaml
+    variant_key: null
+  overnight_reversal:
+    disposition: research
+    v2_target: null
+    note: 单因子研究
+    base_id: overnight_reversal
+    source_file: overnight_reversal.yaml
+    variant_key: null
+  pure_factor:
+    disposition: archive_only
+    v2_target: null
+    note: 因子方向互相冲突
+    base_id: pure_factor
+    source_file: pure_factor.yaml
+    variant_key: null
+  residual_reversal:
+    disposition: rebuild
+    v2_target: null
+    note: 修复历史 beta 口径后重建
+    base_id: residual_reversal
+    source_file: residual_reversal.yaml
+    variant_key: null
+  reversal_cross_section:
+    disposition: keep
+    v2_target: null
+    note: ''
+    base_id: reversal_cross_section
+    source_file: reversal_cross_section.yaml
+    variant_key: null
+  reversal_strategy:
+    disposition: keep
+    v2_target: null
+    note: 意图 top8 lock20
+    base_id: reversal_strategy
+    source_file: reversal_strategy.yaml
+    variant_key: null
+  rsi_reversal:
+    disposition: research
+    v2_target: null
+    note: 与 mean_reversion 合并后研究
+    base_id: rsi_reversal
+    source_file: rsi_reversal.yaml
+    variant_key: null
+  volume_drought:
+    disposition: research
+    v2_target: null
+    note: 单因子研究
+    base_id: volume_drought
+    source_file: volume_drought.yaml
+    variant_key: null

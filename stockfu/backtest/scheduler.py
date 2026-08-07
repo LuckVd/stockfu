@@ -114,6 +114,8 @@ def run(codes: list[str], start, end, initial_cash: float = engine.INITIAL_CASH,
     去抖参数默认 None=用 active 策略 YAML 的 debounce;显式传非 None 则覆盖(调试用)。
     active 策略由 get_active_strategy()(读 app_config('active_strategy_id'))决定。旧 is_active 列已移除。
     """
+    from stockfu.backtest.v1_gate import ensure_v1_backtest_enabled
+    ensure_v1_backtest_enabled()
     from datetime import date as _date
     if isinstance(start, str):
         start = _date.fromisoformat(start)

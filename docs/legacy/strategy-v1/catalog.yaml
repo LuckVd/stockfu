@@ -1,0 +1,5082 @@
+schema_version: 1
+generated_at: '2026-08-07T14:37:11+08:00'
+git:
+  commit: 678d548e08b818c8f295d0a9d6d2abb5c5ec030f
+  dirty: true
+source_counts:
+  base_files_archived: 52
+  base_files_in_seed: 29
+  retained_ids: 31
+  expanded_entries: 57
+defaults_notes:
+  runtime_defaults_source: stockfu/ai/operators/runner.py CompiledStrategy.debounce_params()
+  engine_defaults_source: stockfu/backtest/engine.py 顶层常量
+  rebalancer_source: app_config active_rebalancer_id/rebalancer_params（seed 首次写入）
+strategies:
+- strategy_id: momentum_breakout
+  base_id: momentum_breakout
+  name: 月线动量突破
+  source_file: momentum_breakout.yaml
+  source_sha256: aee41b1d906099bab7e4dd62996e41704faf93fee03425b22a93604300a8599c
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: monthly_bollinger
+      type: math
+      weight: 1.2
+      params:
+        window: 20
+        std_dev: 2.0
+    - id: momentum
+      type: math
+      weight: 0.6
+      params:
+        window: 20
+    - id: trend_strength
+      type: math
+      weight: 0.4
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 10
+        buy: 4
+        hold: -4
+        sell: -10
+    position:
+      mode: continuous
+      max_w: 0.1
+      dead: 3.0
+    debounce:
+      buy_cool_down_days: 5
+      max_target_step: 0.3
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      sell_cooldown_days: 3
+      conf_gate: 0.3
+    risk: {}
+  effective:
+    buy_cool_down_days: 5
+    max_target_step: 0.3
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 3
+    conf_gate: 0.3
+    target_mode: continuous
+    max_weight: 0.1
+    total_dead: 3.0
+    score_full: 20.0
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: cn_momentum_cross_section
+  base_id: cn_momentum_cross_section
+  name: 个股动量横截面(动量+线性度+趋势)
+  source_file: cn_momentum_cross_section.yaml
+  source_sha256: f7641d97282f0bc0d2df35a96a9a196bc56632267b367daa30c4aeb6fea622eb
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: momentum
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+    - id: trend_linearity
+      type: math
+      weight: 0.6
+      params:
+        window: 20
+    - id: trend_strength
+      type: math
+      weight: 0.4
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk: {}
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dual_bollinger
+  base_id: dual_bollinger
+  name: 双布林带(周+月)
+  source_file: dual_bollinger.yaml
+  source_sha256: cf64b7f906c0dba15a4522f40911465c02bac0ce1b958f1548ce9947759b3084
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: weekly_bollinger
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+        std_dev: 2.0
+    - id: monthly_bollinger
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        std_dev: 2.0
+    - id: momentum
+      type: math
+      weight: 0.4
+      params:
+        window: 20
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 10
+        buy: 4
+        hold: -4
+        sell: -10
+    position:
+      mode: continuous
+      max_w: 0.1
+      dead: 3.0
+    debounce:
+      buy_cool_down_days: 5
+      max_target_step: 0.3
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      sell_cooldown_days: 3
+      conf_gate: 0.3
+    risk: {}
+  effective:
+    buy_cool_down_days: 5
+    max_target_step: 0.3
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 3
+    conf_gate: 0.3
+    target_mode: continuous
+    max_weight: 0.1
+    total_dead: 3.0
+    score_full: 20.0
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section
+  base_id: dividend_cross_section
+  name: 红利横截面(高股息+低波+价值)
+  source_file: dividend_cross_section.yaml
+  source_sha256: 9ef708484649ca11ddb307acee8f1566d59b069f9c67b970ab665c191f7447e7
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk: {}
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section#sl30
+  base_id: dividend_cross_section
+  name: 红利横截面(止损30%)
+  source_file: dividend_cross_section.yaml
+  source_sha256: 9ef708484649ca11ddb307acee8f1566d59b069f9c67b970ab665c191f7447e7
+  derived: true
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section#sl30w10
+  base_id: dividend_cross_section
+  name: 红利横截面(止损30%,单股10%)
+  source_file: dividend_cross_section.yaml
+  source_sha256: 9ef708484649ca11ddb307acee8f1566d59b069f9c67b970ab665c191f7447e7
+  derived: true
+  retained: false
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.1
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.1
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section#sl30w20
+  base_id: dividend_cross_section
+  name: 红利横截面(止损30%,单股20%)
+  source_file: dividend_cross_section.yaml
+  source_sha256: 9ef708484649ca11ddb307acee8f1566d59b069f9c67b970ab665c191f7447e7
+  derived: true
+  retained: false
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_take_profit
+  base_id: dividend_cross_section_take_profit
+  name: 红利横截面(分级追踪止盈)
+  source_file: dividend_cross_section_take_profit.yaml
+  source_sha256: 1da3090e1f2173e3084e6174c5b879217deeedd401e7e70915bc0d456f6bf443
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+        - profit: 0.3
+          drawdown: 0.03
+        hard_profit: 0.5
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 1.0
+    - - 0.3
+      - 0.03
+      - 1.0
+    take_profit_hard_pct: 0.5
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_take_profit
+  base_id: dividend_cross_section_partial_take_profit
+  name: 红利横截面(分段减仓止盈)
+  source_file: dividend_cross_section_partial_take_profit.yaml
+  source_sha256: 66811abc225b34f5664607c9b17e279570eb57e111dd76ac2d3d5896abd3b0e6
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_atr_take_profit
+  base_id: dividend_cross_section_atr_take_profit
+  name: 红利横截面(ATR分段减仓止盈)
+  source_file: dividend_cross_section_atr_take_profit.yaml
+  source_sha256: 0570a85aa994b42e61e90e313229419b269425f12e61de1ccf728ad2a8b704c6
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      take_profit:
+        atr_trailing:
+          period: 20
+          tiers:
+          - profit: 0.2
+            multiple: 2.0
+            sell_fraction: 0.3333333333
+          - profit: 0.3
+            multiple: 1.25
+            sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: 20
+    take_profit_atr_tiers:
+    - - 0.2
+      - 2.0
+      - 0.3333333333
+    - - 0.3
+      - 1.25
+      - 0.3333333333
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_atr_lagged_take_profit
+  base_id: dividend_cross_section_atr_lagged_take_profit
+  name: 红利横截面(滞后ATR分段减仓止盈)
+  source_file: dividend_cross_section_atr_lagged_take_profit.yaml
+  source_sha256: 54932879070b2508b8596239d21a4e2eeb602c2aa9816aa488afdad5657a9d86
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      take_profit:
+        atr_trailing:
+          period: 20
+          lagged: true
+          tiers:
+          - profit: 0.2
+            multiple: 2.0
+            sell_fraction: 0.3333333333
+          - profit: 0.3
+            multiple: 1.25
+            sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: 20
+    take_profit_atr_tiers:
+    - - 0.2
+      - 2.0
+      - 0.3333333333
+    - - 0.3
+      - 1.25
+      - 0.3333333333
+    take_profit_atr_lagged: true
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_brake_take_profit
+  base_id: dividend_cross_section_partial_brake_take_profit
+  name: 红利横截面(分段止盈+组合回撤刹车)
+  source_file: dividend_cross_section_partial_brake_take_profit.yaml
+  source_sha256: c71f39bb8256572a95a831e038908a714854af632b10a8823d39c117585c81f7
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_gentle_brake_take_profit
+  base_id: dividend_cross_section_partial_gentle_brake_take_profit
+  name: 红利横截面(分段止盈+平滑组合刹车)
+  source_file: dividend_cross_section_partial_gentle_brake_take_profit.yaml
+  source_sha256: e5e7784b2626023d20c914057957584226626a4798d68a8a5ad336b6ba78fd10
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 0.75
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 0.75
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_selective_brake_take_profit
+  base_id: dividend_cross_section_partial_selective_brake_take_profit
+  name: 红利横截面(分段止盈+选择性组合刹车)
+  source_file: dividend_cross_section_partial_selective_brake_take_profit.yaml
+  source_sha256: 6f7ca7529822fe07471bb350207a9221afba16cd4b5e0d1a99f3554f242e1640
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_mode: block_new_buys
+      portfolio_brake_scale: 1.0
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.0
+    portfolio_brake_mode: block_new_buys
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_exposure_brake_take_profit
+  base_id: dividend_cross_section_partial_exposure_brake_take_profit
+  name: 红利横截面(分段止盈+深度分级敞口刹车)
+  source_file: dividend_cross_section_partial_exposure_brake_take_profit.yaml
+  source_sha256: a0810212016c1456572d050aa086a7c0a2f6451aef65f54e4aa19c55ce7e9b6e
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 1.0
+      portfolio_brake_recover_high_days: 63
+      portfolio_brake_tiers:
+      - drawdown: 0.08
+        max_gross: 0.85
+      - drawdown: 0.12
+        max_gross: 0.75
+      - drawdown: 0.2
+        max_gross: 0.6
+      - drawdown: 0.3
+        max_gross: 0.45
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.0
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers:
+    - - 0.08
+      - 0.85
+    - - 0.12
+      - 0.75
+    - - 0.2
+      - 0.6
+    - - 0.3
+      - 0.45
+    portfolio_brake_recover_high_days: 63
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_exposure_brake_take_profit#deep
+  base_id: dividend_cross_section_partial_exposure_brake_take_profit
+  name: 红利横截面(分段止盈+深度刹车·仅深度触发)
+  source_file: dividend_cross_section_partial_exposure_brake_take_profit.yaml
+  source_sha256: a0810212016c1456572d050aa086a7c0a2f6451aef65f54e4aa19c55ce7e9b6e
+  derived: true
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 1.0
+      portfolio_brake_recover_high_days: 63
+      portfolio_brake_tiers:
+      - drawdown: 0.15
+        max_gross: 0.75
+      - drawdown: 0.25
+        max_gross: 0.55
+      - drawdown: 0.35
+        max_gross: 0.4
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.0
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers:
+    - - 0.15
+      - 0.75
+    - - 0.25
+      - 0.55
+    - - 0.35
+      - 0.4
+    portfolio_brake_recover_high_days: 63
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_exposure_brake_take_profit#rec125
+  base_id: dividend_cross_section_partial_exposure_brake_take_profit
+  name: 红利横截面(分段止盈+深度刹车+125日新高解除)
+  source_file: dividend_cross_section_partial_exposure_brake_take_profit.yaml
+  source_sha256: a0810212016c1456572d050aa086a7c0a2f6451aef65f54e4aa19c55ce7e9b6e
+  derived: true
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 1.0
+      portfolio_brake_recover_high_days: 125
+      portfolio_brake_tiers:
+      - drawdown: 0.08
+        max_gross: 0.85
+      - drawdown: 0.12
+        max_gross: 0.75
+      - drawdown: 0.2
+        max_gross: 0.6
+      - drawdown: 0.3
+        max_gross: 0.45
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.0
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers:
+    - - 0.08
+      - 0.85
+    - - 0.12
+      - 0.75
+    - - 0.2
+      - 0.6
+    - - 0.3
+      - 0.45
+    portfolio_brake_recover_high_days: 125
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_drawdown_add_gated_take_profit
+  base_id: dividend_cross_section_partial_drawdown_add_gated_take_profit
+  name: 红利横截面(分段止盈+回撤加仓质量门控)
+  source_file: dividend_cross_section_partial_drawdown_add_gated_take_profit.yaml
+  source_sha256: 53703eb2c69abe16adc7f53d7ff4b8f2878481bc1899fd837926400479da7005
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 1.2
+      portfolio_brake_max_gross: 1.0
+      portfolio_brake_add_min_score: 12.0
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.2
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: 1.0
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: 12.0
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_exposure_add_gated_take_profit
+  base_id: dividend_cross_section_partial_exposure_add_gated_take_profit
+  name: 红利横截面(分段止盈+分级敞口刹车+回撤加仓质量门控)
+  source_file: dividend_cross_section_partial_exposure_add_gated_take_profit.yaml
+  source_sha256: 03e1d0fffc9db613009e93e3baadae21812a11cc7b8d39db3fc3bea085d1ac0f
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 1.2
+      portfolio_brake_add_min_score: 12.0
+      portfolio_brake_recover_high_days: 63
+      portfolio_brake_tiers:
+      - drawdown: 0.08
+        max_gross: 0.95
+      - drawdown: 0.12
+        max_gross: 0.8
+      - drawdown: 0.2
+        max_gross: 0.65
+      - drawdown: 0.3
+        max_gross: 0.5
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.2
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: 12.0
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers:
+    - - 0.08
+      - 0.95
+    - - 0.12
+      - 0.8
+    - - 0.2
+      - 0.65
+    - - 0.3
+      - 0.5
+    portfolio_brake_recover_high_days: 63
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_exposure_brake_hold_take_profit
+  base_id: dividend_cross_section_partial_exposure_brake_hold_take_profit
+  name: 红利横截面(分段止盈+分级敞口刹车+买卖不对称滞回)
+  source_file: dividend_cross_section_partial_exposure_brake_hold_take_profit.yaml
+  source_sha256: 20c72faf00eff9bd893b231f1e9c7d5f222c1bc4f3a9bfac097e4b7223903d1b
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 1.0
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+      sell_weights:
+        dividend_yield: 2.0
+        low_volatility: 1.0
+        value: 2.0
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 5.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 30
+      sell_cooldown_days: 30
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      max_gross: 0.8
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 1.0
+      portfolio_brake_recover_high_days: 63
+      portfolio_brake_tiers:
+      - drawdown: 0.08
+        max_gross: 0.85
+      - drawdown: 0.12
+        max_gross: 0.75
+      - drawdown: 0.2
+        max_gross: 0.6
+      - drawdown: 0.3
+        max_gross: 0.45
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 30
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 30
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 5.0
+    score_full: 8
+    max_gross: 0.8
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.0
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers:
+    - - 0.08
+      - 0.85
+    - - 0.12
+      - 0.75
+    - - 0.2
+      - 0.6
+    - - 0.3
+      - 0.45
+    portfolio_brake_recover_high_days: 63
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_exposure_add_gated_hold_take_profit
+  base_id: dividend_cross_section_partial_exposure_add_gated_hold_take_profit
+  name: 红利横截面(分段止盈+分级敞口刹车+回撤加仓门控+买卖不对称滞回)
+  source_file: dividend_cross_section_partial_exposure_add_gated_hold_take_profit.yaml
+  source_sha256: c9bf98d70b586d85980cdcce554f48fecc806dd24e25651722693cafbeffe6d2
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 1.0
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+      sell_weights:
+        dividend_yield: 2.0
+        low_volatility: 1.0
+        value: 2.0
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 5.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 30
+      sell_cooldown_days: 30
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      max_gross: 0.8
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 1.2
+      portfolio_brake_add_min_score: 12.0
+      portfolio_brake_recover_high_days: 63
+      portfolio_brake_tiers:
+      - drawdown: 0.08
+        max_gross: 0.95
+      - drawdown: 0.12
+        max_gross: 0.8
+      - drawdown: 0.2
+        max_gross: 0.65
+      - drawdown: 0.3
+        max_gross: 0.5
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 30
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 30
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 5.0
+    score_full: 8
+    max_gross: 0.8
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.2
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: 12.0
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers:
+    - - 0.08
+      - 0.95
+    - - 0.12
+      - 0.8
+    - - 0.2
+      - 0.65
+    - - 0.3
+      - 0.5
+    portfolio_brake_recover_high_days: 63
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_exposure_brake_regime_trend_take_profit
+  base_id: dividend_cross_section_partial_exposure_brake_regime_trend_take_profit
+  name: 红利横截面(分段止盈+深度刹车+趋势regime)
+  source_file: dividend_cross_section_partial_exposure_brake_regime_trend_take_profit.yaml
+  source_sha256: 9e46759b3b05800ac96f74db9cdcf30118334902f72e7932f870c30029af365d
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 1.0
+      portfolio_brake_recover_high_days: 63
+      portfolio_brake_tiers:
+      - drawdown: 0.08
+        max_gross: 0.85
+      - drawdown: 0.12
+        max_gross: 0.75
+      - drawdown: 0.2
+        max_gross: 0.6
+      - drawdown: 0.3
+        max_gross: 0.45
+      market_regime_code: sh000300
+      market_regime_ma_days: 200
+      market_regime_enter_band: 0.0
+      market_regime_exit_band: 0.03
+      market_regime_max_gross: 0.5
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.0
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers:
+    - - 0.08
+      - 0.85
+    - - 0.12
+      - 0.75
+    - - 0.2
+      - 0.6
+    - - 0.3
+      - 0.45
+    portfolio_brake_recover_high_days: 63
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: sh000300
+    market_regime_ma_days: 200
+    market_regime_enter_band: 0.0
+    market_regime_exit_band: 0.03
+    market_regime_max_gross: 0.5
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_cross_section_partial_exposure_brake_regime_vol_take_profit
+  base_id: dividend_cross_section_partial_exposure_brake_regime_vol_take_profit
+  name: 红利横截面(分段止盈+深度刹车+波动率定权)
+  source_file: dividend_cross_section_partial_exposure_brake_regime_vol_take_profit.yaml
+  source_sha256: 963165690facee4a55ef57f10d2436d6a9bbea1760427cf5231a6f42b86569f3
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 1.0
+      portfolio_brake_recover_high_days: 63
+      portfolio_brake_tiers:
+      - drawdown: 0.08
+        max_gross: 0.85
+      - drawdown: 0.12
+        max_gross: 0.75
+      - drawdown: 0.2
+        max_gross: 0.6
+      - drawdown: 0.3
+        max_gross: 0.45
+      market_regime_code: sh000300
+      market_regime_target_vol: 0.15
+      market_regime_vol_window: 63
+      market_regime_vol_floor: 0.3
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.0
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers:
+    - - 0.08
+      - 0.85
+    - - 0.12
+      - 0.75
+    - - 0.2
+      - 0.6
+    - - 0.3
+      - 0.45
+    portfolio_brake_recover_high_days: 63
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: sh000300
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: 0.15
+    market_regime_vol_window: 63
+    market_regime_vol_floor: 0.3
+- strategy_id: dividend_cross_section_partial_exposure_brake_regime_trendvol_take_profit
+  base_id: dividend_cross_section_partial_exposure_brake_regime_trendvol_take_profit
+  name: 红利横截面(分段止盈+深度刹车+趋势&波动率双regime)
+  source_file: dividend_cross_section_partial_exposure_brake_regime_trendvol_take_profit.yaml
+  source_sha256: 0cb91c6090eea7dc7c902fc2540527fe88a4d3c980ba0ad8022d1d4f3a8888ec
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.3
+      portfolio_brake: 0.08
+      portfolio_brake_scale: 1.0
+      portfolio_brake_recover_high_days: 63
+      portfolio_brake_tiers:
+      - drawdown: 0.08
+        max_gross: 0.85
+      - drawdown: 0.12
+        max_gross: 0.75
+      - drawdown: 0.2
+        max_gross: 0.6
+      - drawdown: 0.3
+        max_gross: 0.45
+      market_regime_code: sh000300
+      market_regime_ma_days: 200
+      market_regime_enter_band: 0.0
+      market_regime_exit_band: 0.03
+      market_regime_max_gross: 0.5
+      market_regime_target_vol: 0.15
+      market_regime_vol_window: 63
+      market_regime_vol_floor: 0.3
+      take_profit:
+        trailing:
+        - profit: 0.2
+          drawdown: 0.05
+          sell_fraction: 0.3333333333
+        - profit: 0.3
+          drawdown: 0.03
+          sell_fraction: 0.3333333333
+        hard_profit: null
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: 0.3
+    portfolio_brake_dd: 0.08
+    portfolio_brake_scale: 1.0
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers:
+    - - 0.08
+      - 0.85
+    - - 0.12
+      - 0.75
+    - - 0.2
+      - 0.6
+    - - 0.3
+      - 0.45
+    portfolio_brake_recover_high_days: 63
+    take_profit_tiers:
+    - - 0.2
+      - 0.05
+      - 0.3333333333
+    - - 0.3
+      - 0.03
+      - 0.3333333333
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: sh000300
+    market_regime_ma_days: 200
+    market_regime_enter_band: 0.0
+    market_regime_exit_band: 0.03
+    market_regime_max_gross: 0.5
+    market_regime_target_vol: 0.15
+    market_regime_vol_window: 63
+    market_regime_vol_floor: 0.3
+- strategy_id: fifty_two_week_high_cross_section
+  base_id: fifty_two_week_high_cross_section
+  name: 52周新高横截面(近高点+动量确认)
+  source_file: fifty_two_week_high_cross_section.yaml
+  source_sha256: 88f8691ffd79de01e079b63cc28362d1b90cb8fc9f7612b0ec42eebb918ac346
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: fifty_two_week_high
+      type: math
+      weight: 1.0
+      params:
+        lookback: 250
+        lo: 0.7
+    - id: momentum
+      type: math
+      weight: 0.6
+      params:
+        window: 120
+    - id: trend_strength
+      type: math
+      weight: 0.4
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: small_cap_low_turnover
+  base_id: small_cap_low_turnover
+  name: 小盘低换手横截面(规模+流动性异象)
+  source_file: small_cap_low_turnover.yaml
+  source_sha256: 0d96602816969ffd387334cbb041c1ad3049fc61ca3d6e35840c5437c739787a
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: size
+      type: math
+      weight: 1.0
+    - id: low_turnover
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+    - id: reversal
+      type: math
+      weight: 0.5
+      params:
+        window: 20
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: low_turnover_reversal
+  base_id: low_turnover_reversal
+  name: 低换手反转横截面(流动性+反转+价值)
+  source_file: low_turnover_reversal.yaml
+  source_sha256: 4b42c80ec397073c2ef074ca6976858f6a17b27a9d752348520ed1270f37b45c
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: low_turnover
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+    - id: reversal
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: illiquidity_value
+  base_id: illiquidity_value
+  name: Amihud流动性价值横截面(非流动溢价+低估)
+  source_file: illiquidity_value.yaml
+  source_sha256: ad985aa3846eb8cf04893e4280d46d5e604d422781092154042ec31d35755687
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: illiquidity
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+    - id: value
+      type: math
+      weight: 0.8
+      params:
+        years: 5
+    - id: reversal
+      type: math
+      weight: 0.5
+      params:
+        window: 20
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: anti_lottery_defensive
+  base_id: anti_lottery_defensive
+  name: 反彩票防御横截面(规避MAX+低波+低估)
+  source_file: anti_lottery_defensive.yaml
+  source_sha256: 4e2ceeb7b8d927552c2008f6c20e2fe3a4582fdad0d689aa5927a65852c0c8b4
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: lottery_max
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+        warn_max: 5.0
+        flag_max: 8.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: low_beta_dividend
+  base_id: low_beta_dividend
+  name: 低贝塔红利横截面(防御+收入)
+  source_file: low_beta_dividend.yaml
+  source_sha256: f59ae6f721e2f80f13adf560cdc2ceb1ba00a4c95cd495783f17c57985e1734f
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: low_beta
+      type: math
+      weight: 1.0
+      params:
+        window: 120
+        bench: sh000300
+    - id: dividend_yield
+      type: math
+      weight: 0.8
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: ts_momentum_trend
+  base_id: ts_momentum_trend
+  name: 时序动量趋势横截面(风险调整趋势+加速+确认)
+  source_file: ts_momentum_trend.yaml
+  source_sha256: d17632226895e86751f57e46229b4d16b499069919561ac6de2d84a19a28b391
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: ts_momentum
+      type: math
+      weight: 1.0
+      params:
+        window: 120
+    - id: momentum_acceleration
+      type: math
+      weight: 0.6
+      params:
+        window: 120
+    - id: trend_strength
+      type: math
+      weight: 0.4
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+      market_regime_target_vol: 0.15
+      market_regime_vol_window: 63
+      market_regime_vol_floor: 0.3
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: 0.15
+    market_regime_vol_window: 63
+    market_regime_vol_floor: 0.3
+- strategy_id: graham_defensive_value
+  base_id: graham_defensive_value
+  name: 格雷厄姆防御价值横截面(PE+PB+股息复合)
+  source_file: graham_defensive_value.yaml
+  source_sha256: bed2d18cae2d183f84a12fd6ec2b5a0c056ae0f19c063531a56a4879e83b431a
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: graham_value
+      type: math
+      weight: 1.0
+      params:
+        years: 5
+    - id: dividend_yield
+      type: math
+      weight: 0.6
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.5
+      params:
+        window: 20
+        hist_years: 3
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+      take_profit:
+        hard_profit: 0.5
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: 0.5
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: donchian_breakout_cross_section
+  base_id: donchian_breakout_cross_section
+  name: 唐奇安突破横截面(通道突破+趋势确认)
+  source_file: donchian_breakout_cross_section.yaml
+  source_sha256: 3ac1510c0ec1e4ce4181add55bdcdb6f685e99653fa92c871391e82faf02ea6f
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: donchian_breakout
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+        buy_pos: 0.8
+        sell_pos: 0.2
+    - id: ts_momentum
+      type: math
+      weight: 0.6
+      params:
+        window: 120
+    - id: trend_strength
+      type: math
+      weight: 0.4
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0.18
+      portfolio_brake: 0
+      max_gross: 1.0
+      take_profit:
+        atr_trailing:
+          period: 20
+          tiers:
+          - profit: 0.1
+            multiple: 2.5
+            sell_fraction: 0.5
+          - profit: 0.2
+            multiple: 2.0
+            sell_fraction: 0.5
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0.18
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: 20
+    take_profit_atr_tiers:
+    - - 0.1
+      - 2.5
+      - 0.5
+    - - 0.2
+      - 2.0
+      - 0.5
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: smart_beta_multi_factor
+  base_id: smart_beta_multi_factor
+  name: 智能贝塔多因子横截面(分散因子暴露)
+  source_file: smart_beta_multi_factor.yaml
+  source_sha256: 0e740bec80f29ffdaae1b621808fd5ecd5f0251d4358d14801efa1b84e513e3c
+  derived: false
+  retained: true
+  compiled:
+    operators:
+    - id: fifty_two_week_high
+      type: math
+      weight: 0.6
+      params:
+        lookback: 250
+        lo: 0.7
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    - id: low_turnover
+      type: math
+      weight: 0.6
+      params:
+        window: 20
+    - id: graham_value
+      type: math
+      weight: 0.4
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 10
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 10
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: amplitude
+  base_id: amplitude
+  name: 低振幅横截面(日内极差防御)
+  source_file: amplitude.yaml
+  source_sha256: 759fb6a2c2f7534d1a5f174d2c1781d3baa33cf2400678c7624d642dfbbb18f4
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: amplitude
+      type: math
+      weight: 1.0
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: bias_reversal
+  base_id: bias_reversal
+  name: 乖离率反转横截面(深度超跌优先)
+  source_file: bias_reversal.yaml
+  source_sha256: 98c4d38fd69d4acf9534d236a100246386c14ac2e99e3d6b0371ba33bf770e34
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: bias_reversal
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+        hist_years: 3
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: bollinger_reversion
+  base_id: bollinger_reversion
+  name: 布林均值回归(日+周,中下轨买/中上轨卖)
+  source_file: bollinger_reversion.yaml
+  source_sha256: 2d80e0af1b0b1ed3adb399cbbf52b195fe5dbe171b5d4c57cac2cab57ff51152
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: daily_bollinger
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+        std_dev: 2.0
+        buy_max: 0.45
+        sell_min: 0.55
+    - id: weekly_bollinger
+      type: math
+      weight: 0.6
+      params:
+        window: 20
+        std_dev: 2.0
+        buy_max: 0.45
+        sell_min: 0.55
+    - id: mean_reversion
+      type: math
+      weight: 0.4
+      params:
+        rsi_period: 14
+        oversold: 30
+        overbought: 70
+    - id: trend_strength
+      type: math
+      weight: 0.2
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 8
+        buy: 3
+        hold: -3
+        sell: -8
+    position:
+      mode: continuous
+      max_w: 0.1
+      dead: 3.0
+    debounce:
+      buy_cool_down_days: 3
+      max_target_step: 0.3
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      sell_cooldown_days: 3
+      conf_gate: 0.3
+    risk: {}
+  effective:
+    buy_cool_down_days: 3
+    max_target_step: 0.3
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 3
+    conf_gate: 0.3
+    target_mode: continuous
+    max_weight: 0.1
+    total_dead: 3.0
+    score_full: 20.0
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: bollinger_reversion_cross_section
+  base_id: bollinger_reversion_cross_section
+  name: 布林回归横截面(日+周布林+RSI)
+  source_file: bollinger_reversion_cross_section.yaml
+  source_sha256: 4e0e7faff228ad5917d87ae8d2278837df243d327423d8a0475fe2f29e5b7e71
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: daily_bollinger
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+        std_dev: 2.0
+        buy_max: 0.45
+        sell_min: 0.55
+    - id: weekly_bollinger
+      type: math
+      weight: 0.6
+      params:
+        window: 20
+        std_dev: 2.0
+        buy_max: 0.45
+        sell_min: 0.55
+    - id: mean_reversion
+      type: math
+      weight: 0.4
+      params:
+        rsi_period: 14
+        oversold: 30
+        overbought: 70
+    - id: trend_strength
+      type: math
+      weight: 0.2
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 8
+        buy: 3
+        hold: -3
+        sell: -8
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk: {}
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: cn_momentum_rotation
+  base_id: cn_momentum_rotation
+  name: 降换手动量轮动
+  source_file: cn_momentum_rotation.yaml
+  source_sha256: a59c731009d84b4de2589025e0680af3a699de0dfcb91b58e9313e8e0b3a3e2f
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: momentum
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+    - id: trend_linearity
+      type: math
+      weight: 0.6
+      params:
+        window: 20
+    - id: trend_strength
+      type: math
+      weight: 0.4
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.12
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 5
+      sell_cooldown_days: 3
+      max_target_step: 0.3
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.3
+    risk:
+      max_gross: 0.9
+      stop_loss: 0.08
+      portfolio_brake: 0.1
+  effective:
+    buy_cool_down_days: 5
+    max_target_step: 0.3
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 3
+    conf_gate: 0.3
+    target_mode: continuous
+    max_weight: 0.12
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 0.9
+    stop_loss_pct: 0.08
+    portfolio_brake_dd: 0.1
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: cross_section_factor
+  base_id: cross_section_factor
+  name: 横截面多因子(反转+低波+价值)
+  source_file: cross_section_factor.yaml
+  source_sha256: f0ae4c46c4946bcd6f19fe3c7ab53fea60b138bb71ecdb3b78e76f85406cbf36
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: reversal
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk: {}
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: dividend_low_vol
+  base_id: dividend_low_vol
+  name: 红利低波(高股息+低波动+低估值)
+  source_file: dividend_low_vol.yaml
+  source_sha256: add9c68e67c27382984391d668a87d392c468303ac5fa07dbe081c3d10878900
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: dividend_yield
+      type: math
+      weight: 1.0
+      params:
+        high_yield: 5.0
+        price_basis: raw
+        yield_cap: 20.0
+    - id: low_volatility
+      type: math
+      weight: 0.8
+      params:
+        window: 20
+        hist_years: 3
+    - id: value
+      type: math
+      weight: 0.6
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.12
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 5
+      sell_cooldown_days: 3
+      max_target_step: 0.3
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.3
+    risk: {}
+  effective:
+    buy_cool_down_days: 5
+    max_target_step: 0.3
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 3
+    conf_gate: 0.3
+    target_mode: continuous
+    max_weight: 0.12
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: etf_momentum_cross_section
+  base_id: etf_momentum_cross_section
+  name: ETF动量横截面(动量+线性度+趋势)
+  source_file: etf_momentum_cross_section.yaml
+  source_sha256: 522aaaa3245b92aa1fbe8a017881a42ff45db7ad94ed5aa63a916270b7a52d36
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: momentum
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+    - id: trend_linearity
+      type: math
+      weight: 0.6
+      params:
+        window: 20
+    - id: trend_strength
+      type: math
+      weight: 0.4
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk: {}
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: etf_momentum_rotation
+  base_id: etf_momentum_rotation
+  name: ETF动量轮动
+  source_file: etf_momentum_rotation.yaml
+  source_sha256: 6b3f2dfb18f0abb080f76c1ca812047baf13aaa2f1fcc588a339f137fbf4d32b
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: momentum
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+    - id: trend_linearity
+      type: math
+      weight: 0.6
+      params:
+        window: 20
+    - id: trend_strength
+      type: math
+      weight: 0.4
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.18
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 5
+      sell_cooldown_days: 3
+      max_target_step: 0.3
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.3
+    risk: {}
+  effective:
+    buy_cool_down_days: 5
+    max_target_step: 0.3
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 3
+    conf_gate: 0.3
+    target_mode: continuous
+    max_weight: 0.18
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: intraday_return
+  base_id: intraday_return
+  name: 日内动量横截面(高日内收益优先)
+  source_file: intraday_return.yaml
+  source_sha256: 3c41ef1f3edd92844adf91e05a70db350041e19de784f599144f37d8649571b7
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: intraday_return
+      type: math
+      weight: 1.0
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: limit_up_count
+  base_id: limit_up_count
+  name: 涨停计数反转横截面(规避连板妖股)
+  source_file: limit_up_count.yaml
+  source_sha256: 7b855da63c60bd9fefa315efaadc259b1931172adf1acf8da0ba2f786d2fb655
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: limit_up_count
+      type: math
+      weight: 1.0
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: low_downside_vol
+  base_id: low_downside_vol
+  name: 低下行波动横截面(半方差防御)
+  source_file: low_downside_vol.yaml
+  source_sha256: 3690035c04902888adfe94f51e274c68f9513967bc4e5fbd54e841721f1eb8b2
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: downside_volatility
+      type: math
+      weight: 1.0
+      params:
+        window: 60
+        hist_years: 3
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: low_skewness
+  base_id: low_skewness
+  name: 负偏度防御横截面(规避彩票型收益)
+  source_file: low_skewness.yaml
+  source_sha256: ba46db8589bc798be25ca6ea9cf1b8e65623e80d49679a1d7ba36a5b413a8381
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: downside_skewness
+      type: math
+      weight: 1.0
+      params:
+        window: 60
+        hist_years: 3
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: macd_cross
+  base_id: macd_cross
+  name: MACD金叉死叉
+  source_file: macd_cross.yaml
+  source_sha256: ae30c384485b035e18dab2c818d0a4c9e0e892da14d412284ede1208966da7fe
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: macd_cross
+      type: math
+      weight: 1.0
+      params:
+        fast: 12
+        slow: 26
+        signal: 9
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 8
+        buy: 4
+        hold: -4
+        sell: -8
+    position:
+      mode: continuous
+      max_w: 0.1
+      dead: 3.0
+      score_full: 10
+    debounce:
+      buy_cool_down_days: 3
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      sell_cooldown_days: 0
+      conf_gate: 0.0
+    risk: {}
+  effective:
+    buy_cool_down_days: 3
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 0
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.1
+    total_dead: 3.0
+    score_full: 10
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: momentum_breakout_cross_section
+  base_id: momentum_breakout_cross_section
+  name: 动量突破横截面(月布林+动量+趋势)
+  source_file: momentum_breakout_cross_section.yaml
+  source_sha256: 50883298677401cc165284d11e929d854196882b95b130e0174996302a435674
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: monthly_bollinger
+      type: math
+      weight: 1.2
+      params:
+        window: 20
+        std_dev: 2.0
+    - id: momentum
+      type: math
+      weight: 0.6
+      params:
+        window: 20
+    - id: trend_strength
+      type: math
+      weight: 0.4
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 10
+        buy: 4
+        hold: -4
+        sell: -10
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk: {}
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: near_52w_low
+  base_id: near_52w_low
+  name: 52周低点反转横截面(贴近低点优先)
+  source_file: near_52w_low.yaml
+  source_sha256: ed4c080076f63b0bde00e5335f7442c8389145dd2eae6f63511ba8cee49c19a7
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: distance_from_low
+      type: math
+      weight: 1.0
+      params:
+        window: 252
+        hist_years: 3
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: overnight_reversal
+  base_id: overnight_reversal
+  name: 隔夜反转横截面(低隔夜收益优先)
+  source_file: overnight_reversal.yaml
+  source_sha256: 75f4b253048e23d262b418faf04865621057c2ceb3abe5349800172c8caf80ca
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: overnight_return
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+        hist_years: 3
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: pure_factor
+  base_id: pure_factor
+  name: 纯因子动量反转
+  source_file: pure_factor.yaml
+  source_sha256: 132f3cc3cf431b7d39c8a0e236b91811ccc170cbc0602b666853de1f9965e898
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: momentum
+      type: math
+      weight: 1.5
+      params:
+        window: 20
+    - id: mean_reversion
+      type: math
+      weight: 1.0
+      params:
+        rsi_period: 14
+        oversold: 30
+        overbought: 70
+    - id: trend_strength
+      type: math
+      weight: 1.0
+    - id: value
+      type: math
+      weight: 0.8
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.1
+      dead: 2.5
+    debounce:
+      buy_cool_down_days: 3
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      sell_cooldown_days: 0
+      conf_gate: 0.0
+    risk: {}
+  effective:
+    buy_cool_down_days: 3
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 0
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.1
+    total_dead: 2.5
+    score_full: 20.0
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: residual_reversal
+  base_id: residual_reversal
+  name: 残差反转横截面(市场调整后超跌优先)
+  source_file: residual_reversal.yaml
+  source_sha256: e23ac1cb6b7f53087b20cb57eba15bbe6529f145948888a8d121d0ba8c140181
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: residual_reversal
+      type: math
+      weight: 1.0
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: reversal_cross_section
+  base_id: reversal_cross_section
+  name: 反转横截面(短期反转+RSI+低估)
+  source_file: reversal_cross_section.yaml
+  source_sha256: e9fd017b321054f194df7a68c8709f90e6f9bfec7b173af53960b954738324d8
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: reversal
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+    - id: mean_reversion
+      type: math
+      weight: 0.6
+      params:
+        rsi_period: 14
+        oversold: 30
+        overbought: 70
+    - id: value
+      type: math
+      weight: 0.4
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.05
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk: {}
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.05
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: reversal_strategy
+  base_id: reversal_strategy
+  name: 反转均值回归(短期反转+RSI超卖+低估)
+  source_file: reversal_strategy.yaml
+  source_sha256: ca6de2bab5c5f4ae220f0e809b8083420d5bc0ba99eacffc34cafd05f790efdd
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: reversal
+      type: math
+      weight: 1.0
+      params:
+        window: 20
+    - id: mean_reversion
+      type: math
+      weight: 0.6
+      params:
+        rsi_period: 14
+        oversold: 30
+        overbought: 70
+    - id: value
+      type: math
+      weight: 0.4
+      params:
+        years: 5
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.12
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 5
+      sell_cooldown_days: 3
+      max_target_step: 0.3
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.3
+    risk: {}
+  effective:
+    buy_cool_down_days: 5
+    max_target_step: 0.3
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 3
+    conf_gate: 0.3
+    target_mode: continuous
+    max_weight: 0.12
+    total_dead: 3.0
+    score_full: 8
+    max_gross: null
+    stop_loss_pct: null
+    portfolio_brake_dd: null
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: rsi_reversal
+  base_id: rsi_reversal
+  name: RSI超卖反转横截面(低RSI优先)
+  source_file: rsi_reversal.yaml
+  source_sha256: 8acd5e0bb47937e0e261a73a9e9e027392348c3953c7c3286fb47e0364792a8c
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: rsi_reversal
+      type: math
+      weight: 1.0
+      params:
+        window: 14
+        hist_years: 3
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null
+- strategy_id: volume_drought
+  base_id: volume_drought
+  name: 量能枯竭反转横截面(缩量企稳优先)
+  source_file: volume_drought.yaml
+  source_sha256: f43e254b082112d34ae7c5ad603eea493f936bcdf0c414b9dd96d8b87ebc0228
+  derived: false
+  retained: false
+  compiled:
+    operators:
+    - id: volume_drought
+      type: math
+      weight: 1.0
+      params:
+        short: 5
+        long: 120
+        hist_years: 3
+    aggregate:
+      method: weighted_sum
+      thresholds:
+        strong_buy: 12
+        buy: 4
+        hold: -4
+        sell: -12
+    position:
+      mode: continuous
+      max_w: 0.2
+      dead: 3.0
+      score_full: 8
+    debounce:
+      buy_cool_down_days: 1
+      sell_cooldown_days: 1
+      max_target_step: 1.0
+      risk_confirm_days: 1
+      min_trade_weight: 0.01
+      conf_gate: 0.0
+    risk:
+      stop_loss: 0
+      portfolio_brake: 0
+      max_gross: 1.0
+  effective:
+    buy_cool_down_days: 1
+    max_target_step: 1.0
+    risk_confirm_days: 1
+    min_trade_weight: 0.01
+    sell_cooldown_days: 1
+    conf_gate: 0.0
+    target_mode: continuous
+    max_weight: 0.2
+    total_dead: 3.0
+    score_full: 8
+    max_gross: 1.0
+    stop_loss_pct: 0
+    portfolio_brake_dd: 0
+    portfolio_brake_scale: null
+    portfolio_brake_mode: scale_all
+    portfolio_brake_max_gross: null
+    portfolio_brake_keep_ratio: null
+    portfolio_brake_add_min_score: null
+    portfolio_brake_recover_dd: null
+    portfolio_brake_tiers: null
+    portfolio_brake_recover_high_days: 0
+    take_profit_tiers: null
+    take_profit_hard_pct: null
+    take_profit_atr_period: null
+    take_profit_atr_tiers: null
+    take_profit_atr_lagged: false
+    market_regime_code: null
+    market_regime_ma_days: null
+    market_regime_enter_band: null
+    market_regime_exit_band: null
+    market_regime_max_gross: null
+    market_regime_target_vol: null
+    market_regime_vol_window: null
+    market_regime_vol_floor: null

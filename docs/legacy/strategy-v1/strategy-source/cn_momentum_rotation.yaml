@@ -1,0 +1,57 @@
+version: 1
+name: 降换手动量轮动
+# 参考聚宽"五福闹新春"ETF 动量轮动(postId=67438),搬到 A 股个股并大幅降换手。
+# 三因子打分:momentum(涨多少)+ trend_linearity(涨得稳不稳,r²×方向,滤鱼尾/伪强势)
+#           + trend_strength(MA 多头排列确认)。
+# 降换手三杠杆:debounce(buy冷5/sell冷3/step0.3)+ top_n_picker(lock_days20/max_replace1)
+#            + trend_linearity 高 r² 趋势稳 → 打分日间变化小。
+# 配套:rebalancer_params={top_n:8, lock_days:20, max_replace:1, max_w:0.12, max_gross:0.90};
+#       宇宙动态池 min_amount 单日成交额>5000万(见 run_cn_momentum_rotation.py)。
+# 全摩擦开(strict)诚实回测;基准=上证综指 sh000001。
+#
+# 🛑 全周期证伪(2021-01-04→2026-07-15,5.5 年,top_n=8,808 票,strict):
+#   年化 4.34% / 夏普 0.30 / Calmar 0.14 / 回撤 31.62%(2021-12 峰 → 2024-09 谷,近 3 年深套)。
+#   累计超额 +12.1% 全靠 2026 一年(+23%);前 5 年(2021-2025)累计超额 −11.6% 跑输上证。
+#   本质 = 中小盘成长动量 beta 非 alpha:2026 中小盘结构牛碾压指数(+21.6% vs −1.4%),
+#   2024 大盘牛反而跑输(+8% vs +13%);2022 熊比基准跌更深(−19.5% vs −15%),下行无保护。
+#   5.5 年总费 ¥69k = 初始 6.9%(吃掉收益 27%)。→ 仅强成长股主升浪有效,通用策略不成立。
+#
+# ── 短区间对比(2025-01-02→09-30,9 个月,顺风片段,勿当结论)──────────────
+# 收益 +47.17% / 超额 +28.16%(上证 +19.01%) / 年化 70.25% / 夏普 1.87 / 回撤 21.13%
+# 盈亏比 2.47(均盈 ¥9.6k / 均亏 ¥3.9k),票维度胜率 47%——趋势策略典型:截断亏损、让利润奔跑
+# 已实现 +305.6k / 期末未实现 +171.9k;头部集中(海博思创单票贡献 17% 总盈利)
+#
+# ⚠ 三个张力(设计意图 vs 实测,务必知晓):
+#  1. 降换手目标未兑现:年换手 19.08 倍(目标个位数),中位持仓仅 11 交易日(~2 周),
+#     89% 回合在 1 月内了结。三杠杆只压了"单日动作",持仓周期仍是短动量节奏。
+#  2. ETF→个股摩擦翻转风险:原 ETF 版五福靠摩擦极低;个股印花税+佣+滑点+涨跌停吃掉
+#     ~2% 资金/期(总费 ¥20.5k)。本期超额 PASS,但疑似 2025 成长股主升浪顺风,
+#     换震荡市可能被摩擦翻转。须在更长/更多市场环境回测验证。
+#  3. 选择偏差:自选股版 +70% 是偏差,全市场版才证伪(见 memory cn-momentum-rotation)。
+operators:
+  - {id: momentum, type: math, weight: 1.0, params: {window: 20}}
+  - {id: trend_linearity, type: math, weight: 0.6, params: {window: 20}}
+  - {id: trend_strength, type: math, weight: 0.4}
+
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+
+position:
+  mode: continuous
+  max_w: 0.12          # 适度集中 8 只:8×12%=96% → 被 max_gross(0.9)等比裁到 ~11.25%/只
+  dead: 3.0            # 双向滞回死区,阈值横跳不触发交易
+  score_full: 8
+
+debounce:
+  buy_cool_down_days: 5      # 单标的增仓冷却
+  sell_cooldown_days: 3      # 单标的减仓冷却(清仓不受限)
+  max_target_step: 0.3       # 单次加仓上限 30%,防一次性重仓
+  risk_confirm_days: 1
+  min_trade_weight: 0.01     # 过滤碎单
+  conf_gate: 0.3             # 弱 confidence 清仓降级为维持
+
+risk:
+  max_gross: 0.90            # 总仓 90%,留 10% 现金
+  stop_loss: 0.08            # 个股成本止损 8%(替代原分钟级止损)
+  portfolio_brake: 0.10      # 组合回撤 10% 全局降半仓
