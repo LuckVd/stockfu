@@ -22,12 +22,40 @@ from stockfu.strategy.alpha import AlphaDefinition, AlphaFactor
 from stockfu.strategy.portfolio import (
     PortfolioConstructor, PortfolioPolicy, SelectionSpec,
 )
+from stockfu.strategy.rebalancer import Rebalancer
 from stockfu.strategy.risk import RiskOverlay, RiskPolicy
 
 
 DATES = [date(2024, 1, 2) + timedelta(days=i) for i in range(10)]
 STOCKS = ["A", "B"]
 BENCH = "sh000300"
+
+
+def test_protected_sell_order_is_cancelled_but_risk_order_survives():
+    pending = {"A": 0.0, "B": 0.0, "C": 0.10}
+    engine._cancel_protected_sell_orders(
+        pending,
+        {"A": 0.20, "B": 0.20, "C": 0.05},
+        {"A", "B"},
+        {"B"},
+    )
+    assert pending == {"B": 0.0, "C": 0.10}
+
+
+def test_rebalancer_trading_day_index_checkpoint_roundtrip():
+    policy = PortfolioPolicy(
+        portfolio_policy_id="p_checkpoint", version=1, rebalance="daily",
+        selection=SelectionSpec("top_n_above_score", 1, 0.0),
+        weighting="equal", max_single_weight=1.0, max_gross=1.0,
+        min_amount_20d=0.0, minimum_listing_days=0,
+    )
+    source = Rebalancer(policy)
+    source.record_buy("A", date(2024, 1, 2), was_new=True, trading_day_index=123)
+    state = engine._rebalancer_to_checkpoint(source)
+
+    restored = Rebalancer(policy)
+    engine._rebalancer_from_checkpoint(restored, state)
+    assert restored.holding_since_session == {"A": 123}
 
 
 class _SyntheticUniverse:
@@ -205,6 +233,18 @@ def test_monthly_policy_does_not_rebalance_every_day(monkeypatch):
     assert result.trades[0]["code"] == "A"
     assert result.trades[0]["date"] == DATES[3].isoformat()
 
+    # 记录层要能把一次策略目标追溯到订单、成交和期末开放 FIFO 批次。
+    assert result.order_events[0]["event_type"] == "submitted"
+    assert result.order_events[0]["status"] == "pending"
+    filled_events = [row for row in result.order_events if row["status"] == "filled"]
+    assert len(filled_events) == 1
+    assert filled_events[0]["order_id"] == result.trades[0]["order_id"]
+    assert result.metrics["turnover_amount"] > 0
+    assert result.metrics["open_holding_batch_count"] == 1
+    assert result.metrics["longest_holding_days"] >= 1
+    assert result.metrics["recording_schema_version"] == 1
+    assert result.manifest["recording_schema_version"] == 1
+
 
 def test_deferred_order_survives_suspension(monkeypatch):
     _patch_synthetic(monkeypatch, suspended={DATES[3]})
@@ -213,6 +253,8 @@ def test_deferred_order_survives_suspension(monkeypatch):
     # D+1 停牌后保留 pending order，下一可成交日继续执行，而不是静默丢单。
     assert len(result.trades) == 1
     assert result.trades[0]["date"] == DATES[4].isoformat()
+    assert any(row["status"] == "deferred" for row in result.order_events)
+    assert any(row["status"] == "filled" for row in result.order_events)
 
 
 def test_deferred_buy_cancelled_when_target_removed(monkeypatch):
@@ -347,11 +389,21 @@ def test_checkpoint_persists_full_manifest(monkeypatch, tmp_path):
     for field in ("run_id", "data_coverage", "formal_start", "n_trades",
                   "trades_checksum", "universe", "risk_metrics", "score_diagnostics",
                   "checkpoint", "raw_computer_bindings", "data_snapshot",
-                  "reproducibility", "component_checksums", "output_checksum"):
+                  "reproducibility", "component_checksums", "output_checksum",
+                  "metrics"):
         assert field in man, f"checkpoint manifest 缺少 {field}"
     assert "trades" not in man
     assert man["data_coverage"]["truncated"] is False
     assert man["checkpoint"]["finalized"] is True
+    state = data["state"]
+    for field in ("order_events", "risk_events", "holding_periods",
+                  "pending_order_meta", "next_order_id"):
+        assert field in state, f"checkpoint state 缺少记录层字段 {field}"
+    assert man["recording"]["schema_version"] == 1
+    assert man["metrics"]["recording_schema_version"] == 1
+    for field in ("order_events", "risk_events", "holding_periods",
+                  "open_holding_periods"):
+        assert field in man["component_checksums"]
     # 合成测试 git 被 patch 为 clean + canonical=False → non_canonical。
     assert man["reproducibility"]["status"] == "non_canonical"
     # manifest 内部自洽：run_id = fingerprint(去 run_id 的 manifest)。
