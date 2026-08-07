@@ -91,8 +91,13 @@ def send_card_email(
     title: str | None = None,
     description: str | None = None,
     filename_prefix: str = "stockfu",
+    include_attachments: bool = True,
 ) -> dict:
-    """把 images 内嵌进 HTML 邮件，并附同名 PNG 作为客户端兼容兜底。"""
+    """把 images 内嵌进 HTML 邮件，可选附同名 PNG 作为客户端兼容兜底。
+
+    策略评分邮件通常页数较多；关闭附件兜底可避免同一组图片在 MIME 中复制一份，
+    防止大邮件超过 SMTP 服务端限制。默认值保持原有市场日报行为。
+    """
     from stockfu.config import (get_smtp_from, get_smtp_host, get_smtp_pass,
                                 get_smtp_port, get_smtp_user, get_mail_to)
     from stockfu.services.snapshot import latest_trade_date
@@ -115,8 +120,8 @@ def send_card_email(
     msg["To"] = ", ".join(to_list)
     msg["Date"] = formatdate(localtime=True)
 
-    plain = (f"{title}\n{description}\n"
-             f"共 {len(images)} 张图片。若正文图片未显示，请下载邮件附件中的 PNG 图片。")
+    fallback = "若正文图片未显示，请下载邮件附件中的 PNG 图片。" if include_attachments else "图片已内嵌在邮件正文中。"
+    plain = f"{title}\n{description}\n共 {len(images)} 张图片。{fallback}"
     body = [
         "<html><body style='font-family:-apple-system,sans-serif;background:#f7f8fa;padding:12px'>",
         f"<h2 style='margin:0 0 8px'>{title}</h2>",
@@ -140,10 +145,11 @@ def send_card_email(
         part.add_header("Content-Disposition", "inline", filename=filename)
         part.add_header("Content-Location", filename)
         msg.attach(part)
-        # 兼容不显示 CID 图片的客户端（如部分 QQ/企业邮箱阅读器）。
-        attachment = MIMEImage(img, _subtype="png")
-        attachment.add_header("Content-Disposition", "attachment", filename=filename)
-        msg.attach(attachment)
+        if include_attachments:
+            # 兼容不显示 CID 图片的客户端（如部分 QQ/企业邮箱阅读器）。
+            attachment = MIMEImage(img, _subtype="png")
+            attachment.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(attachment)
 
     host, port = get_smtp_host(), get_smtp_port()
     try:
