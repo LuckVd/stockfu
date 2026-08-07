@@ -39,6 +39,9 @@ class AlphaDefinition:
     factors: tuple[AlphaFactor, ...]
     minimum_coverage: float = 0.70
     minimum_valid_factor_count: int = 1
+    # formal 阶段是否必须等待 profile 的历史样本达到 min_observations。
+    # force_mature_after_observation 只放开历史成熟度门槛，不伪造缺失 raw。
+    formal_maturity_policy: str = "required"
 
     def weights_by_profile(self) -> dict[str, float]:
         return {f.profile_id: f.weight for f in self.factors}
@@ -51,6 +54,7 @@ class AlphaDefinition:
                          "critical": f.critical} for f in self.factors],
             "minimum_coverage": self.minimum_coverage,
             "minimum_valid_factor_count": self.minimum_valid_factor_count,
+            "formal_maturity_policy": self.formal_maturity_policy,
         }
 
     def fingerprint(self) -> str:
@@ -78,12 +82,19 @@ def alpha_from_dict(d: dict[str, Any]) -> AlphaDefinition:
         raise ValueError(f"alpha {d['alpha_id']}: minimum_coverage 必须在[0,1]")
     if minimum_valid_factor_count < 0:
         raise ValueError(f"alpha {d['alpha_id']}: minimum_valid_factor_count 不得为负")
+    formal_maturity_policy = str(d.get("formal_maturity_policy", "required"))
+    if formal_maturity_policy not in ("required", "force_mature_after_observation"):
+        raise ValueError(
+            f"alpha {d['alpha_id']}: formal_maturity_policy 必须是 "
+            "required 或 force_mature_after_observation"
+        )
     a = AlphaDefinition(
         alpha_id=str(d["alpha_id"]), version=int(d["version"]),
         market_scope=str(d.get("market_scope", "cn_equity")),
         factors=factors,
         minimum_coverage=minimum_coverage,
         minimum_valid_factor_count=minimum_valid_factor_count,
+        formal_maturity_policy=formal_maturity_policy,
     )
     return a
 
@@ -111,6 +122,10 @@ class AlphaAggregator:
         valid_count = 0
         critical_missing = False
         immature_block = False
+        bypass_formal_maturity = (
+            not observation
+            and a.formal_maturity_policy == "force_mature_after_observation"
+        )
         map_fps: dict[str, str] = {}
         attached: dict[str, FactorScoreObservation] = {}
 
@@ -134,7 +149,9 @@ class AlphaAggregator:
                 valid_count += 1
             if af.critical and not evidence_ok:
                 critical_missing = True
-            if not observation and fs.formal_requires_mature and fs.maturity != Maturity.MATURE:
+            if (not observation and fs.formal_requires_mature
+                    and fs.maturity != Maturity.MATURE
+                    and not bypass_formal_maturity):
                 immature_block = True
 
         strategy_score = (score_acc / wsum) if wsum > 0 else 50.0

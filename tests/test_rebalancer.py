@@ -98,6 +98,50 @@ class TestRebalancer(unittest.TestCase):
             {"A": 0.0},
         )
 
+    def test_rank_protection_blocks_reduce_and_clear(self):
+        # 前 20% 保护同时覆盖“降权”和“跌出 top15 后清仓”。
+        r = Rebalancer(policy())
+        held = {"A"}
+        self.assertEqual(
+            r.decide({"A": 0.10}, {"A": 0.20}, held, D0,
+                     protected_codes={"A"}),
+            {},
+        )
+        self.assertEqual(
+            r.decide({}, {"A": 0.20}, held, D0,
+                     protected_codes={"A"}),
+            {},
+        )
+
+    def test_rank_protection_does_not_block_risk_exit(self):
+        # 排名保护不是风险覆盖，止损/止盈仍可卖出。
+        r = Rebalancer(policy())
+        self.assertEqual(
+            r.decide({}, {"A": 0.20}, {"A"}, D0,
+                     risk_exit_codes={"A"}, protected_codes={"A"}),
+            {"A": 0.0},
+        )
+
+    def test_soft_lock_then_rank_protection(self):
+        # 建仓后 30 个交易日内即使跌出前 20%也不普通卖；期满后跌出才放行。
+        r = Rebalancer(policy(mhd=30))
+        r.record_buy("A", D0, was_new=True, trading_day_index=0)
+        self.assertEqual(
+            r.decide({}, {"A": 0.20}, {"A"}, D0 + timedelta(days=60),
+                     trading_day_index=10),
+            {},
+        )
+        self.assertEqual(
+            r.decide({}, {"A": 0.20}, {"A"}, D0 + timedelta(days=60),
+                     protected_codes={"A"}, trading_day_index=29),
+            {},
+        )
+        self.assertEqual(
+            r.decide({}, {"A": 0.20}, {"A"}, D0 + timedelta(days=60),
+                     trading_day_index=30),
+            {"A": 0.0},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
