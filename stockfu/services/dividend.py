@@ -23,6 +23,22 @@ from stockfu.models import BackfillCheckpoint, DividendEvent
 _BT_DIVIDEND_PROVIDER = None
 
 
+@dataclass(frozen=True)
+class DividendYieldDetail:
+    """TTM 股息率计算的可解释结果。
+
+    ``yield_pct is None`` 既可能是窗口内没有现金分红，也可能是有分红但
+    缺少可用的 raw 价格；raw 因子层需要区分这两种情况，不能再把它们统一
+    当作 ``NOT_DISCLOSED``。
+    """
+
+    yield_pct: float | None
+    ttm_cash_per_share: float
+    event_count: int
+    price_missing: bool = False
+    price_nonpositive: bool = False
+
+
 class CorporateActionConflictError(ValueError):
     """同一股票同一除权日出现互相矛盾的公司行为，拒绝静默双记。"""
 
@@ -495,22 +511,17 @@ def persist_dividends(code: str, *, years: int = 10, timeout: float = 10.0) -> i
     return written
 
 
-def dividend_yield_ttm(code: str, as_of=None, *, trailing_days: int = 365,
-                       price_basis: str = "raw") -> tuple[float, float] | None:
-    """as_of 日 TTM 股息率(%):近 trailing_days 天每股现金分红 / 不复权收盘价 × 100。
+def dividend_events_ttm(code: str, as_of=None, *, trailing_days: int = 365,
+                        ) -> list[tuple[date, float | None]]:
+    """读取 ``as_of`` 点时 TTM 窗口内的分红事件。
 
-    分红来自 dividend_event 表(baostock query_dividend_data / akshare 回补);
-    **分母必须用 close_raw(不复权)**:名义现金 ÷ 全样本前复权价会虚高并引入 qfq 前视。
-    严格 ex_date <= as_of 防未来函数。
-    返回 (yield_pct, ttm_per_share) 或 None(无分红/无价/未回补 close_raw)。
+    返回空列表表示该窗口没有已实施的分红事件，是一个有效的业务事实；
+    它不表示行情或分红数据源读取失败。回测供给器返回 ``None`` 时才回退
+    到本地 ``dividend_event`` 表，返回空列表则尊重供给器的点时结果。
     """
-    from stockfu.services.factors import ADJ_RAW, quote_series
-
     trailing_days = int(trailing_days)
     if trailing_days <= 0:
         raise ValueError("trailing_days 必须为正")
-    if price_basis != "raw":
-        raise ValueError("当前 dividend_yield_ttm 只支持 price_basis=raw")
     ref = as_of or date.today()
     year_ago = ref - timedelta(days=trailing_days)
     rows: list[tuple[date, float | None]] | None = None
@@ -524,13 +535,56 @@ def dividend_yield_ttm(code: str, as_of=None, *, trailing_days: int = 365,
                 DividendEvent.ex_date >= year_ago,
             )).all()
         rows = [(r.ex_date, r.per_share_cash) for r in db_rows]
-    if not rows:
-        return None
+    return list(rows)
+
+
+def dividend_yield_ttm_detail(code: str, as_of=None, *, trailing_days: int = 365,
+                              price_basis: str = "raw") -> DividendYieldDetail:
+    """返回 TTM 股息率及其缺失原因，供 V2 raw 因子使用。
+
+    分红来自 dividend_event 表(baostock query_dividend_data / akshare 回补);
+    **分母必须用 close_raw(不复权)**:名义现金 ÷ 全样本前复权价会虚高并引入 qfq 前视。
+    严格 ex_date <= as_of 防未来函数。
+    无现金分红返回 ``ttm_cash_per_share=0``；有现金分红但价格不可用时，
+    返回 ``yield_pct=None`` 并通过标志位交给 raw 层标记真实缺失。
+    """
+    from stockfu.services.factors import ADJ_RAW, quote_series
+
+    trailing_days = int(trailing_days)
+    if trailing_days <= 0:
+        raise ValueError("trailing_days 必须为正")
+    if price_basis != "raw":
+        raise ValueError("当前 dividend_yield_ttm 只支持 price_basis=raw")
+    rows = dividend_events_ttm(code, as_of, trailing_days=trailing_days)
     ttm = sum(cash for _ex_date, cash in rows if cash and cash > 0)
     if ttm <= 0:
-        return None
+        return DividendYieldDetail(
+            yield_pct=None, ttm_cash_per_share=0.0, event_count=len(rows))
     # 不复权收盘;未回补 raw 时不回落 qfq(避免静默污染)
+    ref = as_of or date.today()
     closes = quote_series(code, "close", 10, as_of=ref, adj=ADJ_RAW)
-    if not closes or closes[-1] <= 0:
+    if not closes:
+        return DividendYieldDetail(
+            yield_pct=None, ttm_cash_per_share=round(ttm, 4),
+            event_count=len(rows), price_missing=True)
+    if closes[-1] <= 0:
+        return DividendYieldDetail(
+            yield_pct=None, ttm_cash_per_share=round(ttm, 4),
+            event_count=len(rows), price_nonpositive=True)
+    return DividendYieldDetail(
+        yield_pct=round(ttm / closes[-1] * 100, 3),
+        ttm_cash_per_share=round(ttm, 4), event_count=len(rows))
+
+
+def dividend_yield_ttm(code: str, as_of=None, *, trailing_days: int = 365,
+                       price_basis: str = "raw") -> tuple[float, float] | None:
+    """as_of 日 TTM 股息率(%):近 trailing_days 天每股现金分红 / 不复权收盘价 × 100。
+
+    保留旧调用方的 ``(yield_pct, ttm_per_share) | None`` 接口；V2 raw 因子
+    需要区分“无现金分红”和“价格缺失”时，应使用 ``dividend_yield_ttm_detail``。
+    """
+    detail = dividend_yield_ttm_detail(
+        code, as_of, trailing_days=trailing_days, price_basis=price_basis)
+    if detail.yield_pct is None:
         return None
-    return round(ttm / closes[-1] * 100, 3), round(ttm, 4)
+    return detail.yield_pct, detail.ttm_cash_per_share
