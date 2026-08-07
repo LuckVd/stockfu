@@ -158,6 +158,18 @@ python3 main.py --backtest-v2 dividend_low_vol_v2 \
 # --resume PATH：从完整 checkpoint 继续；固定 observation-count 后可延长 --end
 ```
 
+### 5.3.1 V2 记录层（recording schema 1）
+
+V2 的 checkpoint schema 已升级为 3；记录层与评分审计分开保存，策略规则本身不因记录而改变：
+
+- `state.equity_curve`：逐交易日权益、现金、持仓数量、总敞口、现金比例、换手金额、费用、分红、历史高水位、峰值回撤和相对初始本金的水下标记。
+- `state.trades`：实际成交/公司行为入账；每笔调仓成交带 `order_id`、`order_reason`、成交股数、价格、费用、已实现盈亏。
+- `state.order_events`：订单提交、成交、延期、拒绝、取消和无成交尝试；因此“止损触发但跌停未成交”不会被误记成止损成交。
+- `state.risk_events`：逐票止损/止盈触发，以及组合刹车、市场 regime、波动率目标等聚合触发。
+- `state.holding_periods`：按账户 FIFO lot 生成的已平仓批次，包含买入日、卖出日、持有交易日/自然日和退出原因；期末开放批次由账户状态重建。
+
+最终 checkpoint manifest 直接携带这份小型 `metrics` 字典，同时报告换手金额/比例、平均和最长持仓、最大回撤金额与日期、本金水下 0/10/20/30% 天数比例、股息净收入、费用、胜率/盈亏比、止损触发数与实际成交/亏损金额。`underwater_*` 默认是“相对初始本金”口径；`max_drawdown` 和 `peak_drawdown_*` 是“相对历史权益高点”口径，不能混读。qfq 估值下股息已含在价格中，现金股息收入按 0 记录；只有 raw 估值并开启现金分红结算时才会产生独立现金股息事件。
+
 ### 5.4 修复后真实池 canonical 复验（研究结果，非收益承诺）
 
 口径：`dividend_low_vol_v2`、沪深300历史点时成分并集按日过滤、2021-01-01 → 2026-08-05（快照数据到 2026-08-04，manifest 明确截断）、预热 2018-01-01、固定观察期 271 日、qfq 估值、月调 top15。两组均从干净提交 `98be076c2d2bcf1efc25d961dbe1b4d2608eafb7` 从头运行，`status=canonical`、`git_dirty=false`，绑定 lock SHA `ef8036cd…ab7` 与只读快照 `2ee50075…8cff`。修复前 `_v1` 的 +43.41% / +18.29% 结果已作废，不与下表混用。

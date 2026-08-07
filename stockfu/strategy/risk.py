@@ -178,6 +178,9 @@ class RiskOverlay:
         self.brake_latched: bool = False
         self.equity_window: list[float] = []
         self.forced_exit_codes: set[str] = set()
+        # 仅记录本次 apply 触发强制退出的原因；不参与风险决策。
+        # 引擎用它把止损、硬止盈、分档追踪止盈区分开，避免只看到一个 code 集合。
+        self.forced_exit_reasons: dict[str, str] = {}
         self.trigger_counts: dict[str, int] = {
             "stop_loss": 0, "take_profit": 0, "drawdown_brake": 0,
             "market_regime": 0, "volatility_target": 0,
@@ -300,6 +303,7 @@ class RiskOverlay:
         out = dict(source_target)
         self.last_adjusted = False
         self.forced_exit_codes = set()
+        self.forced_exit_reasons = {}
         if execution_prices is None:
             execution_prices = prices
         equity = account.equity(prices)
@@ -318,17 +322,20 @@ class RiskOverlay:
             if p.stop_loss and gain <= -float(p.stop_loss) + 1e-12:
                 out[code] = 0.0
                 self.forced_exit_codes.add(code)
+                self.forced_exit_reasons[code] = "stop_loss"
                 self.trigger_counts["stop_loss"] += 1
                 continue
             if p.take_profit and gain >= float(p.take_profit) - 1e-12:
                 out[code] = 0.0
                 self.forced_exit_codes.add(code)
+                self.forced_exit_reasons[code] = "take_profit"
                 self.trigger_counts["take_profit"] += 1
                 continue
 
             if p.take_profit_hard_pct and gain >= p.take_profit_hard_pct - 1e-12:
                 out[code] = 0.0
                 self.forced_exit_codes.add(code)
+                self.forced_exit_reasons[code] = "take_profit_hard"
                 self.trigger_counts["take_profit"] += 1
                 continue
 
@@ -363,6 +370,10 @@ class RiskOverlay:
                         cap_shares if pos.take_profit_cap_shares is None
                         else min(pos.take_profit_cap_shares, cap_shares)
                     )
+                    # 分档止盈也是风险强制减仓，不能被 portfolio 的持仓软锁或
+                    # 排名保护拦截；下方 cap_weight 会再次确认本次确实需要卖出。
+                    self.forced_exit_codes.add(code)
+                    self.forced_exit_reasons[code] = key
                     self.trigger_counts["take_profit"] += 1
                     break
 
@@ -372,6 +383,10 @@ class RiskOverlay:
                 ) * prices.get(code, 0.0)
                 cap_weight = cap_value / equity
                 out[code] = min(out[code], cap_weight)
+                if out[code] < current.get(code, 0.0) - 1e-12:
+                    self.forced_exit_codes.add(code)
+                    self.forced_exit_reasons.setdefault(
+                        code, "take_profit_trailing_cap")
 
         if p.drawdown_brake or p.drawdown_brake_tiers:
             active, cap = self._brake_active(equity)
@@ -399,6 +414,7 @@ class RiskOverlay:
             "brake_latched": self.brake_latched,
             "equity_window": list(self.equity_window),
             "trigger_counts": dict(self.trigger_counts),
+            "forced_exit_reasons": dict(self.forced_exit_reasons),
         }
 
     def restore_state(self, data: dict[str, Any]) -> None:
@@ -408,6 +424,10 @@ class RiskOverlay:
         self.equity_window = [float(v) for v in (data.get("equity_window") or [])]
         restored = {k: int(v) for k, v in (data.get("trigger_counts") or {}).items()}
         self.trigger_counts = {**self.trigger_counts, **restored}
+        self.forced_exit_reasons = {
+            str(code): str(reason)
+            for code, reason in (data.get("forced_exit_reasons") or {}).items()
+        }
 
     def metrics(self) -> dict[str, int]:
         return {f"risk_{k}_count": int(v) for k, v in self.trigger_counts.items()}

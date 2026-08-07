@@ -86,6 +86,7 @@ def test_v1_partial_take_profit_uses_lots_and_is_checkpointable():
     }
     assert account.positions["A"].take_profit_cap_shares == 600
     assert out["A"] == pytest.approx(0.6)
+    assert "A" in risk.forced_exit_codes
 
     state = risk.checkpoint_state()
     restored = RiskOverlay(policy)
