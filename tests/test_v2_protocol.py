@@ -6,7 +6,8 @@ from datetime import date
 import pytest
 
 from stockfu.backtest.v2_run import (
-    build_v2_config, historical_hs300_universe_rules, hs300_universe,
+    build_v2_config, historical_full_universe_rules,
+    historical_hs300_universe_rules, hs300_universe,
 )
 from stockfu.backtest.v2_engine import _validate_raw_observation
 from stockfu.scoring.contracts import (
@@ -70,6 +71,34 @@ def test_formal_maturity_gate_blocks_partial_factor():
     assert "尚未成熟" in out.reasons[0]
 
 
+def test_formal_maturity_can_be_forced_after_observation_without_faking_raw():
+    alpha = AlphaDefinition(
+        alpha_id="a", version=1, market_scope="cn",
+        factors=(AlphaFactor("m", 1.0, True),), minimum_coverage=0.5,
+        minimum_valid_factor_count=1,
+        formal_maturity_policy="force_mature_after_observation",
+    )
+    fs = FactorScoreObservation(
+        profile_id="m", profile_version=1, asset_code="A", as_of=date(2023, 1, 3),
+        raw_metric_id="m", score=80.0, evidence_coverage=1.0,
+        maturity=Maturity.PARTIAL, mapping_fingerprint="map",
+        reference_cutoff=date(2023, 1, 2), formal_requires_mature=True,
+    )
+    out = AlphaAggregator(alpha).aggregate(
+        "A", date(2023, 1, 3), {"m": fs}, reference_cutoff=date(2023, 1, 2))
+    assert out.score_status == ScoreStatus.TRADABLE
+
+    missing = FactorScoreObservation(
+        profile_id="m", profile_version=1, asset_code="A", as_of=date(2023, 1, 3),
+        raw_metric_id="m", score=50.0, evidence_coverage=0.0,
+        maturity=Maturity.IMMATURE, mapping_fingerprint="map",
+        reference_cutoff=date(2023, 1, 2), formal_requires_mature=True,
+    )
+    blocked = AlphaAggregator(alpha).aggregate(
+        "A", date(2023, 1, 3), {"m": missing}, reference_cutoff=date(2023, 1, 2))
+    assert blocked.score_status == ScoreStatus.NOT_TRADABLE
+
+
 def test_portfolio_ties_are_code_deterministic_and_industry_capped():
     policy = portfolio_from_dict({
         "portfolio_policy_id": "p", "version": 1, "rebalance": "daily",
@@ -96,6 +125,34 @@ def test_portfolio_ties_are_code_deterministic_and_industry_capped():
     assert list(weights) == ["A", "B", "C"]
     assert sum(weights.values()) == pytest.approx(0.4)
     assert max(weights.values()) <= 0.4 / 3 + 1e-12
+
+
+def test_portfolio_rank_hold_top_percentile_is_deterministic():
+    policy = portfolio_from_dict({
+        "portfolio_policy_id": "p_hold", "version": 1, "rebalance": "daily",
+        "selection": {"method": "top_n_above_score", "n": 2, "minimum_score": 0},
+        "weighting": "equal", "max_single_weight": 1.0, "max_gross": 1.0,
+        "min_amount_20d": 0, "minimum_listing_days": 0,
+        "hold_top_percentile": 0.20,
+    })
+    alpha = AlphaDefinition(
+        alpha_id="a_hold", version=1, market_scope="cn",
+        factors=(AlphaFactor("m", 1.0, False),), minimum_coverage=0,
+        minimum_valid_factor_count=0,
+    )
+    scores = {}
+    for code, score in (("C", 70.0), ("A", 90.0), ("B", 80.0),
+                        ("D", 60.0), ("E", 50.0)):
+        scores[code] = AlphaAggregator(alpha).aggregate(
+            code, date(2023, 1, 3), {}, reference_cutoff=date(2023, 1, 2))
+        scores[code].score_status = ScoreStatus.TRADABLE
+        scores[code].strategy_score = score
+    ctx = DayContext(
+        price={c: 10.0 for c in scores}, amount_20d={}, listing_date={},
+        is_st={c: False for c in scores},
+    )
+    assert PortfolioConstructor(policy).rank_hold_codes(
+        scores, ctx, date(2023, 1, 3)) == {"A"}
 
 
 def test_profile_parameters_are_bound_to_raw_metric():
@@ -181,6 +238,12 @@ def test_v2_hs300_rules_enable_daily_historical_membership():
     )
     assert cfg.universe_rules.to_dict()["index_codes"] == ("000300",)
     assert cfg.manifest()["universe_rules"]["universe_id"] == "cn_historical_baostock_csi300_v1"
+
+
+def test_v2_full_rules_cover_csi300_and_csi500():
+    rules = historical_full_universe_rules()
+    assert rules.index_codes == ("000300", "000905")
+    assert rules.universe_id == "cn_historical_baostock_csi300_csi500_v1"
 
 
 def test_build_v2_config_manifest_includes_raw_fingerprints():

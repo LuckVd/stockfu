@@ -1,0 +1,26 @@
+# 红利低波 V2 专用个股风险政策。
+# 止盈按持仓后的最高收盘价回撤触发：第一档卖原始仓位 50%，第二档卖剩余 50%。
+risk_policy_id: dividend_low_vol_trailing_v2
+version: 1
+stop_loss: 0.30
+take_profit: null
+take_profit_tiers:
+  - {profit: 0.20, drawdown: 0.05, sell_fraction: 0.50}
+  - {profit: 0.40, drawdown: 0.08, sell_fraction: 0.50}
+take_profit_hard_pct: null
+drawdown_brake: null
+drawdown_brake_scale: 0.50
+drawdown_brake_max_gross: null
+drawdown_brake_tiers: []
+drawdown_brake_mode: scale_all
+drawdown_recover_dd: null
+drawdown_recover_high_days: 0
+market_regime_code: null
+market_regime_ma_days: null
+market_regime_enter_band: 0.0
+market_regime_exit_band: 0.03
+market_regime_max_gross: 0.50
+volatility_target: null
+volatility_window: 63
+volatility_floor: 0.30
+max_gross: null

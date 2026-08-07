@@ -33,8 +33,9 @@ class PortfolioPolicy:
     max_industry_weight: float | None = None
     rebalance_drift: float = 0.0          # 偏离阈值:|目标-当前权重|≤此值不调(边沿触发);0=关
     cooldown_days: int = 0                # 买入后 N 日内不再加仓;0=关
-    min_holding_days: int = 0             # 建仓后 N 日内不卖/不清仓;0=关
+    min_holding_days: int = 0             # 建仓后 N 个交易日内不卖/不清仓;0=关
     stop_loss_pct: float | None = None    # 浮亏 ≥ 此值豁免 min_holding(软锁:大跌该止损能卖);None=关
+    hold_top_percentile: float = 0.0      # 持仓排名在票池前 N% 时不普通卖出;0=关
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +51,7 @@ class PortfolioPolicy:
             "cooldown_days": self.cooldown_days,
             "min_holding_days": self.min_holding_days,
             "stop_loss_pct": self.stop_loss_pct,
+            "hold_top_percentile": self.hold_top_percentile,
         }
 
     def fingerprint(self) -> str:
@@ -58,6 +60,9 @@ class PortfolioPolicy:
 
 def portfolio_from_dict(d: dict[str, Any]) -> PortfolioPolicy:
     sel = d["selection"]
+    hold_top_percentile = float(d.get("hold_top_percentile", 0.0) or 0.0)
+    if not 0.0 <= hold_top_percentile <= 1.0:
+        raise ValueError("hold_top_percentile 必须在 0 到 1 之间")
     return PortfolioPolicy(
         portfolio_policy_id=str(d["portfolio_policy_id"]), version=int(d["version"]),
         rebalance=str(d.get("rebalance", "monthly")),
@@ -73,6 +78,7 @@ def portfolio_from_dict(d: dict[str, Any]) -> PortfolioPolicy:
         cooldown_days=int(d.get("cooldown_days", 0)),
         min_holding_days=int(d.get("min_holding_days", 0)),
         stop_loss_pct=d.get("stop_loss_pct"),
+        hold_top_percentile=hold_top_percentile,
     )
 
 
@@ -124,13 +130,31 @@ class PortfolioConstructor:
             return False
         return True
 
+    def ranked_candidates(self, scores: dict[str, StrategyScoreObservation],
+                          ctx: DayContext, as_of: date) -> list[str]:
+        """返回当日组合票池的确定性排名(分数降序、代码升序)。"""
+        cand = [c for c in scores if self._eligible(c, scores[c], ctx, as_of)]
+        cand.sort(key=lambda c: (-scores[c].strategy_score, c))
+        return cand
+
+    def rank_hold_codes(self, scores: dict[str, StrategyScoreObservation],
+                        ctx: DayContext, as_of: date) -> set[str]:
+        """返回排名保护集合：票池前 hold_top_percentile 的股票。"""
+        pct = self.policy.hold_top_percentile
+        if pct <= 0.0:
+            return set()
+        ranked = self.ranked_candidates(scores, ctx, as_of)
+        if not ranked:
+            return set()
+        # 向上取整，保证小票池启用保护后至少保护第一名。
+        n = max(1, int(len(ranked) * pct + 0.999999999))
+        return set(ranked[:n])
+
     def select_target(self, scores: dict[str, StrategyScoreObservation],
                       ctx: DayContext, as_of: date) -> dict[str, float]:
         """返回目标权重 dict(只含新建/保留的目标敞口,未含风险覆盖)。"""
         pol = self.policy
-        cand = [c for c in scores if self._eligible(c, scores[c], ctx, as_of)]
-        # 分数相同必须按 code 稳定排序，避免 set/hash 随机化改变持仓。
-        cand.sort(key=lambda c: (-scores[c].strategy_score, c))
+        cand = self.ranked_candidates(scores, ctx, as_of)
         picked = cand[: pol.selection.n]
         if not picked:
             return {}
