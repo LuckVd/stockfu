@@ -703,8 +703,9 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCt
     """
     from sqlalchemy import text
 
-    from stockfu.db import engine as db_engine
+    from stockfu.db import read_engine
     from stockfu.services.factors import quote_model_for
+    db_engine = read_engine()
 
     if not codes:
         return None
@@ -1343,15 +1344,21 @@ def _benchmark_curve(code: str, days: list[date]) -> tuple[list[dict], dict | No
 
 
 def _trade_calendar_days(start: date, end: date) -> list[date]:
-    from stockfu.services.snapshot import _trade_calendar
-    cal = _trade_calendar() or []
-    if not cal:
-        # fallback:akshare 交易日历不可用(离线环境)时,用 quote_snapshot 历史行情日构造
-        from sqlmodel import select
-        from stockfu.db import session_scope
-        from stockfu.models import QuoteSnapshot
-        with session_scope() as s:
-            cal = {d for d in s.exec(select(QuoteSnapshot.quote_date).distinct()).all() if d}
+    from stockfu.db import has_read_engine_override
+    # V2 快照隔离（阻塞①最大漏点）：快照激活时，交易日历必须来自快照 quote_snapshot，
+    # 不能走 akshare 联网——否则改主库/断网重跑会产生不同日历，破坏可复现性。
+    if not has_read_engine_override():
+        from stockfu.services.snapshot import _trade_calendar
+        cal = _trade_calendar() or []
+        if cal:
+            return sorted(d for d in cal if start <= d <= end)
+    # 快照激活，或 akshare 不可用：用 quote_snapshot 历史行情日构造
+    # （session_scope 跟随 read_engine，快照激活时读快照）。
+    from sqlmodel import select
+    from stockfu.db import session_scope
+    from stockfu.models import QuoteSnapshot
+    with session_scope() as s:
+        cal = {d for d in s.exec(select(QuoteSnapshot.quote_date).distinct()).all() if d}
     return sorted(d for d in cal if start <= d <= end)
 
 

@@ -20,6 +20,7 @@ python3 main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20
   # 默认断点续传(跳过 raw/hfq 已完成的 code);--full 强制全量重抓
 python3 main.py --clear-dividend-cache
 python3 main.py --backtest bollinger_monthly --start 2025-06-01 --end 2026-01-01 --codes 600519,000858 --save
+python3 main.py --backtest-v2 dividend_low_vol_v2 --start 2021-01-01 --end 2026-08-05 --history-origin 2018-01-01 --observation-count 271 --codes hs300  # V2 0-100 评分回测;正式运行另加 --canonical --snapshot;详见 V2 spec
 python3 main.py --update-backtests   # 全周期;可 --strategies a,b
   # 默认输出 1% 粒度进度日志(每 1% 打印耗时 + as_of;BACKTEST_PROGRESS=0 可关);后台跑用 setsid 脱离会话
   #   setsid bash -c 'exec python3 -u main.py --update-backtests' > log 2>&1 < /dev/null &
@@ -47,5 +48,5 @@ ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 - **代码检查**:`pyproject.toml [tool.ruff]` 已配,基线只启用 `F`(未用 import/变量/未定义名/无占位符 f-string),专防 6219e10 那类「重构后名字作用域错位」的 NameError 回归;默认规则集另有 16 个 E 类遗留(E741 模糊变量名 `l` / E702 / E701 / E402,均非 bug),清理后再 `select=["E","F"]`。改完代码顺手 `ruff check`
 
 ## 状态
-🚧 MVP。代码:数据层(qfq 硬化)+回测四层+横截面策略族+全周期 CLI+荐股+三复权字段。  
+🚧 MVP。代码:数据层(qfq 硬化)+回测四层+横截面策略族+全周期 CLI+荐股+三复权字段;**V2 评分/回测架构**(`stockfu/scoring` + `stockfu/strategy` + `--backtest-v2`,核心 + 红利低波 vertical slice 已落地,见 `docs/SPECS/factor-strategy-score-v2.md` 与 `docs/SPECS/v2-implementation-notes.md`)。
 历史回测产物只作探索记录；在 `docs/BACKTEST.md` 的正式准入门禁通过前，不得据此判断策略优劣。

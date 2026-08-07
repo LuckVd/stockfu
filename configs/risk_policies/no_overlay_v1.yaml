@@ -1,0 +1,9 @@
+# 风险政策:no_overlay(§19 示例)。纯 passthrough；需要 V1-inspired 规则时使用
+# v1_core_v1，二者结果应分别记录，不把 no_overlay 当作默认风险承诺。
+risk_policy_id: no_overlay_v1
+version: 1
+stop_loss: null
+take_profit: null
+drawdown_brake: null
+volatility_target: null
+max_gross: null                 # 已在 portfolio_policy 约束

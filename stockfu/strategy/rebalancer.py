@@ -41,13 +41,15 @@ class Rebalancer:
 
     def decide(self, ideal: dict[str, float], current_weights: dict[str, float],
                held: set[str], as_of: date,
-               pnl_pct: dict[str, float] | None = None) -> dict[str, float]:
+               pnl_pct: dict[str, float] | None = None,
+               risk_exit_codes: set[str] | None = None) -> dict[str, float]:
         """ideal target → actual pending_orders(偏离阈值 + 冷却 + 最小持仓[软锁])。"""
         drift = self.policy.rebalance_drift
         cd = self.policy.cooldown_days
         mhd = self.policy.min_holding_days
         sl = self.policy.stop_loss_pct
         pnl = pnl_pct or {}
+        risk_exits = risk_exit_codes or set()
         actual: dict[str, float] = {}
 
         for c, tw in ideal.items():
@@ -62,14 +64,15 @@ class Rebalancer:
                 lb = self.last_buy_date.get(c)
                 if lb is not None and (as_of - lb).days < cd:
                     continue
-            if diff < 0 and self._min_holding_locked(c, as_of, mhd, pnl, sl):
+            if (diff < 0 and c not in risk_exits
+                    and self._min_holding_locked(c, as_of, mhd, pnl, sl)):
                 continue                            # 想减仓:过最小持仓(软锁,大跌豁免)
             actual[c] = tw
 
         for c in held:                              # 不在 ideal 的持仓:清仓(过最小持仓软锁)
             if c in ideal:
                 continue
-            if self._min_holding_locked(c, as_of, mhd, pnl, sl):
+            if c not in risk_exits and self._min_holding_locked(c, as_of, mhd, pnl, sl):
                 continue                            # 最小持仓锁住(且未大跌),暂不清
             actual[c] = 0.0
         return actual

@@ -1,0 +1,13 @@
+# alpha:低贝塔红利价值(复现 V1 low_beta_dividend,算子层同源)。
+# 三因子权重对齐 V1 weighted_sum:low_beta 1.0(主)+ dividend_yield 0.8 + value 0.6。
+# raw 计算与 V1 算子同源(services.dividend/valuation/quote_series);评分/加权/组合/风险走 V2 链路(§5)。
+# critical 全 false:贴合 V1 weighted_sum(因子缺失不阻断,仅贡献低),由 minimum_valid_factor_count 兜底。
+alpha_id: low_beta_dividend_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: low_beta_v1, weight: 1.0, critical: false}
+  - {profile_id: dividend_yield_ttm_v1, weight: 0.8, critical: false}
+  - {profile_id: value_v1, weight: 0.6, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1

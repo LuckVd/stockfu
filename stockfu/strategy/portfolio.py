@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
@@ -84,6 +84,7 @@ class DayContext:
     amount_20d: dict[str, float]                  # 近 20 日均成交额
     listing_date: dict[str, date]                 # 上市日
     is_st: dict[str, bool]                        # 是否 ST(点时)
+    industry: dict[str, str | None] = field(default_factory=dict)
 
 
 class PortfolioConstructor:
@@ -128,7 +129,8 @@ class PortfolioConstructor:
         """返回目标权重 dict(只含新建/保留的目标敞口,未含风险覆盖)。"""
         pol = self.policy
         cand = [c for c in scores if self._eligible(c, scores[c], ctx, as_of)]
-        cand.sort(key=lambda c: scores[c].strategy_score, reverse=True)
+        # 分数相同必须按 code 稳定排序，避免 set/hash 随机化改变持仓。
+        cand.sort(key=lambda c: (-scores[c].strategy_score, c))
         picked = cand[: pol.selection.n]
         if not picked:
             return {}
@@ -138,6 +140,22 @@ class PortfolioConstructor:
             weights = {c: w for c in picked}
         else:
             weights = {c: pol.max_single_weight for c in picked}
+
+        # 行业上限是目标权重约束，不改变 alpha 分数和选股排序。
+        # 当前首版采用组内等比缩放，保留候选但把行业总敞口压到上限。
+        industry_cap = pol.max_industry_weight
+        if industry_cap is not None and industry_cap > 0:
+            totals: dict[str, float] = {}
+            for c, w in weights.items():
+                ind = ctx.industry.get(c)
+                if ind:
+                    totals[ind] = totals.get(ind, 0.0) + w
+            for ind, total in totals.items():
+                if total > industry_cap:
+                    factor = industry_cap / total
+                    for c in list(weights):
+                        if ctx.industry.get(c) == ind:
+                            weights[c] *= factor
         total = sum(weights.values())
         if total > pol.max_gross > 0:
             scale = pol.max_gross / total

@@ -495,8 +495,9 @@ def persist_dividends(code: str, *, years: int = 10, timeout: float = 10.0) -> i
     return written
 
 
-def dividend_yield_ttm(code: str, as_of=None) -> tuple[float, float] | None:
-    """as_of 日 TTM 股息率(%):近 365 天每股现金分红 / as_of 日**不复权**收盘价 × 100。
+def dividend_yield_ttm(code: str, as_of=None, *, trailing_days: int = 365,
+                       price_basis: str = "raw") -> tuple[float, float] | None:
+    """as_of 日 TTM 股息率(%):近 trailing_days 天每股现金分红 / 不复权收盘价 × 100。
 
     分红来自 dividend_event 表(baostock query_dividend_data / akshare 回补);
     **分母必须用 close_raw(不复权)**:名义现金 ÷ 全样本前复权价会虚高并引入 qfq 前视。
@@ -505,8 +506,13 @@ def dividend_yield_ttm(code: str, as_of=None) -> tuple[float, float] | None:
     """
     from stockfu.services.factors import ADJ_RAW, quote_series
 
+    trailing_days = int(trailing_days)
+    if trailing_days <= 0:
+        raise ValueError("trailing_days 必须为正")
+    if price_basis != "raw":
+        raise ValueError("当前 dividend_yield_ttm 只支持 price_basis=raw")
     ref = as_of or date.today()
-    year_ago = ref - timedelta(days=365)
+    year_ago = ref - timedelta(days=trailing_days)
     rows: list[tuple[date, float | None]] | None = None
     if _BT_DIVIDEND_PROVIDER is not None:
         rows = _BT_DIVIDEND_PROVIDER(code, year_ago, ref)

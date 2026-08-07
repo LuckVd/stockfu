@@ -88,6 +88,16 @@ class TestRebalancer(unittest.TestCase):
         # 锁定期满 → 不论浮亏都放行
         self.assertEqual(r.decide({}, {"A": 0.20}, held, D0 + timedelta(days=61), {"A": 0.50}), {"A": 0.0})
 
+    def test_risk_exit_bypasses_min_holding_lock(self):
+        # V2 risk 的强制止损/止盈不能被 portfolio 的最小持仓锁吞掉。
+        r = Rebalancer(policy(mhd=60))
+        r.record_buy("A", D0, was_new=True)
+        self.assertEqual(
+            r.decide({}, {"A": 0.20}, {"A"}, D0 + timedelta(days=5),
+                       risk_exit_codes={"A"}),
+            {"A": 0.0},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
