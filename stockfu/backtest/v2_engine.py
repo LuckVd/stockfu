@@ -1873,8 +1873,12 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
                         risk_trigger_seen[trigger_name] = current_count
                     risk_changed = _targets_differ(risk_target, previous_risk_target)
                     last_target = risk_target
-                    # 普通组合目标只在 scheduled rebalance 日纠偏；风险目标发生变化
-                    # 或风险仍在主动压敞口时，允许日级订单维持风险约束。
+                    # 调仓触发：scheduled rebalance 日全量再平衡；风险目标变化或风险仍
+                    # 在主动压敞口时也当日触发 decide。注意后一种情况会顺带把非风险
+                    # code 因价格 drift 偏离 last_target 的部分一并纠偏(目标未变,只是
+                    # 重新对齐权重)——轻微增加换手,但不改变目标配置;若要严格只在
+                    # rebalance 日动非风险 code，需在风险日仅向 decide 喂入受风险影响
+                    # 的 code(当前实现选择前者，即风险日重新对齐全部目标)。
                     should_decide = (
                         scheduled_rebalance
                         or risk_changed
@@ -2083,7 +2087,13 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
 
 
 def _build_benchmark_curve(sctx, bench_code: str, formal_dates: list[date]) -> list[dict]:
-    """formal 段基准净值(归一为 1)。从列式预载取 benchmark qfq close。"""
+    """formal 段基准净值(归一为 1)。从列式预载取 benchmark qfq close。
+
+    缺失日(无列式索引或 NaN)沿用上一有效收盘前向填充，保证曲线与 formal 段等长、
+    连续无洞——与 V1 ``_benchmark_curve`` 一致；否则基准前缀缺数据会让归一起点
+    漂移、``_metrics`` 的 benchmark_return/excess 口径错位。前缀全缺则从首个有效
+    日起算(base 即该日收盘)。
+    """
     if sctx is None or not formal_dates:
         return []
     cols = sctx.series.get(bench_code)
@@ -2093,17 +2103,18 @@ def _build_benchmark_curve(sctx, bench_code: str, formal_dates: list[date]) -> l
     if closes is None:
         return []
     out: list[dict] = []
-    base = None
+    last = base = None
     for d in formal_dates:
         di = sctx.date_idx.get(d)
-        if di is None:
-            continue
-        v = closes[di]
-        if math.isnan(v):
-            continue
+        if di is not None:
+            v = closes[di]
+            if not math.isnan(v):
+                last = v
+        if last is None:
+            continue                       # 前缀全缺：跳到首个有效日再定 base
         if base is None:
-            base = v
-        out.append({"date": d, "equity": v / base})
+            base = last
+        out.append({"date": d, "equity": last / base})
     return out
 
 

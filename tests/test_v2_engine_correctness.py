@@ -280,6 +280,43 @@ def test_raw_ex_date_sell_receives_dividend_before_execution(monkeypatch):
     assert result.metrics["cash_dividend_net"] > 0
 
 
+def test_benchmark_curve_forward_fills_missing_days():
+    """基准缺失日(无索引/NaN)前向填充，保证曲线与 formal 段等长连续。
+
+    回归 _build_benchmark_curve 改前对缺失日 continue 跳过：曲线产生空洞、归一
+    起点随前缀缺失漂移，进而错位 _metrics 的 benchmark_return/excess。
+    """
+    nan = float("nan")
+    arr = [10.0, nan, 12.0, nan, 14.0]
+    sctx = _SeriesCtx(
+        series={"sh000300": {"c": arr}},
+        dates=DATES[:5],
+        date_idx={DATES[i]: i for i in range(5)},
+        valid=[True] * 5,
+    )
+    curve = engine._build_benchmark_curve(sctx, "sh000300", DATES[:5])
+    # base=10；NaN 日沿用上一有效值 → 10,10,12,12,14 → 归一 1.0,1.0,1.2,1.2,1.4
+    assert [round(p["equity"], 6) for p in curve] == [1.0, 1.0, 1.2, 1.2, 1.4]
+    assert len(curve) == 5                      # 等长，无空洞
+    assert [p["date"] for p in curve] == DATES[:5]
+
+
+def test_benchmark_curve_prefix_gap_starts_at_first_valid():
+    """前缀全缺时从首个有效日起算 base，不伪造前缀点(与 V1 行为一致)。"""
+    nan = float("nan")
+    arr = [nan, nan, 12.0, 13.0, 14.0]
+    sctx = _SeriesCtx(
+        series={"sh000300": {"c": arr}},
+        dates=DATES[:5],
+        date_idx={DATES[i]: i for i in range(5)},
+        valid=[True] * 5,
+    )
+    curve = engine._build_benchmark_curve(sctx, "sh000300", DATES[:5])
+    assert [p["date"] for p in curve] == DATES[2:5]   # 前缀两日跳过
+    assert [round(p["equity"], 6) for p in curve] == [
+        1.0, round(13 / 12, 6), round(14 / 12, 6)]
+
+
 def test_deferred_order_survives_suspension(monkeypatch):
     _patch_synthetic(monkeypatch, suspended={DATES[3]})
     result = engine.run_v2_backtest(_make_config(end=DATES[-1]))
