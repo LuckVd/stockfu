@@ -88,7 +88,8 @@ def _make_config(*, end: date, checkpoint_path=None, resume_from=None,
                  rebalance: str = "monthly",
                  raw_values: dict[date, dict[str, float]] | None = None,
                  raw_fingerprints: dict[str, str] | None = None,
-                 canonical: bool = False):
+                 canonical: bool = False,
+                 valuation_basis: str = "qfq"):
     profile = _profile()
     alpha = AlphaDefinition(
         alpha_id="synthetic_v2", version=1, market_scope="cn",
@@ -129,6 +130,8 @@ def _make_config(*, end: date, checkpoint_path=None, resume_from=None,
         codes=STOCKS, eval_start=DATES[0], eval_end=end,
         history_origin=DATES[0], initial_cash=100_000.0, market_scope="cn",
         benchmark_code=BENCH, observation_count=2,
+        valuation_basis=valuation_basis,
+        credit_dividends=valuation_basis == "raw",
         checkpoint_path=str(checkpoint_path) if checkpoint_path else None,
         resume_from=str(resume_from) if resume_from else None,
         canonical=canonical,
@@ -244,6 +247,37 @@ def test_monthly_policy_does_not_rebalance_every_day(monkeypatch):
     assert result.metrics["longest_holding_days"] >= 1
     assert result.metrics["recording_schema_version"] == 1
     assert result.manifest["recording_schema_version"] == 1
+
+
+def test_raw_ex_date_sell_receives_dividend_before_execution(monkeypatch):
+    """除息日先结算公司行为，再执行前一日卖单。
+
+    D3 生成 A 的清仓单，D4 同时是除息日。回归必须证明 D4 的现金分红按
+    D3 收盘持仓入账，即使 D4 开盘卖出 A；修复前主循环先卖后结算，分红记录为空。
+    """
+    _patch_synthetic(monkeypatch)
+    ex_date = DATES[4]
+    monkeypatch.setattr(
+        engine, "_preload_cash_dividends",
+        lambda *args, **kwargs: {
+            ex_date: [("A", 1.0, DATES[2])],
+        },
+    )
+    monkeypatch.setattr(
+        engine, "_preload_stock_dividends",
+        lambda *args, **kwargs: {},
+    )
+    result = engine.run_v2_backtest(_make_config(
+        end=DATES[-1], rebalance="daily", valuation_basis="raw",
+        raw_values={DATES[3]: {"A": 40.0, "B": 80.0}},
+    ))
+
+    day_trades = [row for row in result.trades
+                  if row.get("date") == ex_date.isoformat()]
+    assert [row["kind"] for row in day_trades[:2]] == ["cash_dividend", "reduce"]
+    assert day_trades[0]["shares"] == -day_trades[1]["shares"]
+    assert day_trades[0]["gross"] > 0
+    assert result.metrics["cash_dividend_net"] > 0
 
 
 def test_deferred_order_survives_suspension(monkeypatch):

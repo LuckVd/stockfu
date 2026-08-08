@@ -6,11 +6,12 @@
     formal  后 4/5                         :评分 + rebalance 日产生 t+1 订单
 
 每日顺序(§9.3,硬约束):
-    1. 执行 t-1 产生的待执行订单(成交时点可见数据)
-    2. 解析 t 日点时 universe;评分只读 cutoff < t 的历史状态
-    3. 批量算 raw → factor score(同一状态为全部股票评分)
-    4. alpha 聚合 → (观察期跳过)组合+risk → t+1 待执行订单
-    5. **所有评分完成后**才把 t 日观测追加进历史状态
+    1. raw 口径结算 t 日除息日公司行为(现金分红后送转)
+    2. 执行 t-1 产生的待执行订单(成交时点可见数据)
+    3. 解析 t 日点时 universe;评分只读 cutoff < t 的历史状态
+    4. 批量算 raw → factor score(同一状态为全部股票评分)
+    5. alpha 聚合 → (观察期跳过)组合+risk → t+1 待执行订单
+    6. **所有评分完成后**才把 t 日观测追加进历史状态
 
 记账/撮合/分红/费用复用 engine.py 已验证单元(§3.3);估值 qfq、credit_dividends=False
 (qfq 已含分红再投)。本引擎只重写评分编排,不沾 V1 per-code analyze + score_full。
@@ -1565,7 +1566,17 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
             if bench_px is not None and bench_px > 0:
                 benchmark_closes.append(float(bench_px))
 
-            # ---- 1. 执行 t-1 订单(T+1 开盘价;raw 判涨跌停;先卖后买 + 现金约束)----
+            # ---- 1. 分红结算(raw；必须在 t 日开盘挂单执行前)----
+            # 股权登记日收盘持仓在除息日卖出仍享有公司行为；现金分红和
+            # 送转必须按 settle_dividends 的顺序作用于 t-1 收盘持仓。
+            if credit_div:
+                dividend_trades = settle_dividends(
+                    acct, t, cash_dividends, stock_dividends, credit_div)
+                for dividend_trade in dividend_trades:
+                    dividend_trade.setdefault("reason", dividend_trade.get("kind"))
+                    trades.append(dividend_trade)
+
+            # ---- 2. 执行 t-1 订单(T+1 开盘价;raw 判涨跌停;先卖后买 + 现金约束)----
             if pending_orders:
                 open_prices = dict(open_q)
                 # 交易日缺少持仓的开盘行时，沿用上一可用估值；不能让停牌股在
@@ -1707,15 +1718,7 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
                 pending_orders = remaining_orders
                 pending_order_meta = remaining_order_meta
 
-            # 分红结算(qfq 下 credit_dividends=False → 跳过)
-            if credit_div:
-                dividend_trades = settle_dividends(
-                    acct, t, cash_dividends, stock_dividends, credit_div)
-                for dividend_trade in dividend_trades:
-                    dividend_trade.setdefault("reason", dividend_trade.get("kind"))
-                    trades.append(dividend_trade)
-
-            # ---- 2. universe + 3. raw ----
+            # ---- 3. universe + 4. raw ----
             day_flags: dict[str, DayFlags] = {}
             for c in codes:
                 bar = day_bars.get(c)
@@ -1747,7 +1750,7 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
                             raw_missing[metric][period] += 1
                 raw_by_metric[metric] = m
 
-            # ---- 4. 评分(仅 eval 期;读 cutoff<t 的历史)----
+            # ---- 5. 评分(仅 eval 期;读 cutoff<t 的历史)----
             is_eval = t in obs_set or t in formal_set
             in_obs = t in obs_set
             strategy_scores = {}
@@ -1926,7 +1929,7 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
                     # 最后一天同月/同周，会被误判为非 rebalance 日。
                     prev_eval_date = t
 
-            # ---- 5. 日末:评分完成后追加 t 日观测到历史 ----
+            # ---- 6. 日末:评分完成后追加 t 日观测到历史 ----
             sample_flags: dict[str, dict[str, bool]] = {}
             metric_values: dict[str, dict[str, float | None]] = {}
             for p in profiles.values():
