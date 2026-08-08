@@ -1,0 +1,14 @@
+# 组合政策:top5 等权 20%、月调(对齐 V1 low_beta_dividend 的集中度)。
+# 隔离实验:只变持仓数(top15→top5),不加换手抑制(drift/cooldown/min_holding=0),
+# 验证"集中度"是否是 V1/V2 绩效差的根。若 top5 接近 V1 +99%,根因确认在集中度。
+portfolio_policy_id: cn_equity_top5_v1
+version: 1
+rebalance: monthly
+selection: {method: top_n_above_score, n: 5, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.20
+max_gross: 1.0
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: 0.30
+# 换手抑制旋钮默认 0(本实验不加,隔离持仓数变量)

@@ -1,0 +1,19 @@
+# 因子评分档案:PE 5 年分位(0-100)。低估(分位低)→ 高分。
+# raw 算法与 V1 value operator 一致(同 valuation_percentile);raw 本身即 0-100 分位,
+# 映射线性反转(0→100, 100→0),不引入历史分位,保持与 V1 评分口径可比。
+profile_id: value_v1
+version: 1
+raw_metric:
+  id: value
+  params: {years: 5}
+direction: lower_is_better
+raw_unit: pe_percentile
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 1.00
+      knots: [[0, 100], [50, 50], [100, 0]]
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

@@ -9,7 +9,7 @@ import unittest
 
 import yaml
 
-from stockfu.ai.operators.seed import _deep_merge, _expand_variants
+from stockfu.ai.operators.seed import _deep_merge, _expand_variants, _prune_signal_strategy_ids
 
 
 class TestDeepMerge(unittest.TestCase):
@@ -85,6 +85,24 @@ class TestExpandVariants(unittest.TestCase):
         self.assertEqual(vcfg["risk"]["stop_loss"], 0.30)      # override 生效
         self.assertEqual(vcfg["position"]["score_full"], 8)    # base 键保留
         self.assertEqual(vcfg["name"], "红利横截面(止损30%)")
+
+
+class TestPruneSignalStrategyIds(unittest.TestCase):
+    def test_removes_archived_ids_and_deduplicates(self):
+        raw = '["keep", "old", "keep", "other"]'
+        self.assertEqual(
+            _prune_signal_strategy_ids(raw, {"keep", "other"}),
+            '["keep", "other"]',
+        )
+
+    def test_empty_result_returns_none_for_fallback(self):
+        self.assertIsNone(_prune_signal_strategy_ids('["old"]', {"keep"}))
+
+    def test_csv_legacy_value_is_supported(self):
+        self.assertEqual(
+            _prune_signal_strategy_ids("keep,old", {"keep"}),
+            '["keep"]',
+        )
 
 
 if __name__ == "__main__":

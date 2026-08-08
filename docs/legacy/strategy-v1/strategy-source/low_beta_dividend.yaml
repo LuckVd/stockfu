@@ -1,0 +1,30 @@
+version: 1
+name: 低贝塔红利横截面(防御+收入)
+# Black 低波动异象 / Frazzini-Pedersen BAB:低 β 票风险调整后长期占优;叠加高股息 =
+# 防御型收入策略(2025 A 股防御风格走强)。三因子:low_beta(主)+ dividend_yield + value。
+# cap_and_rank 横截面选低 β、高息、低估票。数据依赖:close + 沪深300 + 股息 + PE/PB。
+# **注**:低 β + 高息组合在牛市/成长行情里会跑输基准(防御属性),适合震荡/熊市配置。
+operators:
+  - {id: low_beta,       type: math, weight: 1.0, params: {window: 120, bench: sh000300}}
+  - {id: dividend_yield, type: math, weight: 0.8, params: {high_yield: 5.0, price_basis: raw, yield_cap: 20.0}}
+  - {id: value,          type: math, weight: 0.6, params: {years: 5}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.20
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  # Frazzini-Pedersen(2014)BAB 原文:无止损/无刹车(靠杠杆+波动率控制),等权满仓;stop_loss=0,max_gross=1.0。
+  stop_loss: 0
+  portfolio_brake: 0
+  max_gross: 1.0

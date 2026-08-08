@@ -1,9 +1,10 @@
 """数据库引擎 / 会话 / 建表 / 迁移 / 种子数据。"""
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date
 
-from sqlalchemy import event, inspect, text
+from sqlalchemy import Engine, event, inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from stockfu import models  # noqa: F401  —— 注册所有表
@@ -16,6 +17,49 @@ engine = create_engine(
     echo=False,
     connect_args={"check_same_thread": False},
 )
+
+
+# ----------------------------------------------------------- 读隔离（V2 快照）
+# V2 回测要求所有取数走不可变数据快照，而非持续变化的主库。用一个 contextvar
+# 在 V2 运行期把 read_engine() 切到快照引擎；未设置时回落全局 engine，全 app
+# + V1 行为不变。建表/迁移/种子等写路径仍直接用 engine（不经过 read_engine）。
+#
+# 注意：V2 读隔离依赖单线程 eval。若日后在 eval 循环引入 ThreadPool /
+# asyncio.to_thread 并行，worker 线程不会继承本 contextvar，会静默回退主库
+# —— 正是本机制要堵的漏。并行化时须显式按任务传播 _READ_ENGINE。
+_READ_ENGINE: ContextVar[Engine | None] = ContextVar(
+    "stockfu_read_engine", default=None)
+
+
+def read_engine() -> Engine:
+    """当前读引擎：V2 运行期为快照引擎，否则全局主库。"""
+    return _READ_ENGINE.get() or engine
+
+
+@contextmanager
+def use_read_engine(eng: Engine) -> Iterator[None]:
+    """在 with 块内把 read_engine() 切到指定引擎（V2 快照），退出恢复。"""
+    token = _READ_ENGINE.set(eng)
+    try:
+        yield
+    finally:
+        _READ_ENGINE.reset(token)
+
+
+def set_read_engine(eng: Engine):
+    """命令式切到指定读引擎（返回 token）；配合 reset_read_engine 用于无法用
+    with 包裹的体量函数（如 run_v2_backtest 的主体抽取成 _run_v2_backtest_body）。"""
+    return _READ_ENGINE.set(eng)
+
+
+def reset_read_engine(token) -> None:
+    """恢复 set_read_engine 之前的读引擎（必须成对调用，异常路径也要）。"""
+    _READ_ENGINE.reset(token)
+
+
+def has_read_engine_override() -> bool:
+    """read_engine 是否被覆盖（V2 快照激活）；用于让交易日历等口径切换数据源。"""
+    return _READ_ENGINE.get() is not None
 
 
 def _create_main_tables() -> None:
@@ -135,13 +179,13 @@ def init_db() -> None:
 
 
 def get_session() -> Iterator[Session]:
-    with Session(engine) as s:
+    with Session(read_engine()) as s:
         yield s
 
 
 @contextmanager
 def session_scope() -> Iterator[Session]:
-    with Session(engine) as s:
+    with Session(read_engine()) as s:
         yield s
 
 

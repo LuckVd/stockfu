@@ -1,0 +1,29 @@
+version: 1
+name: 低换手反转横截面(流动性+反转+价值)
+# 低换手率是 A 股最强流动性异象之一(华创:中证800 最佳),与短期反转、低估值同向。
+# 三因子:low_turnover(主)+ reversal(短期反转)+ value(低估)。cap_and_rank 横截面。
+# 逻辑:低换手(筹码稳)+ 近期超跌(反转)+ 低估 = 被错杀的稳健票。数据依赖:turnover + close + PE。
+operators:
+  - {id: low_turnover, type: math, weight: 1.0, params: {window: 20}}
+  - {id: reversal,     type: math, weight: 0.8, params: {window: 20}}
+  - {id: value,        type: math, weight: 0.6, params: {years: 5}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.20
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  # 低换手/反转异象原文无止损/无刹车,等权满仓;stop_loss=0 关闭默认 8%,max_gross=1.0。
+  stop_loss: 0
+  portfolio_brake: 0
+  max_gross: 1.0

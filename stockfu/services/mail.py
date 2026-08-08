@@ -84,8 +84,20 @@ def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str |
     return imgs
 
 
-def send_card_email(images: list[bytes], subject: str | None = None) -> dict:
-    """把 images 内嵌进 HTML 邮件，并附同名 PNG 作为客户端兼容兜底。"""
+def send_card_email(
+    images: list[bytes],
+    subject: str | None = None,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    filename_prefix: str = "stockfu",
+    include_attachments: bool = True,
+) -> dict:
+    """把 images 内嵌进 HTML 邮件，可选附同名 PNG 作为客户端兼容兜底。
+
+    策略评分邮件通常页数较多；关闭附件兜底可避免同一组图片在 MIME 中复制一份，
+    防止大邮件超过 SMTP 服务端限制。默认值保持原有市场日报行为。
+    """
     from stockfu.config import (get_smtp_from, get_smtp_host, get_smtp_pass,
                                 get_smtp_port, get_smtp_user, get_mail_to)
     from stockfu.services.snapshot import latest_trade_date
@@ -97,6 +109,8 @@ def send_card_email(images: list[bytes], subject: str | None = None) -> dict:
     sender = get_smtp_from() or user
     td = latest_trade_date() or date.today()
     subject = subject or f"StockFu 每日行情 · {td}"
+    title = title or f"StockFu 每日行情 · {td}"
+    description = description or f"共 {len(images)} 张 · 9:16 竖屏分享卡片"
 
     # 标准 MIME 层级：related（HTML 与内嵌资源）→ alternative（纯文本/HTML）。
     # 部分邮箱对直接把 HTML 放在 related 根节点的 CID 图片不会渲染。
@@ -106,12 +120,12 @@ def send_card_email(images: list[bytes], subject: str | None = None) -> dict:
     msg["To"] = ", ".join(to_list)
     msg["Date"] = formatdate(localtime=True)
 
-    plain = (f"StockFu 每日行情 · {td}\n"
-             f"共 {len(images)} 张分享卡片。若正文图片未显示，请下载邮件附件中的 PNG 图片。")
+    fallback = "若正文图片未显示，请下载邮件附件中的 PNG 图片。" if include_attachments else "图片已内嵌在邮件正文中。"
+    plain = f"{title}\n{description}\n共 {len(images)} 张图片。{fallback}"
     body = [
         "<html><body style='font-family:-apple-system,sans-serif;background:#f7f8fa;padding:12px'>",
-        f"<h2 style='margin:0 0 8px'>StockFu 每日行情 · {td}</h2>",
-        f"<p style='color:#666;font-size:13px;margin:0 0 12px'>共 {len(images)} 张 · 9:16 竖屏分享卡片</p>",
+        f"<h2 style='margin:0 0 8px'>{title}</h2>",
+        f"<p style='color:#666;font-size:13px;margin:0 0 12px'>{description}</p>",
     ]
     for i in range(len(images)):
         body.append(
@@ -125,16 +139,17 @@ def send_card_email(images: list[bytes], subject: str | None = None) -> dict:
     msg.attach(alternative)
 
     for i, img in enumerate(images):
-        filename = f"stockfu-{td}-{i + 1}.png"
+        filename = f"{filename_prefix}-{td}-{i + 1}.png"
         part = MIMEImage(img, _subtype="png")
         part.add_header("Content-ID", f"<page-{i}>")
         part.add_header("Content-Disposition", "inline", filename=filename)
         part.add_header("Content-Location", filename)
         msg.attach(part)
-        # 兼容不显示 CID 图片的客户端（如部分 QQ/企业邮箱阅读器）。
-        attachment = MIMEImage(img, _subtype="png")
-        attachment.add_header("Content-Disposition", "attachment", filename=filename)
-        msg.attach(attachment)
+        if include_attachments:
+            # 兼容不显示 CID 图片的客户端（如部分 QQ/企业邮箱阅读器）。
+            attachment = MIMEImage(img, _subtype="png")
+            attachment.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(attachment)
 
     host, port = get_smtp_host(), get_smtp_port()
     try:

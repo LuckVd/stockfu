@@ -1,0 +1,26 @@
+version: 1
+name: 红利低波(高股息+低波动+低估值)
+# 经典红利低波多因子:dividend_yield(高股息,主信号)+low_volatility(低波,防御)+value(低估值,安全边际)。
+# 三因子打分,top_n_picker 选 top 8 高分股等权 + lock 20 天锁仓。
+# 数据依赖:dividend_event 表(baostock query_dividend_data 全市场回补,见 --backfill-dividend)。
+# 个股 strict 模式(ST/次新/停牌过滤 + 涨跌停/滑点),宇宙动态池 min_amount 流动性门槛。
+# 满仓刻度 score_full=8(dividend_yield 满强度 20×1.0 + low_vol 20×0.8 + value 20×0.6 = 40,8/40=20% 满仓)。
+operators:
+  - {id: dividend_yield,  type: math, weight: 1.0, params: {high_yield: 5.0, price_basis: raw, yield_cap: 20.0}}
+  - {id: low_volatility,  type: math, weight: 0.8, params: {window: 20, hist_years: 3}}
+  - {id: value,           type: math, weight: 0.6, params: {years: 5}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.12           # top_n=8 时单只 12%(8×0.12=0.96,留 max_gross 安全阀)
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 5
+  sell_cooldown_days: 3
+  max_target_step: 0.3
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.3

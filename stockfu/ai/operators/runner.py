@@ -186,6 +186,7 @@ class CompiledStrategy:
         codes = list(codes or [])
         self._run_codes = codes  # type: ignore[attr-defined]
         self._run_end = end  # type: ignore[attr-defined]
+        self._run_last_as_of = None  # type: ignore[attr-defined]
         if start is not None and end is not None:
             win_end = min(start + timedelta(days=RUN_CACHE_WINDOW_DAYS), end)
         else:
@@ -240,6 +241,7 @@ class CompiledStrategy:
         self._run_codes = None  # type: ignore[attr-defined]
         self._run_end = None  # type: ignore[attr-defined]
         self._run_window_end = None  # type: ignore[attr-defined]
+        self._run_last_as_of = None  # type: ignore[attr-defined]
 
     def prefetch_cache(self, codes: list[str], as_of,
                        temperature: float = 0.0,
@@ -276,6 +278,11 @@ class CompiledStrategy:
             # 回测日历单调递增；该日期之后不会再被访问。prefill 已包含本日值，
             # 因此可释放预载 hit 和随后 miss，保持内存只随单日规模增长。
             run_cache.pop(as_of, None)
+            # 运行缓存按日期单调消费；同一日期的重复 prefetch 是幂等查询，
+            # 不应在尾部把已经消费完的内存缓存误判成冷 miss 再落库。
+            last_as_of = getattr(self, "_run_last_as_of", None)
+            if last_as_of is not None and as_of <= last_as_of:
+                return prefill
         else:
             prefill = get_operator_results_batch(codes, as_of, op_fps)
 
@@ -290,6 +297,8 @@ class CompiledStrategy:
                 if (c, op_id) not in prefill:
                     tasks.append((c, op_id, cls, params, fp, cls.type))
         if not tasks:
+            if run_cache is not None:
+                self._run_last_as_of = as_of
             return prefill
 
         def _eval(task):
@@ -310,6 +319,8 @@ class CompiledStrategy:
                 entries.append((c, op_id, fp, op_type, r))
         if entries:
             save_operator_results_batch(as_of, entries)
+        if run_cache is not None:
+            self._run_last_as_of = as_of
         return prefill
 
     def analyze(self, code: str, as_of=None, holding_override=None,

@@ -227,6 +227,35 @@ def _cleanup_pruned_strategies() -> None:
             f"UPDATE app_config SET value = 'momentum_breakout' "
             f"WHERE key = 'active_strategy_id' AND value NOT IN ({placeholders})"
         ), params)
+        signal_raw = conn.execute(text(
+            "SELECT value FROM app_config WHERE key = 'signal_strategy_ids'"
+        )).scalar_one_or_none()
+        signal_value = _prune_signal_strategy_ids(signal_raw, set(kept))
+        if signal_value is None:
+            # 空值要删除配置行，让 get_signal_strategy_ids() 回落正式目录，
+            # 不能写 JSON []（那会被当作“显式配置为空”而跳过回落）。
+            conn.execute(text("DELETE FROM app_config WHERE key = 'signal_strategy_ids'"))
+        else:
+            conn.execute(text(
+                "UPDATE app_config SET value = :value WHERE key = 'signal_strategy_ids'"
+            ), {"value": signal_value})
+
+
+def _prune_signal_strategy_ids(raw: str | None, kept: set[str]) -> str | None:
+    """从持久化信号策略配置中去掉已归档 id；无有效项时返回 None。"""
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        parsed = raw.split(",")
+    if not isinstance(parsed, list):
+        return None
+    ids = list(dict.fromkeys(
+        str(value).strip() for value in parsed
+        if str(value).strip() in kept
+    ))
+    return json.dumps(ids, ensure_ascii=False) if ids else None
 
 
 def _cleanup_legacy_llm() -> None:

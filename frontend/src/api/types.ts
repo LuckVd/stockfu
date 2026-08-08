@@ -176,6 +176,81 @@ export interface LlmConfig {
   has_api_key: boolean
   source: 'db' | 'env'
 }
+
+/** 策略信号扫描配置与逐股订阅 */
+export interface SignalStrategyOption {
+  strategy_id: string
+  name: string
+}
+
+export interface SignalConfig {
+  factor_enabled: boolean
+  llm_enabled: boolean
+  mail_enabled: boolean
+  scan_time: string
+  strategy_ids: string[]
+  available_strategies: SignalStrategyOption[]
+}
+
+export interface SignalSubscription {
+  code: string
+  name: string
+  index_codes: string[]
+  factor_mail_enabled: boolean
+  llm_enabled: boolean
+}
+
+export interface SignalSubscriptionsResp {
+  as_of: string
+  rows: SignalSubscription[]
+}
+
+export interface StrategyScore {
+  strategy_id: string
+  strategy_name: string
+  strategy_fingerprint: string
+  score_full: number
+  score: number | null
+  raw_score: number | null
+  confidence: number | null
+  legacy_signal: string
+  risk_vetoed: boolean
+  factors: Record<string, number | null>
+  error: string | null
+}
+
+export interface LlmSignalScore {
+  model: string
+  score: number | null
+  summary: string
+  reasons: string[]
+  risks: string[]
+  status: string
+  error: string | null
+}
+
+export interface SignalReportRow {
+  code: string
+  name: string
+  factor_mail_enabled: boolean
+  llm_enabled: boolean
+  strategies: StrategyScore[]
+  llm: LlmSignalScore | null
+}
+
+export interface SignalReport {
+  status: string
+  run_id?: number
+  signal_date?: string
+  universe_size?: number
+  strategy_ids?: string[]
+  factor_expected?: number
+  factor_completed?: number
+  llm_requested?: number
+  llm_completed?: number
+  error?: string | null
+  rows: SignalReportRow[]
+}
 /** POST /config/llm/test */
 export interface LlmTestResult {
   ok: boolean
