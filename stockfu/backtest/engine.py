@@ -26,6 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+import numpy as np
 from sqlmodel import select, and_
 
 from stockfu.db import session_scope
@@ -491,8 +492,11 @@ def _backtest_series_ctx(
                                           set_backtest_series_provider)
     from stockfu.services.dividend import (clear_backtest_dividend_provider,
                                            set_backtest_dividend_provider)
-    from stockfu.services.valuation import (clear_backtest_valuation_provider,
-                                            set_backtest_valuation_provider)
+    from stockfu.services.valuation import (
+        _ValWindow,
+        clear_backtest_valuation_provider,
+        set_backtest_valuation_provider,
+    )
     if not sctx or not sctx.series:
         yield
         return
@@ -533,36 +537,29 @@ def _backtest_series_ctx(
         return d_out, v_out
 
     def provide_valuation(code, start, ref_date):
-        """返回 PE/PB 估值窗口,供 value 算子零 DB 计算历史分位。
+        """返回 PE/PB 估值原生窗口(_ValWindow),供 value 算子零 DB 算历史分位。
 
-        close/pe/pb 出口把 nan 还原成 None(与旧 tuple 路径逐值一致),value 算子末端
-        的 >0 守卫对 None/nan 同样过滤。
+        向量化:array('d') 切片零拷贝 + numpy 检测 ETF/指数全 nan 回退,跳过旧逐行
+        建 tuple 循环。输出经 valuation_snapshot 的 numpy 过滤/排序路径,逐值等价旧
+        tuple 路径(test_valuation_equivalence 盯)。
         """
         cols = series.get(code)
         if cols is None:
-            return None
+            return None                       # code 不在预载宇宙 → 回落 DB
         lo = bisect_left(dates, start)
         hi = bisect_right(dates, ref_date)
-        pe_arr, pb_arr, c_arr = cols["pe"], cols["pb"], cols["c"]
-        out = []
-        any_pe_pb = False
-        for i in range(lo, hi):
-            pe = pe_arr[i]
-            pb = pb_arr[i]
-            if not (math.isnan(pe) and math.isnan(pb)):
-                any_pe_pb = True
-            cv = c_arr[i]
-            out.append((
-                dates[i],
-                None if math.isnan(cv) else cv,
-                None if math.isnan(pe) else pe,
-                None if math.isnan(pb) else pb,
-            ))
+        if hi <= lo:
+            return _ValWindow(array("d"), array("d"), array("d"), 0)  # 空窗 → snapshot 走 empty
+        pe_win = cols["pe"][lo:hi]            # array('d') 切片 → array('d')(非 list)
+        pb_win = cols["pb"][lo:hi]
+        c_win = cols["c"][lo:hi]
         # ETF/指数预载行没有 PE/PB(全 nan);valuation_snapshot 原路径只查
         # QuoteSnapshot,故此处回退 DB,避免把非个股 bar 误当估值样本。
-        if out and not any_pe_pb:
-            return None
-        return out
+        pe_np = np.frombuffer(pe_win, dtype=np.float64)
+        pb_np = np.frombuffer(pb_win, dtype=np.float64)
+        if np.all(np.isnan(pe_np) & np.isnan(pb_np)):
+            return None                       # 全 nan → 回退 DB(等价旧 any_pe_pb=False)
+        return _ValWindow(pe_win, pb_win, c_win, hi - lo - 1)
 
     def provide_dividends(code, start, ref_date):
         events = dividend_index.get(code)
@@ -706,8 +703,9 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCt
     """
     from sqlalchemy import text
 
-    from stockfu.db import engine as db_engine
+    from stockfu.db import read_engine
     from stockfu.services.factors import quote_model_for
+    db_engine = read_engine()
 
     if not codes:
         return None
@@ -1346,15 +1344,21 @@ def _benchmark_curve(code: str, days: list[date]) -> tuple[list[dict], dict | No
 
 
 def _trade_calendar_days(start: date, end: date) -> list[date]:
-    from stockfu.services.snapshot import _trade_calendar
-    cal = _trade_calendar() or []
-    if not cal:
-        # fallback:akshare 交易日历不可用(离线环境)时,用 quote_snapshot 历史行情日构造
-        from sqlmodel import select
-        from stockfu.db import session_scope
-        from stockfu.models import QuoteSnapshot
-        with session_scope() as s:
-            cal = {d for d in s.exec(select(QuoteSnapshot.quote_date).distinct()).all() if d}
+    from stockfu.db import has_read_engine_override
+    # V2 快照隔离（阻塞①最大漏点）：快照激活时，交易日历必须来自快照 quote_snapshot，
+    # 不能走 akshare 联网——否则改主库/断网重跑会产生不同日历，破坏可复现性。
+    if not has_read_engine_override():
+        from stockfu.services.snapshot import _trade_calendar
+        cal = _trade_calendar() or []
+        if cal:
+            return sorted(d for d in cal if start <= d <= end)
+    # 快照激活，或 akshare 不可用：用 quote_snapshot 历史行情日构造
+    # （session_scope 跟随 read_engine，快照激活时读快照）。
+    from sqlmodel import select
+    from stockfu.db import session_scope
+    from stockfu.models import QuoteSnapshot
+    with session_scope() as s:
+        cal = {d for d in s.exec(select(QuoteSnapshot.quote_date).distinct()).all() if d}
     return sorted(d for d in cal if start <= d <= end)
 
 
@@ -1434,6 +1438,8 @@ def run_backtest(codes: list[str], start: date, end: date,
     """
     if valuation_basis not in ("raw", "qfq", "hfq"):
         raise ValueError(f"valuation_basis 必须是 raw/qfq/hfq,Got {valuation_basis!r}")
+    from stockfu.backtest.v1_gate import ensure_v1_backtest_enabled
+    ensure_v1_backtest_enabled()
     credit_dividends = valuation_basis == "raw"   # raw 需显式补分红;qfq/hfq 已含分红,再入账=重复计息
     if debounce is not None:   # dataclass 覆盖各裸 kwargs(双入口向后兼容)
         buy_cool_down_days = debounce.buy_cool_down_days

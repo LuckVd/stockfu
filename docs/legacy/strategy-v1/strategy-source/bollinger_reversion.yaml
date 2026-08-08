@@ -1,0 +1,31 @@
+version: 1
+name: 布林均值回归(日+周,中下轨买/中上轨卖)
+# 真正的布林带均值回归(区别于 momentum_breakout 的动量追涨):
+#   日线布林(主信号)+ 周线布林(方向确认)+ RSI 超卖加成。
+#   中下轨(position<0.45)买、中上轨(position>0.55)卖,中轨死区观望。
+#   trend_strength 仅作软过滤(低权重,空头票在截面排名里被压低),不主导、不硬 veto
+#   ——硬 veto 会挡掉超卖股(超卖常伴短期空头排列),与均值回归冲突。
+# 权重:日1.0+周0.6 ≫ RSI 0.4/趋势 0.2,保证布林主导信号方向。
+operators:
+  - {id: daily_bollinger,  type: math, weight: 1.0, params: {window: 20, std_dev: 2.0, buy_max: 0.45, sell_min: 0.55}}
+  - {id: weekly_bollinger, type: math, weight: 0.6, params: {window: 20, std_dev: 2.0, buy_max: 0.45, sell_min: 0.55}}
+  - {id: mean_reversion,   type: math, weight: 0.4, params: {rsi_period: 14, oversold: 30, overbought: 70}}
+  - {id: trend_strength,   type: math, weight: 0.2}
+
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 8, buy: 3, hold: -3, sell: -8}
+
+position:
+  mode: continuous
+  max_w: 0.10
+  dead: 3.0
+  # continuous 模式按 total_score 线性映射到 max_w,targets 仅 discrete 生效(已删死代码)
+
+debounce:
+  buy_cool_down_days: 3
+  max_target_step: 0.3
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  sell_cooldown_days: 3
+  conf_gate: 0.3

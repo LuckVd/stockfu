@@ -1,0 +1,11 @@
+# 点时安全的低贝塔红利对照 alpha。
+# 新运行使用 dividend_yield_ttm_v2；旧 low_beta_dividend_v2 仅用于历史解释。
+alpha_id: low_beta_dividend_v3
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: low_beta_v1, weight: 1.0, critical: false}
+  - {profile_id: dividend_yield_ttm_v2, weight: 0.8, critical: false}
+  - {profile_id: value_v1, weight: 0.6, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1

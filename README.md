@@ -13,6 +13,7 @@ StockFu 是一个面向个人的资产 + 市场情绪 + 策略研究终端，覆
 - **大资金流向**：从宽基 / 行业 ETF 份额变化追踪
 - **A股策略研究**：横截面因子算子平台 + 回测引擎 + 三跑门禁验证体系（`docs/BACKTEST.md`）
 - **自选股评价矩阵**：通用股票评价引擎，多策略交叉评价自选池（`--watchlist-review`）
+- **每日策略评分**：沪深300+中证500成分全量因子落库，各策略独立输出 0–100 分；逐股选择邮件与按需 LLM（见 `docs/SPECS/signal-recommendation-mail.md`）
 - 借鉴：AI 决策报告、财经新闻、消息推送
 
 ## 设计思想
@@ -52,7 +53,9 @@ stockfu/
 ## 快速开始
 
 ```bash
-pip install -r requirements.txt
+# 依赖安装（生产/验证统一用锁文件；uv 未装时先 pip install uv）
+UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system -r requirements.lock
+playwright install chromium   # 邮件分享卡片渲染需要（依赖升级后需重装浏览器二进制）
 python3 main.py --init-db     # 初始化 + 种子自选 + 算子/策略注册
 python3 main.py               # 启动 Web（默认 127.0.0.1:8787）
 python3 main.py --serve       # 同上
@@ -66,6 +69,9 @@ cd frontend && pnpm build    # 生成被 FastAPI 托管的 frontend/dist
 python3 main.py --backtest low_beta_dividend --start 2007-01-04 --end 2026-07-21 --valuation-basis raw
 python3 main.py --factor-diag low_beta --params '{"window":120}'   # 单因子诊断（IC/分位收益）
 python3 main.py --watchlist-review --no-llm                          # 自选股多策略评价矩阵
+python3 main.py --scan-signals --date 2026-08-04                     # 刷新800只成分并运行配置策略
+python3 main.py --test-signal-mail                                   # 发送最近批次推荐卡片
+python3 main.py --schedule                                           # 市场日报 + 每日策略评分调度
 ```
 
 ## 状态

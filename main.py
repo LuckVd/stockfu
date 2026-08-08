@@ -21,6 +21,8 @@
         # 全周期重跑更新到最新(固化验收口径;不选策略=目录全部)
     python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md）
     python main.py --recommend --strategies a,b [--as-of] [--cash]  # 空仓重建荐股(次日开盘执行参考)
+    python main.py --scan-signals --date YYYY-MM-DD [--strategies a,b]  # 800只成分每日0–100评分
+    python main.py --test-signal-mail  # 发送最近一次策略评分推荐邮件
     python main.py --backfill-universe  # 回补 security_master(list_date/board, baostock)
     python main.py --audit-corporate-actions  # 只读审计公司行为覆盖/重复/异常（正式回测前置）
     python main.py --backfill-quote-status  # 补历史状态 + 最新交易日全量(baostock)
@@ -242,6 +244,34 @@ def run_test_mail() -> None:
     start_embedded_server()          # 内嵌 web：--test-mail 自包含，无需另开 --serve
     time.sleep(2.5)                  # 等 serve 就绪再渲染
     print(f"✓ 邮件任务结果: {run_mail_job()}")
+
+
+def run_signal_scan_cli(date_str: str | None, strategies: str | None) -> None:
+    import sys
+
+    if not date_str:
+        print("✗ --scan-signals 必须带 --date YYYY-MM-DD", file=sys.stderr)
+        raise SystemExit(2)
+    from stockfu.services.quote_writer import validate_ingest_date
+    try:
+        signal_date = validate_ingest_date(date_str)
+    except ValueError as exc:
+        print(f"✗ 拒绝扫描：{exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    strategy_ids = [value.strip() for value in (strategies or "").split(",") if value.strip()] or None
+    from stockfu.scheduler.jobs import run_signal_pipeline
+    print(f"✓ 策略评分完成: {run_signal_pipeline(signal_date, strategy_ids=strategy_ids)}")
+
+
+def run_test_signal_mail() -> None:
+    import time
+
+    from stockfu.scheduler.jobs import start_embedded_server
+    from stockfu.services.signal_mail import run_signal_mail_job
+
+    start_embedded_server()
+    time.sleep(2.5)
+    print(f"✓ 推荐邮件任务结果: {run_signal_mail_job(force=True)}")
 
 
 def run_config() -> None:
@@ -475,6 +505,8 @@ def run_update_backtests(
 
     strategies: 逗号分隔 strategy_id;None/空 = 目录全部。
     """
+    from stockfu.backtest.v1_gate import ensure_v1_backtest_enabled
+    ensure_v1_backtest_enabled()
     from stockfu.backtest.full_cycle_update import (
         print_catalog,
         update_backtests,
@@ -592,6 +624,103 @@ def run_watchlist_review(
         raise SystemExit(2) from e
 
 
+def run_v2_backtest_cli(alpha_id: str, start: str | None, end: str | None,
+                        cash: float, codes: str | None,
+                        portfolio_id: str | None, risk_id: str | None,
+                        history_origin: str | None,
+                        observation_count: int | None,
+                        checkpoint_path: str | None,
+                        resume_from: str | None,
+                        checkpoint_every: int,
+                        snapshot_path: str | None = None,
+                        canonical: bool = False) -> None:
+    """V2 回测 CLI:加载 alpha/profile/portfolio/risk,跑 v2_engine,打印绩效。
+
+    --codes 省略=全 A 股候选池(quote_snapshot 区间内有行情的 00/30/60/68)。
+    """
+    from datetime import date
+
+    # fail-closed 预检（§4.13.3-2）：canonical 门禁必须先于一切副作用——
+    # init_db 会写主库 schema，resolve_snapshot 可能创建 GB 级快照。
+    from stockfu.backtest.v2_engine import canonical_preflight
+    canonical_preflight(canonical)
+    from stockfu.backtest.v2_run import (
+        default_universe, historical_full_universe,
+        historical_full_universe_rules, historical_hs300_universe_rules,
+        hs300_universe, run,
+        validate_v2_alpha_id,
+    )
+    # 旧 V1 id 必须在 init_db/快照等副作用之前 fail-closed，明确指向归档映射。
+    validate_v2_alpha_id(alpha_id)
+    from stockfu.db import init_db
+    init_db()
+    from stockfu.services.universe import resolve_base_codes
+
+    end_d = end or date.today().isoformat()
+    start_d = start or "2021-01-01"
+    es = date.fromisoformat(start_d)
+    ee = date.fromisoformat(end_d)
+    ho = date.fromisoformat(history_origin) if history_origin else None
+    # 数据快照在股票池解析前确定（阻塞①）：--snapshot 复用既有快照，否则新建或
+    # 从 resume 工件恢复；候选池解析必须在快照只读上下文内，确保其来自快照。
+    from stockfu.backtest.snapshot import descriptor_from_file, snapshot_engine
+    from stockfu.backtest.v2_engine import resolve_snapshot
+    from stockfu.db import use_read_engine
+    provided = descriptor_from_file(snapshot_path) if snapshot_path else None
+    snap = resolve_snapshot(provided=provided, resume_from=resume_from,
+                            snapshots_dir=None)
+    with use_read_engine(snapshot_engine(snap)):
+        universe_rules = None
+        low_codes = codes.lower() if codes else None
+        if low_codes == "hs300":
+            code_list = hs300_universe()
+            universe_rules = historical_hs300_universe_rules()
+        elif low_codes in ("historical_indices", "historical_index", "csi300_csi500"):
+            code_list = historical_full_universe()
+            universe_rules = historical_full_universe_rules()
+        elif codes:
+            code_list = resolve_base_codes(codes)
+        else:
+            code_list = default_universe(es, ee)
+    print(f"V2 回测 {alpha_id}  {start_d} → {end_d}  {len(code_list)}只票  "
+          f"历史→{ho or '默认前5年'}  资金 {cash:,.0f} …")
+    res = run(alpha_id, eval_start=es, eval_end=ee, codes=code_list,
+              portfolio_id=portfolio_id, risk_id=risk_id, history_origin=ho,
+              initial_cash=cash if cash else None,
+              observation_count=observation_count, universe_rules=universe_rules,
+              checkpoint_path=checkpoint_path, resume_from=resume_from,
+              checkpoint_every=checkpoint_every, snapshot=snap,
+              canonical=canonical)
+    m = res.metrics
+    print(f"\n=== V2 绩效(formal {res.formal_summary['n_days']} 日,基准 {res.manifest['benchmark_code']}) ===")
+    for k in ("total_return", "annualized", "max_drawdown", "sharpe", "calmar",
+              "win_rate", "benchmark_return", "excess", "sortino"):
+        if k in m:
+            print(f"  {k}: {m[k]}")
+    print(f"  首单日 {res.first_trade_date}  末单日 {res.last_trade_date}  成交 {len(res.trades)} 笔")
+    print(f"  观察期 raw missing_rate: {res.observation_summary['missing_rate']}")
+    risk_metrics = res.manifest.get("risk_metrics") or {}
+    if risk_metrics:
+        print(f"  风控触发: {risk_metrics}")
+    cov = res.manifest.get("data_coverage") or {}
+    if cov.get("truncated"):
+        print(f"  ⚠ 数据截断: 请求终点 {cov['requested_eval_end']}，库数据只到 "
+              f"{cov['data_end']}，实际跑至 {cov['effective_eval_end']}")
+    diag = res.score_diagnostics or {}
+    if diag:
+        s = diag.get("score") or {}
+        cov_f = (diag.get("score_coverage") or {}).get("formal") or {}
+        print(f"  §15 诊断: score n={s.get('n')} p50={s.get('p50')} "
+              f"p01={s.get('p01')} p99={s.get('p99')} "
+              f"0/100饱和={s.get('saturation_0_100')}% "
+              f"横截面唯一值比={s.get('unique_ratio')}%({s.get('unique_ratio_days')}日) "
+              f"formal coverage均值={cov_f.get('mean')} "
+              f"clamp={diag.get('factor_clamp_rate')} "
+              f"maturity={diag.get('factor_maturity')} "
+              f"maturity_delay={diag.get('maturity_delay_days')}天")
+    print(f"  run_id: {res.manifest['run_id'][:16]}  formal_start: {res.manifest.get('formal_start')}")
+
+
 def run_backtest(strategy: str, start: str | None, end: str | None,
                  cash: float, codes: str | None, save: bool,
                  min_amount: float | None = None,
@@ -602,6 +731,8 @@ def run_backtest(strategy: str, start: str | None, end: str | None,
     --codes: 省略=沪深300+中证500时点成分宇宙；all/pool=大盘候选池；或逗号列表。
     估值口径默认 qfq(研究模式主线,已含分红再投);研究模式详见 docs/BACKTEST.md §0。
     """
+    from stockfu.backtest.v1_gate import ensure_v1_backtest_enabled
+    ensure_v1_backtest_enabled()
     from datetime import date, timedelta
 
     from stockfu.db import init_db, set_app_config, session_scope
@@ -898,11 +1029,42 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--vacuum", action="store_true",
                    help="VACUUM INTO 原子重建主库(先备份 .bak.G09);停 daemon/回测时跑,回收空闲页")
     p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件")
+    p.add_argument("--scan-signals", action="store_true",
+                   help="刷新并扫描信号日沪深300+中证500（必带 --date；策略默认读页面配置）")
+    p.add_argument("--test-signal-mail", action="store_true",
+                   help="立即把最近一次扫描生成推荐卡片并发送测试邮件")
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
     p.add_argument("--backtest", metavar="STRATEGY", default=None,
-                   help="回测策略ID（如 macd_cross / bollinger_reversion）；详见 docs/BACKTEST.md")
+                   help="已禁用的 V1 回测入口；请使用 --backtest-v2")
+    p.add_argument("--backtest-v2", metavar="ALPHA_ID", default=None,
+                   help="V2 回测:alpha_id(如 dividend_low_vol_v2);"
+                        "--codes hs300 或 historical_indices 使用历史成分；"
+                        "复用 --start/--end/--cash")
+    p.add_argument("--portfolio-v2", default=None,
+                   help="V2 portfolio_policy_id(默认 cn_equity_top15_v2)")
+    p.add_argument("--risk-v2", default=None,
+                   help="V2 risk_policy_id(默认 no_overlay_v1)")
+    p.add_argument("--history-origin", default=None,
+                   help="V2 历史预热起点 YYYY-MM-DD(默认 eval_start 前 5 年)")
+    p.add_argument("--observation-count", type=int, default=None,
+                   help="V2 固定观察期交易日数；正式可比回测建议显式指定，避免延长 end 改变 formal_start")
+    p.add_argument("--checkpoint", dest="checkpoint_path", default=None,
+                   help="V2 按 --checkpoint-every 周期写完整断点状态 JSON；"
+                        "必须同时固定 --observation-count")
+    p.add_argument("--resume", dest="resume_from", default=None,
+                   help="V2 从完整断点 JSON 继续；允许在同一口径下延长 --end")
+    p.add_argument("--snapshot", dest="snapshot_path", default=None,
+                   help="V2 复用既有数据快照 .db 文件（canonical 可复现运行用）；"
+                        "省略则从主库新建快照")
+    p.add_argument("--canonical", action="store_true",
+                   help="V2 canonical 门禁：要求干净已提交工作树（dirty 直接拒绝，"
+                        "不生成快照/不预载）；探索性运行省略本标志")
+    # §4.8.4：默认 20 个交易日写一次完整 checkpoint（73MiB 工件不再默认每日重写）；
+    # 中途可恢复性由 partial 工件 + append-only audit artifact 保证。
+    p.add_argument("--checkpoint-every", type=int, default=20,
+                   help="V2 每隔多少个交易日写一次完整断点，默认 20（§4.8.4）")
     p.add_argument("--update-backtests", action="store_true",
-                   help="全周期重跑更新到最新(固化验收口径;配合 --strategies 可选子集,省略=全部)")
+                   help="已禁用的 V1 全周期回测入口；请使用 --backtest-v2")
     p.add_argument("--strategies", default=None, metavar="IDS",
                    help="逗号分隔 strategy_id。"
                         "--update-backtests:省略=目录全部;"
@@ -1048,6 +1210,10 @@ def main() -> None:
         run_vacuum()
     elif args.test_mail:
         run_test_mail()
+    elif args.scan_signals:
+        run_signal_scan_cli(args.date, args.strategies)
+    elif args.test_signal_mail:
+        run_test_signal_mail()
     elif args.config:
         run_config()
     elif args.list_strategies:
@@ -1076,6 +1242,13 @@ def main() -> None:
         run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save,
                      min_amount=args.min_amount,
                      valuation_basis=args.valuation_basis)
+    elif args.backtest_v2:
+        run_v2_backtest_cli(args.backtest_v2, args.start, args.end, args.cash,
+                            args.codes, args.portfolio_v2, args.risk_v2,
+                            args.history_origin, args.observation_count,
+                            args.checkpoint_path, args.resume_from,
+                            args.checkpoint_every, args.snapshot_path,
+                            args.canonical)
     elif args.factor_diag:
         run_factor_diag(args.factor_diag, args.start, args.end, args.codes, args.params,
                         _parse_periods(args.periods), args.quantiles,

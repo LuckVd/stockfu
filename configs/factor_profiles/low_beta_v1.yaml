@@ -1,0 +1,19 @@
+# 因子评分档案:120 日 β(相对沪深300)。低 β → 高分(防御 / 低波动异象)。
+# raw 算法与 V1 low_beta operator 逐行一致;映射用 absolute 锚点对齐 V1 线性语义
+# (β 0.5→90, 1.0→50, 1.5→10),不引入历史分位,保持与 V1 评分口径可比。
+profile_id: low_beta_v1
+version: 1
+raw_metric:
+  id: low_beta
+  params: {window: 120, bench: sh000300, price_basis: qfq}
+direction: lower_is_better
+raw_unit: beta
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 1.00
+      knots: [[0.3, 100], [0.5, 90], [1.0, 50], [1.5, 10], [2.0, 0]]
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

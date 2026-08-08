@@ -1,5 +1,10 @@
 # ===== StockFu · 资产管理终端 =====
-# 安装: pip install -r requirements.txt  (国内可用代理或 -i https://pypi.tuna.tsinghua.edu.cn/simple)
+# 本文件是人工维护的「浮动依赖声明」，仅作为更新 requirements.lock 的输入，
+# 不得用于部署/测试安装。安装一律使用锁文件（含全部传递依赖、精确版本与 hash）：
+#   UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system -r requirements.lock
+#   (国内可用代理或 -i https://pypi.tuna.tsinghua.edu.cn/simple)
+# 更新锁：uv pip compile requirements.txt -o requirements.lock --generate-hashes
+# 可复现/canonical 运行以 requirements.lock 为准，并按 lock 重建环境。
 
 # Web / API
 fastapi

@@ -286,6 +286,96 @@ def is_mail_ready() -> bool:
     return bool(get_smtp_user() and get_smtp_pass() and get_mail_to())
 
 
+# ---------- 策略信号扫描与推荐邮件 ----------
+_SIGNAL_CACHE: dict[str, str] = {}
+
+
+def _signal_cfg(key: str, default: str) -> str:
+    if key in _SIGNAL_CACHE:
+        return _SIGNAL_CACHE[key]
+    from stockfu.db import get_app_config, has_app_config
+    value = get_app_config(key, default) if has_app_config(key) else default
+    _SIGNAL_CACHE[key] = value
+    return value
+
+
+def _set_signal_cfg(key: str, value: str) -> None:
+    from stockfu.db import set_app_config
+    set_app_config(key, value)
+    _SIGNAL_CACHE.clear()
+
+
+def get_signal_factor_enabled() -> bool:
+    """是否运行全指数成分因子扫描；默认开启。"""
+    return _signal_cfg("signal_factor_enabled", "1") == "1"
+
+
+def get_signal_llm_enabled() -> bool:
+    """是否允许逐股 LLM 分析；仍需逐股订阅开启。"""
+    return _signal_cfg("signal_llm_enabled", "0") == "1"
+
+
+def get_signal_mail_enabled() -> bool:
+    """是否发送推荐专用邮件；默认关闭。"""
+    return _signal_cfg("signal_mail_enabled", "0") == "1"
+
+
+def get_signal_scan_time() -> str:
+    value = _signal_cfg("signal_scan_time", "16:10")
+    return value if _TIME_RE.match(value) else "16:10"
+
+
+def get_signal_strategy_ids() -> list[str]:
+    """动态启用策略；未配置时使用正式全周期目录。"""
+    import json
+    from stockfu.backtest.full_cycle_update import catalog_ids
+
+    raw = _signal_cfg("signal_strategy_ids", "")
+    if not raw:
+        return catalog_ids()
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        parsed = raw.split(",")
+    if not isinstance(parsed, list):
+        return catalog_ids()
+    return list(dict.fromkeys(
+        str(value).strip() for value in parsed if str(value).strip()
+    ))
+
+
+def set_signal_config(data: dict) -> None:
+    """保存信号扫描全局配置；逐股开关由 subscription 表管理。"""
+    import json
+
+    for key in ("factor_enabled", "llm_enabled", "mail_enabled"):
+        if key in data:
+            _set_signal_cfg(f"signal_{key}", "1" if data[key] else "0")
+    if "scan_time" in data:
+        value = str(data["scan_time"] or "").strip()
+        _set_signal_cfg("signal_scan_time", value if _TIME_RE.match(value) else "16:10")
+    if "strategy_ids" in data:
+        raw = data["strategy_ids"]
+        if not isinstance(raw, list):
+            raise ValueError("strategy_ids 必须是数组")
+        ids = list(dict.fromkeys(
+            str(value).strip() for value in raw if str(value).strip()
+        ))
+        if not ids:
+            raise ValueError("至少选择一个策略")
+        _set_signal_cfg("signal_strategy_ids", json.dumps(ids, ensure_ascii=False))
+
+
+def get_signal_config() -> dict:
+    return {
+        "factor_enabled": get_signal_factor_enabled(),
+        "llm_enabled": get_signal_llm_enabled(),
+        "mail_enabled": get_signal_mail_enabled(),
+        "scan_time": get_signal_scan_time(),
+        "strategy_ids": get_signal_strategy_ids(),
+    }
+
+
 # ---------- LLM 配置（web 设置面板写入，AI 顾问用；回落 .env）----------
 # 与邮件/代理同机制：app_config 表持久化 + 内存缓存（set 时清空）。
 # ai/client.py 调 get_llm_*() 而非直接读 settings.llm_*，故面板改完无需重启即生效。

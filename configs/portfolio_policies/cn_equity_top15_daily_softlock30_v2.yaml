@@ -1,0 +1,18 @@
+# 红利低波 V2 专用组合政策：top15 等权、每日调仓、建仓软锁与排名保护。
+# 普通换仓规则：建仓后 30 个交易日内不卖；之后若仍在当日票池前 20% 也不卖。
+# 止损/止盈由 dividend_low_vol_trailing_v2 负责，风险退出优先于两层持仓保护。
+portfolio_policy_id: cn_equity_top15_daily_softlock30_v2
+version: 1
+rebalance: daily
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.0
+cooldown_days: 0
+min_holding_days: 30
+stop_loss_pct: 0.30
+hold_top_percentile: 0.20

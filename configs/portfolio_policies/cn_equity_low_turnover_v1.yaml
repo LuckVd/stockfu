@@ -1,0 +1,18 @@
+# 组合政策:红利低波 top15 等权、月调 + 换手抑制(偏离阈值 + 冷却 + 最小持仓)。
+# 对齐 V1 low_beta_dividend 的低换手语义(边沿触发 + 冷却),抑制机械日度再平衡。
+# 只决定选股/权重/换手;不修改 strategy_score,不做风险覆盖(§4 不变量)。
+# 三旋钮默认 0=关(见 portfolio.py PortfolioPolicy);本 policy 开启以抑制换手。
+portfolio_policy_id: cn_equity_low_turnover_v1
+version: 1
+rebalance: monthly
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.95
+min_amount_20d: 20000000        # 20 日均成交额 ≥ 2 千万(容量门禁)
+minimum_listing_days: 252       # 上市满 1 年(避开次新股)
+max_industry_weight: 0.30
+rebalance_drift: 0.05           # 权重偏离 ≤ 5% 不调(边沿触发,抑制机械再平衡)
+cooldown_days: 20               # 买入后 20 日(约 1 月)内不再加仓
+min_holding_days: 60            # 建仓后 60 日(约 3 月)内不卖/不清(软锁)
+stop_loss_pct: 0.10             # 浮亏 ≥ 10% 豁免 min_holding(大跌该止损能卖,不扛回撤)

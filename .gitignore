@@ -1,12 +1,14 @@
 data/*.db*
 data/backtest/
 data/factor_diag/
+data/snapshots/
 __pycache__/
 *.pyc
 .venv/
 .env
 # 每个 worktree 的 AI 交接状态；由 docs/WORKSTATE_TEMPLATE.md 初始化，不入库
 .local/
+.zcode/
 # Claude Code: 只忽略本地权限缓存与 worktree 物理目录
 .claude/settings.local.json
 .claude/worktrees/

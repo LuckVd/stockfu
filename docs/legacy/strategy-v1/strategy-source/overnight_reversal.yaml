@@ -1,0 +1,27 @@
+version: 1
+name: 隔夜反转横截面(低隔夜收益优先)
+# 2026-08 网络调研第 2 批:隔夜收益因子(A 股负隔夜溢价实证)。
+# 隔夜收益(今开/昨收-1)近 20 日均值低 → 未来收益高;与已测风格(红利/低波/
+# 价值/动量/小盘/换手/彩票/趋势)完全正交——「隔夜 vs 日内收益分解」新维度。
+# 配置:满仓+等权+无止损(与三跑门禁 §0.6.6 同款,便于横向对比)。
+operators:
+  - {id: overnight_return, type: math, weight: 1.0, params: {window: 20, hist_years: 3}}
+aggregate:
+  method: weighted_sum
+  thresholds: {strong_buy: 12, buy: 4, hold: -4, sell: -12}
+position:
+  mode: continuous
+  max_w: 0.20
+  dead: 3.0
+  score_full: 8
+debounce:
+  buy_cool_down_days: 1
+  sell_cooldown_days: 1
+  max_target_step: 1.0
+  risk_confirm_days: 1
+  min_trade_weight: 0.01
+  conf_gate: 0.0
+risk:
+  stop_loss: 0
+  portfolio_brake: 0
+  max_gross: 1.0

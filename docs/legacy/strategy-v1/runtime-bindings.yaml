@@ -1,0 +1,1078 @@
+schema_version: 1
+rebalancer:
+  active_rebalancer_id_default: pass_through
+  rebalancer_params_default:
+    max_gross: 0.9
+    max_w: 0.1
+  max_gross_precedence: yaml risk.max_gross（debounce.max_gross）> app_config rebalancer_params
+    > engine DEFAULT_MAX_GROSS
+  note: 回测 CLI 无 --rebalancer 参数；engine.run 内部 get_active_rebalancer()/get_rebalancer_params()
+    读 app_config（stockfu/backtest/engine.py:1548）
+universe:
+  default: historical_indices（历史沪深300 宇宙）
+  source: stockfu/services/index_universe.py HISTORICAL_INDEX_CODES / HISTORICAL_UNIVERSE_ID
+  override: --codes 指定代码列表；--min-amount 过滤（main.py --backtest 分支）
+engine_constants:
+  initial_cash: 1000000.0
+  commission_rate: 0.0003
+  min_commission: 5.0
+  stamp_duty_rate: 0.0005
+  stamp_duty_rate_old: 0.001
+  stamp_duty_cutoff: '2023-08-28'
+  transfer_fee_rate: 1.0e-05
+  slippage: 无显式滑点模型（以收盘价成交，见 engine 执行层）
+  default_max_gross: 0.9
+  default_stop_loss: 0.08
+  default_portfolio_brake: 0.1
+  default_portfolio_brake_scale: 0.5
+entrypoints:
+  backtest: python main.py --backtest <strategy_id> [--start --end --cash --codes
+    --min-amount --save]
+  recommend: python main.py --recommend --strategies <ids> [--as-of --cash]
+  signal_mail: python main.py --signal-mail / scheduler jobs.run_signal_pipeline
+  evaluate: python main.py --evaluate（stockfu/services/evaluator.py 自选股多策略评价矩阵）
+  backfill_dividend: python main.py --backfill-dividend（dividend_yield 算子数据依赖）
+data_dependencies:
+  kline: 主库 data/stockfu.db 行情/分红/宇宙表
+  operator_cache: data/operator_cache.db operator_result（可再生的单算子缓存，operator_id+params+fingerprint
+    定位）
+  dividend_events: dividend_event 表（--backfill-dividend 灌入）
+strategies:
+  momentum_breakout:
+    base_id: momentum_breakout
+    variant_key: null
+    disposition: keep
+    status: known
+    rebalancer:
+      id: top_n_picker
+      params:
+        top_n: 10
+        lock_days: 20
+        max_replace: 1
+        max_w: 0.15
+        max_gross: 0.9
+      source: stockfu/backtest/full_cycle_update.py FULL_CYCLE_CATALOG
+    universe:
+      id: historical_indices
+      min_amount: 50000000
+      source: stockfu/backtest/full_cycle_update.py StrategyRunSpec
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  cn_momentum_cross_section:
+    base_id: cn_momentum_cross_section
+    variant_key: null
+    disposition: keep
+    status: known
+    rebalancer:
+      id: cap_and_rank
+      params:
+        max_gross: 0.95
+      source: stockfu/backtest/full_cycle_update.py FULL_CYCLE_CATALOG
+    universe:
+      id: historical_indices
+      min_amount: 50000000
+      source: stockfu/backtest/full_cycle_update.py StrategyRunSpec
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dual_bollinger:
+    base_id: dual_bollinger
+    variant_key: null
+    disposition: rebuild
+    status: known
+    rebalancer:
+      id: top_n_picker
+      params:
+        top_n: 10
+        lock_days: 20
+        max_replace: 1
+        max_w: 0.2
+        max_gross: 0.9
+      source: stockfu/backtest/full_cycle_update.py FULL_CYCLE_CATALOG
+    universe:
+      id: historical_indices
+      min_amount: 50000000
+      source: stockfu/backtest/full_cycle_update.py StrategyRunSpec
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section:
+    base_id: dividend_cross_section
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section#sl30:
+    base_id: dividend_cross_section
+    variant_key: sl30
+    disposition: v2_candidate
+    status: known
+    rebalancer:
+      id: cap_and_rank
+      params:
+        max_gross: 0.95
+      source: stockfu/backtest/full_cycle_update.py FULL_CYCLE_CATALOG
+    universe:
+      id: historical_indices
+      min_amount: 50000000
+      source: stockfu/backtest/full_cycle_update.py StrategyRunSpec
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section#sl30w10:
+    base_id: dividend_cross_section
+    variant_key: sl30w10
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section#sl30w20:
+    base_id: dividend_cross_section
+    variant_key: sl30w20
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_take_profit:
+    base_id: dividend_cross_section_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_take_profit:
+    base_id: dividend_cross_section_partial_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_atr_take_profit:
+    base_id: dividend_cross_section_atr_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_atr_lagged_take_profit:
+    base_id: dividend_cross_section_atr_lagged_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_brake_take_profit:
+    base_id: dividend_cross_section_partial_brake_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_gentle_brake_take_profit:
+    base_id: dividend_cross_section_partial_gentle_brake_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_selective_brake_take_profit:
+    base_id: dividend_cross_section_partial_selective_brake_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_exposure_brake_take_profit:
+    base_id: dividend_cross_section_partial_exposure_brake_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_exposure_brake_take_profit#deep:
+    base_id: dividend_cross_section_partial_exposure_brake_take_profit
+    variant_key: deep
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_exposure_brake_take_profit#rec125:
+    base_id: dividend_cross_section_partial_exposure_brake_take_profit
+    variant_key: rec125
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_drawdown_add_gated_take_profit:
+    base_id: dividend_cross_section_partial_drawdown_add_gated_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_exposure_add_gated_take_profit:
+    base_id: dividend_cross_section_partial_exposure_add_gated_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_exposure_brake_hold_take_profit:
+    base_id: dividend_cross_section_partial_exposure_brake_hold_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_exposure_add_gated_hold_take_profit:
+    base_id: dividend_cross_section_partial_exposure_add_gated_hold_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_exposure_brake_regime_trend_take_profit:
+    base_id: dividend_cross_section_partial_exposure_brake_regime_trend_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_exposure_brake_regime_vol_take_profit:
+    base_id: dividend_cross_section_partial_exposure_brake_regime_vol_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_cross_section_partial_exposure_brake_regime_trendvol_take_profit:
+    base_id: dividend_cross_section_partial_exposure_brake_regime_trendvol_take_profit
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  fifty_two_week_high_cross_section:
+    base_id: fifty_two_week_high_cross_section
+    variant_key: null
+    disposition: archive_only
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  small_cap_low_turnover:
+    base_id: small_cap_low_turnover
+    variant_key: null
+    disposition: rebuild
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  low_turnover_reversal:
+    base_id: low_turnover_reversal
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  illiquidity_value:
+    base_id: illiquidity_value
+    variant_key: null
+    disposition: rebuild
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  anti_lottery_defensive:
+    base_id: anti_lottery_defensive
+    variant_key: null
+    disposition: rebuild
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  low_beta_dividend:
+    base_id: low_beta_dividend
+    variant_key: null
+    disposition: rebuild
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  ts_momentum_trend:
+    base_id: ts_momentum_trend
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  graham_defensive_value:
+    base_id: graham_defensive_value
+    variant_key: null
+    disposition: archive_only
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  donchian_breakout_cross_section:
+    base_id: donchian_breakout_cross_section
+    variant_key: null
+    disposition: keep
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  smart_beta_multi_factor:
+    base_id: smart_beta_multi_factor
+    variant_key: null
+    disposition: archive_only
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  amplitude:
+    base_id: amplitude
+    variant_key: null
+    disposition: research
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  bias_reversal:
+    base_id: bias_reversal
+    variant_key: null
+    disposition: research
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  bollinger_reversion:
+    base_id: bollinger_reversion
+    variant_key: null
+    disposition: rebuild
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  bollinger_reversion_cross_section:
+    base_id: bollinger_reversion_cross_section
+    variant_key: null
+    disposition: rebuild
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  cn_momentum_rotation:
+    base_id: cn_momentum_rotation
+    variant_key: null
+    disposition: archive_only
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  cross_section_factor:
+    base_id: cross_section_factor
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  dividend_low_vol:
+    base_id: dividend_low_vol
+    variant_key: null
+    disposition: v2_candidate
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  etf_momentum_cross_section:
+    base_id: etf_momentum_cross_section
+    variant_key: null
+    disposition: keep
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  etf_momentum_rotation:
+    base_id: etf_momentum_rotation
+    variant_key: null
+    disposition: keep
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  intraday_return:
+    base_id: intraday_return
+    variant_key: null
+    disposition: research
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  limit_up_count:
+    base_id: limit_up_count
+    variant_key: null
+    disposition: research
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  low_downside_vol:
+    base_id: low_downside_vol
+    variant_key: null
+    disposition: research
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  low_skewness:
+    base_id: low_skewness
+    variant_key: null
+    disposition: research
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  macd_cross:
+    base_id: macd_cross
+    variant_key: null
+    disposition: rebuild
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  momentum_breakout_cross_section:
+    base_id: momentum_breakout_cross_section
+    variant_key: null
+    disposition: keep
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  near_52w_low:
+    base_id: near_52w_low
+    variant_key: null
+    disposition: research
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  overnight_reversal:
+    base_id: overnight_reversal
+    variant_key: null
+    disposition: research
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  pure_factor:
+    base_id: pure_factor
+    variant_key: null
+    disposition: archive_only
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  residual_reversal:
+    base_id: residual_reversal
+    variant_key: null
+    disposition: rebuild
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  reversal_cross_section:
+    base_id: reversal_cross_section
+    variant_key: null
+    disposition: keep
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  reversal_strategy:
+    base_id: reversal_strategy
+    variant_key: null
+    disposition: keep
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  rsi_reversal:
+    base_id: rsi_reversal
+    variant_key: null
+    disposition: research
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
+  volume_drought:
+    base_id: volume_drought
+    variant_key: null
+    disposition: research
+    status: unrecoverable
+    rebalancer:
+      id: unrecoverable
+      params: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时外部绑定
+    universe:
+      id: unrecoverable
+      min_amount: unrecoverable
+      source: 当前代码无法恢复该策略历史运行时股票池覆盖
+    cost_model: engine_constants
+    entrypoints:
+      backtest: python main.py --backtest <strategy_id>
+      recommend: python main.py --recommend --strategies <strategy_id>
+      signal_scan: stockfu/services/signal_scan.py
