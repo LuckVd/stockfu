@@ -571,12 +571,12 @@ class BaostockProxySession:
 def make_session_from_env() -> BaostockProxySession:
     """环境变量覆盖默认。
 
-    BAOSTOCK_PROXY_MODE=free|clash|direct
-      free   — 免费代理池（默认）+ 可选 clash 种子
+    BAOSTOCK_PROXY_MODE=direct|clash|free
+      direct — 直连（默认；baostock 国内裸 TCP 直连最快最稳，免费池质量不稳作后备）
       clash  — 仅本机 SOCKS
-      direct — 直连
+      free   — 免费代理池 + clash 种子
     """
-    mode = (os.environ.get("BAOSTOCK_PROXY_MODE") or "free").strip().lower()
+    mode = (os.environ.get("BAOSTOCK_PROXY_MODE") or "direct").strip().lower()
     clash_host = os.environ.get("BAOSTOCK_SOCKS_HOST", "127.0.0.1")
     clash_port = int(os.environ.get("BAOSTOCK_SOCKS_PORT", "7891"))
     # 全局路径默认缩小探测规模，避免 --fetch 启动过久
@@ -666,10 +666,11 @@ def ensure_baostock_login(force: bool = False) -> bool:
             # 已在 session._login 内部
             return BaostockSource._logged_in
 
-        mode = (os.environ.get("BAOSTOCK_PROXY_MODE") or "free").strip().lower()
-        if mode in ("direct", "none", "off"):
-            return _direct_login(force=force)
-
+        mode = (os.environ.get("BAOSTOCK_PROXY_MODE") or "direct").strip().lower()
+        # direct 不再短路：与 free/clash 走同一通用 boot。start() 的直连分支会
+        # register_session + 直连 login，使 get_global_session() 可用、
+        # fetch_kline_triple 能直连抓数（旧 _direct_login 只 login 不注册 session，
+        # 导致抓取路径 get_global_session() 恒为 None，direct 模式只能 no-op）。
         if _global_session is None or not _global_session.active:
             print(
                 f"=== baostock global channel boot mode={mode} ===",
