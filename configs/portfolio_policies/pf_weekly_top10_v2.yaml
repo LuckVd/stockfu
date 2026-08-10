@@ -1,0 +1,19 @@
+# 周度调仓 top10(高股息三频对照专用):与 pf_monthly_top10_v2 / pf_daily_top10_slow21_v2
+# 保持 n=10 / max_single=0.10 一致,仅 rebalance=weekly。用于 天/周/月 频率搜索矩阵,
+# 使高股息在三频下组合构造相同、唯一变量是调仓频率。纯再平衡(无止损/软锁),
+# 与 bare 周/月 policy 同口径。
+portfolio_policy_id: pf_weekly_top10_v2
+version: 1
+rebalance: weekly
+selection: {method: top_n_above_score, n: 10, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.10
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.0
+cooldown_days: 0
+min_holding_days: 0
+stop_loss_pct: null
+hold_top_percentile: 0.0

@@ -1,0 +1,10 @@
+# 52 周新高(George & Hwang 2004 JF):close / 近 250 日高点比率。
+# 接近 52 周高点的股票(锚定效应、上行阻力小)后续收益更优。月度再平衡,无止损。
+alpha_id: fifty_two_week_high_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: fifty_two_week_high_v2, weight: 1.0, critical: true}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

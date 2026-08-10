@@ -1,0 +1,19 @@
+# 日度引擎·高股息(TTM 股息率,Dogs of the Dow 风格,top10)。
+# 股息率是极慢变量(分红一年才变),月度实务。min_holding_days=21 固化月度持有,
+# drift=0.03 / hold_top=0.20 抑制日度机械换手。不设止损(红利因子越跌越便宜,
+# 越跌股息率越高,加止损反向破坏逻辑)。来源:O'Higgins(1991);Fama-French D/P。
+portfolio_policy_id: pf_daily_top10_slow21_v2
+version: 1
+rebalance: daily
+selection: {method: top_n_above_score, n: 10, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.10
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.03
+cooldown_days: 0
+min_holding_days: 21
+stop_loss_pct: null
+hold_top_percentile: 0.20

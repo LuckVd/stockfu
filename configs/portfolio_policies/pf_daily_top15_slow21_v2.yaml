@@ -1,0 +1,22 @@
+# 日度引擎·月度因子簇(价值/动量/低波/低β/52w高/多因子)。
+# 这些因子(TTM PE-PB / 12-1动量 / 250日高 / 120日β / 波动率)本身是月度~季度信号,
+# daily 下分数排名变化极小。用 min_holding_days=21(≈1月交易日)把"月度持有"语义
+# 固化进 daily 框架,配合 drift=0.03 / hold_top=0.20 抑制机械再平衡,把日度换手压回月度级。
+# 不设止损止盈:学术价值/动量因子越跌越便宜,加止损反向破坏逻辑(详见 research)。
+# 来源:Jegadeesh-Titman(1993)月度调仓+月级持有(K重叠组合);Fama-French 月度/6月重组;
+#       Frazzini-Pedersen BAB 月度;AQR defensive 季度;George-Hwang 月末持1月;AQR QMJ 月度。
+portfolio_policy_id: pf_daily_top15_slow21_v2
+version: 1
+rebalance: daily
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.03
+cooldown_days: 0
+min_holding_days: 21
+stop_loss_pct: null
+hold_top_percentile: 0.20

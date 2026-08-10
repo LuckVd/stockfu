@@ -1,0 +1,30 @@
+# 账面市值比 B/P = 1/PB(Fama-French HML 价值因子核心)。
+# PB<=0(负净资产)按缺失;PB>0 → raw=B/P。
+profile_id: book_to_price_v2
+version: 1
+raw_metric:
+  id: book_to_price
+  params: {price_basis: raw}
+direction: higher_is_better
+raw_unit: ratio
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[0, 0], [0.2, 30], [0.4, 45], [0.6, 55], [0.8, 65], [1.0, 72], [2.0, 90], [3.0, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 5
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

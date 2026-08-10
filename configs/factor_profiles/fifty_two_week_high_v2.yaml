@@ -1,0 +1,18 @@
+# 52 周新高(George & Hwang 2004 JF):close / 近 250 日最高收盘 ∈(0,1]。
+# 近高点 → 锚定/突破效应 → 看多。固定锚点(比率有自然 [0,1] 量纲)。
+profile_id: fifty_two_week_high_v2
+version: 1
+raw_metric:
+  id: fifty_two_week_high
+  params: {lookback: 250, price_basis: qfq}
+direction: higher_is_better
+raw_unit: ratio
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 1.0
+      knots: [[0.5, 0], [0.7, 40], [0.85, 70], [0.9, 85], [1.0, 100]]
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

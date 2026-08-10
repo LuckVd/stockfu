@@ -1,0 +1,11 @@
+# RSI 均值回归(Wilder RSI14):超卖买入,RSI 回归正常时由评分下降自动卖出。
+# 日度再平衡(超卖信号短暂)。退出靠信号(RSI 升高 → 分数下降 → 不再入选),
+# 不设价格止损(忠实于 RSI 信号驱动进出)。
+alpha_id: rsi_reversal_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: rsi_14_v2, weight: 1.0, critical: true}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation
