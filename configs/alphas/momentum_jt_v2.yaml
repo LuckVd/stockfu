@@ -1,0 +1,10 @@
+# 横截面动量(Jegadeesh-Titman 1993):12 个月收益剔除最近 1 个月(12-1)。
+# 买入过去 12 个月强势股,月度再平衡。学术动量无止损(已知存在动量崩溃风险)。
+alpha_id: momentum_jt_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: momentum_252d_skip21_v2, weight: 1.0, critical: true}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

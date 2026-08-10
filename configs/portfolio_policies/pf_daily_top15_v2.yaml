@@ -1,0 +1,16 @@
+# 日度调仓 top15:RSI 均值回归(超卖信号转瞬即逝,需日度再平衡及时进出)。
+portfolio_policy_id: pf_daily_top15_v2
+version: 1
+rebalance: daily
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.02
+cooldown_days: 0
+min_holding_days: 0
+stop_loss_pct: null
+hold_top_percentile: 0.0

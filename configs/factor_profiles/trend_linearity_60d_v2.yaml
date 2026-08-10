@@ -1,0 +1,18 @@
+# 趋势线性度:60 日价格线性回归 signed_r² = sign(slope)·r² ∈[-1,1]。
+# 平稳上涨(r²→1,slope>0)→ 高分;平稳下跌 → 低分;震荡 → 50。固定锚点。
+profile_id: trend_linearity_60d_v2
+version: 1
+raw_metric:
+  id: trend_linearity
+  params: {window: 60, price_basis: qfq}
+direction: higher_is_better
+raw_unit: signed_r2
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 1.0
+      knots: [[-1.0, 0], [-0.5, 20], [0.0, 50], [0.5, 80], [1.0, 100]]
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

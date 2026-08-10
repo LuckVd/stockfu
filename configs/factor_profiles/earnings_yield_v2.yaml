@@ -1,0 +1,30 @@
+# 盈利收益率 E/P = 100/PE_TTM(价值因子:Graham/AQR)。
+# PE<=0(亏损)按缺失收缩,不伪造负 yield;PE>0 → raw=E/P%。
+profile_id: earnings_yield_v2
+version: 1
+raw_metric:
+  id: earnings_yield
+  params: {price_basis: raw}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[0, 0], [2, 30], [4, 45], [6, 55], [8, 65], [12, 80], [20, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 5
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

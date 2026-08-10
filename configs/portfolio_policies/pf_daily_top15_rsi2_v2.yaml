@@ -1,0 +1,20 @@
+# 日度引擎·RSI 均值回归(Wilder RSI14)。
+# 超卖信号转瞬即逝,退出靠信号本身(RSI 升高 → 分数下降 → 不再入选 top15 → 自然卖出),
+# 该机制在 daily 下每个交易日已生效。Wilder 原版常不设固定止损,故 risk=no_overlay。
+# min_holding_days=2 仅抑制"当天买入、次日因分数微变就被卖出"的极端 churn,
+# 不破坏超卖快进快出的语义。来源:Wilder(1978) New Concepts in Technical Trading Systems。
+portfolio_policy_id: pf_daily_top15_rsi2_v2
+version: 1
+rebalance: daily
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.02
+cooldown_days: 0
+min_holding_days: 2
+stop_loss_pct: null
+hold_top_percentile: 0.0

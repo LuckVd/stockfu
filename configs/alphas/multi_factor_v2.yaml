@@ -1,0 +1,14 @@
+# 多因子(AQR 风格:Value + Momentum + Low-Risk)。
+# 价值(盈利收益率+账面市值比)+ 动量(12-1)+ 低波动,分散单因子风险。
+# 注:质量因子(ROE 等)因库内无基本面数据未纳入,属已知缺口。
+alpha_id: multi_factor_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: earnings_yield_v2, weight: 0.25, critical: false}
+  - {profile_id: book_to_price_v2, weight: 0.20, critical: false}
+  - {profile_id: momentum_252d_skip21_v2, weight: 0.30, critical: true}
+  - {profile_id: low_volatility_20d_v2, weight: 0.25, critical: false}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 2
+formal_maturity_policy: force_mature_after_observation
