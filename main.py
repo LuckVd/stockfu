@@ -532,6 +532,22 @@ def run_update_backtests(
         raise SystemExit(2) from e
 
 
+def run_v2_signal_mail(as_of: str | None, no_send: bool, top_n: int) -> None:
+    """V2 十策略单日评分 → 出图 → 发信(默认最新交易日;可 --as-of 指定)。"""
+    import json
+    from datetime import date
+
+    from stockfu.db import init_db
+    from stockfu.services.signal_mail_v2 import run_v2_signal_mail_job
+
+    init_db()
+    d = date.fromisoformat(as_of) if as_of else None
+    res = run_v2_signal_mail_job(d, top_n=top_n, send=not no_send)
+    print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
+    if not res.get("ok"):
+        raise SystemExit(1)
+
+
 def run_recommend(
     strategies: str | None,
     as_of: str | None,
@@ -1078,6 +1094,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="因子诊断算子ID（如 momentum / macd_cross）；单算子 IC/分位收益/换手/衰减，见 docs/BACKTEST.md")
     p.add_argument("--recommend", action="store_true",
                    help="空仓重建荐股(必填 --strategies;可选 --as-of/--cash)")
+    p.add_argument("--v2-signal-mail", action="store_true",
+                   help="V2 十策略单日评分 → 出图 → 发信(默认最新交易日;可 --as-of 指定)")
+    p.add_argument("--no-send", action="store_true",
+                   help="--v2-signal-mail:仅出图不发信(本地预览)")
+    p.add_argument("--top-n", type=int, default=30,
+                   help="--v2-signal-mail:展示 top N 只(默认30)")
     p.add_argument("--watchlist-review", action="store_true",
                    help="自选股多策略评价矩阵(默认 watchlist + active 策略;"
                         "可选 --codes/--add/--drop 临时调池;--strategies 任意入库 id)")
@@ -1223,6 +1245,8 @@ def main() -> None:
             args.strategies, args.start, args.end, args.cash,
             dry_run=args.dry_run, list_only=False,
         )
+    elif args.v2_signal_mail:
+        run_v2_signal_mail(args.as_of, args.no_send, args.top_n)
     elif args.recommend:
         run_recommend(
             args.strategies, args.as_of, args.cash,
