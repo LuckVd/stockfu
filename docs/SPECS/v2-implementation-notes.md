@@ -901,3 +901,24 @@ offset/文件大小、2.1 GiB 快照 SHA/只读位以及快照中 939 只沪深3
 至此 §4.8.6 的 10 项门禁全部满足，恢复结论：**V2 当前 vertical slice 通过工程正确性验收，可用于
 可复现研究回测。** 生产 Web 进程仍需单独部署重启与 HTTP/邮件/浏览器 smoke；这属于部署验收，
 不改变本次离线回测引擎 canonical 结论。
+
+## 5. V2 策略评分邮件能力（2026-08-10）
+
+§0.1 曾把「实时荐股/邮件/API 迁移」列为暂不做项。本节落地其中的**信号邮件**部分：把 V1
+`signal_scan → signal_mail` 管线在 V2 十策略上重做。完整规格见
+`docs/SPECS/signal-recommendation-mail.md` 末尾「V2 十策略评分邮件」节；要点留痕：
+
+- **粒度方案①**：V2 策略分天生 0–100（profile 映射→alpha 加权，契约「禁止再映射」），**不复用 V1
+  的 `score_full` 线性映射**——故 §0.1 时代 V1 那套「评分刻度/仓位刻度耦合」TODO 在 V2 不存在。
+  跨策略分布差异（绝对锚点 vs 历史 ECDF 混合）通过邮件图例的校准元数据（P05/中位/P95/饱和/可交易）
+  显式暴露，按列读，不做横向再映射。
+- **单日评分 A2**：引擎只有 `run_v2_backtest` 循环入口，故新增 `stockfu/services/v2_signal.py
+  ::V2SignalScorer.score(as_of)`，复用 `HistoryState`/`FactorScorer`/`AlphaAggregator`/raw_computers/
+  `_preload_market_range`/`_backtest_series_ctx`，跑「只评分+历史、无交易/账户/风控」的最小循环。
+  非采样日只推进 `history.cutoff`；必须挂 `_backtest_series_ctx` 否则 valuation 类算子查库（~108ms/次）。
+- **渲染发信**：`stockfu/services/signal_mail_v2.py` + CLI `main.py --v2-signal-mail`。复用 `services.mail
+  .send_card_email`；Playwright 进程内 `set_content` 出图（无 web 路由依赖）。
+- **验证**：`--v2-signal-mail` 真发信成功（sent:true，3 页/800 股/10 策略）；图片经视觉核验无误；
+  ruff 全绿。as_of 超 DB 数据末日时截断到 `max(sctx.dates)`（踩过交易日历预埋未来日的坑，已修）。
+- **未做（后续）**：评分未持久化（无 V2 版 `signal_scan_run`，每次内存一次性）、未接 `--schedule`
+  定时、无逐股订阅模型。本能力为研究阶段产物，非实盘信号。

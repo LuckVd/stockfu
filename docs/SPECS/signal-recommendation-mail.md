@@ -61,3 +61,32 @@
 ## LLM 接口
 
 沿用现有 OpenAI-compatible `POST {base_url}/v1/chat/completions` 客户端。Base URL、API Key、模型名均为运行时配置；不硬编码供应商。DeepSeek V4 Flash 只需填写其兼容地址与实际模型标识。提示词要求结构化 JSON，LLM 分数和文本与因子结果分表存储。
+
+## V2 十策略评分邮件（2026-08 新增）
+
+V1 上述管线基于 `ai.operators` + `services.evaluator` + `score_full` 线性映射。V2 评分架构（`stockfu/scoring` + `stockfu/strategy`）上线后，另起一条**并行管线**把 V2 十策略当日评分送进同类邮件。两条管线独立，不共享策略目录、不共享数据表。
+
+### 与 V1 的关键差异：评分刻度
+
+- **V2 策略分天生是 0–100**：原始值经 profile 映射成 0–100 因子分（`scoring.mappings.combine_hybrid`），再按 alpha 权重加权聚合成策略分（`strategy.alpha.AlphaAggregator`），契约注明「直接用于展示/选股，禁止再映射」。因此**不复用、也不需要 V1 的 `score_full` 线性映射**——V1 上文「后续大 TODO：评分刻度与仓位刻度解耦」在 V2 不存在。
+- **中性点 50 一致**：因子缺失向 50 收缩；ECDF 分位 50 即中位；绝对锚点按 50 设计。
+- **粒度/分布差异显式暴露（粒度方案①）**：10 个 profile 的映射基不同——`fifty_two_week_high / rsi / trend_linearity` 是纯绝对锚点（`absolute_weight=1.0`），其余（价值/红利/动量/低波/低β/反转）是「绝对锚点 + 历史 ECDF 分位」混合。各策略分的横截面分布因此不同（实测低波 p50≈23、动量 p50≈57）。**V2 不做跨策略再映射**，而是把每策略的校准统计（P05/中位/P95/饱和率/可交易占比）放进邮件图例，让读者按列读、知悉分布差异，而非误读横向绝对值。
+
+### 单日评分入口（设计 A2）
+
+V2 回测引擎（`backtest.v2_engine`）只有 `run_v2_backtest` 循环入口，没有单日评分 API。邮件只需当日分，故新增 `stockfu/services/v2_signal.py::V2SignalScorer.score(as_of)`：
+
+- **复用引擎原语**：`HistoryState` / `FactorScorer` / `AlphaAggregator` / raw_computers / `_preload_market_range` / `_backtest_series_ctx`，**不跑交易/账户/风控/组合**。
+- **预热**：评分读 `cutoff < as_of` 的历史，故先回放 `history_origin`→as_of 把 HistoryState 喂满。非采样日只推进 `history.cutoff`，全量 raw 计算只发生在月末采样日 + 目标日——5 年预热对全宇宙约 192s。
+- **性能要点**：必须 `with _backtest_series_ctx(sctx, div_index)` 挂内存供给器，否则 `earnings_yield`/`book_to_price` 经 `valuation.pe_pb_at` 每次开 session 查库（~108ms/次）。
+- **数据末日截断**：as_of 超过库行情末日（交易日历会预埋未来日）时截断到 `max(sctx.dates)`，与回测引擎一致；展示/主题一律用 `report.as_of`（真实评分日）。
+
+### 渲染与发信
+
+- `stockfu/services/signal_mail_v2.py`：`build_v2_signal_mail_html` 组装长表（图例=粒度①校准 + 10 策略列 + top N 股票），`render_v2_signal_images` 用 Playwright 进程内 `set_content` 截图（无 web 路由依赖，自包含），`run_v2_signal_mail_job` 串联评分→出图→复用 `services.mail.send_card_email`。
+- 默认展示当日「均值 top N」（默认 30）控制邮件体积；非全宇宙，暂无逐股订阅（V1 的订阅模型未移植）。
+- CLI：`main.py --v2-signal-mail`（`--no-send` 仅出图、`--top-n`、`--as-of`）。
+
+### 持久化（待办）
+
+V1 落 `signal_scan_run`/`factor_signal` 供 web/API 回看；**V2 暂不持久化**，每次内存一次性评分。若需 web 回看或定时调度（接入 `--schedule`），后续可加 V2 版扫描批次表与 `_run_v2_signals` 调度钩子。
