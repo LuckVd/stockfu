@@ -105,6 +105,7 @@ class V2RunConfig:
     snapshot: dict | None = None        # 数据快照 descriptor（§4.8.2；None→运行入口生成）
     snapshots_dir: str | None = None    # 快照输出目录（默认 data/snapshots）
     canonical: bool = False             # canonical 门禁：要求干净已提交工作树（§4.8.3）
+    segment_id: str | None = None       # 正式分段编排标识；单次探索性运行可为空
 
     def __post_init__(self) -> None:
         if self.eval_end < self.eval_start:
@@ -168,6 +169,8 @@ class V2RunConfig:
             "execution_rules": self.execution_rules.to_dict(),
             "data_snapshot": self.snapshot,
         }
+        if self.segment_id is not None:
+            base["sample_segment"] = self.segment_id
         base.update(extra)
         return base
 

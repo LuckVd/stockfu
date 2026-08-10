@@ -1,6 +1,6 @@
 # StockFu A 股回测：当前研究模式
 
-> 文档状态：2026-08-07。旧的高可信 Raw 账户、独立公司行为账本和旧版 strict 账本方案已从主回测实现移除；仍有价值的风险提示保留在“研究经验”中。当前交易约束仍由宇宙与执行规则统一执行。**V2 修复前的回测数字已作废；修复后正式 canonical 验收见 §5。**
+> 文档状态：2026-08-10。旧的高可信 Raw 账户、独立公司行为账本和旧版 strict 账本方案已从主回测实现移除；仍有价值的风险提示保留在“研究经验”中。当前交易约束仍由宇宙与执行规则统一执行。**V2 修复前的回测数字已作废；修复后正式 canonical 验收见 §5。**
 
 ## 0. 当前口径
 
@@ -36,6 +36,33 @@ operator → strategy YAML → rebalancer → execution engine → artifacts
 - 算子缓存可再生，指纹包含算子源码 hash；回测不得把缓存写回行情主库。
 - 长窗回测使用 `CompiledStrategy.begin_run_cache()` 的滚动窗口预载，避免一次把全周期算子结果全部读进内存。
 - 研究产物写入 `data/backtest/`，是可删除、可重算的本地工件，不纳入 Git。
+
+### 0.3.1 固定样本区间与产物保留（V2）
+
+从 2026-08-10 起，正式 V2 回测必须同时运行并保留以下三段；不能只跑全量段后把它当作稳定性验证：
+
+| 区间 ID | 请求区间 | 说明 |
+|---|---|---|
+| `full` | 2013-01-01 → 2026-12-31 | 当前全量基线；实际终点由快照决定，当前数据会截断到 2026-08-04 |
+| `2013-2019` | 2013-01-01 → 2019-12-31 | 早期市场阶段 |
+| `2020-2026` | 2020-01-01 → 2026-12-31 | 近期市场阶段；实际终点由快照决定 |
+
+三段使用同一数据快照、代码版本、alpha/portfolio/risk、费用、基准和候选池；每段独立初始化账户与历史状态，不把上一段的持仓或 `HistoryState` 带入下一段。默认 `observation_count=271`，每段的预热起点独立计算并以 2013-01-01 为下限（因此默认分别为 2013-01-01、2013-01-01、2015-01-01）。
+
+每次 suite 必须使用新的 `run-*` 输出目录，目录结构为：
+
+```text
+data/backtest/v2-segments/run-<timestamp>/
+├── suite.json
+├── full/<variant>/<alpha_id>/
+├── 2013-2019/<variant>/<alpha_id>/
+└── 2020-2026/<variant>/<alpha_id>/
+    ├── <alpha_id>.json                 # 可检索摘要/指标
+    ├── <alpha_id>.checkpoint.json      # 完整 equity/trades/orders/risk/holding 状态
+    └── <alpha_id>.checkpoint.json.audit.jsonl
+```
+
+旧的 `data/backtest/ten-strategies-long/`、`ten-strategies-daily/` 等产物不删除、不覆盖；新的分段 runner 也拒绝复用非空 suite 目录。checkpoint 是完整数据真源，summary 只做检索和汇总，audit 文件保留逐日审计链。
 
 ### 0.4 已知限制
 
@@ -75,15 +102,13 @@ python3 main.py --update-backtests --strategies a,b --start 2007-01-04 --end 202
 
 红利/低波/价值策略与沪深300的风格并不相同；报告应同时考虑红利指数等风格基准。
 
-### 0.6.6 新策略三跑门禁（必须执行）
+### 0.6.6 新策略三段门禁（必须执行）
 
-新增策略、改参数、改算子后，在认定结论前必须完成：
+新增策略、改参数、改算子后，在认定结论前必须使用 `full`、`2013-2019`、`2020-2026` 三段固定区间。三段使用同一代码版本、数据快照、费用、基准和 `observation_count`，并同时保留完整产物。
 
-1. 全样本：2007–2026 一跑；
-2. 子样本 A：至少 5 年，覆盖不同市场阶段；
-3. 子样本 B：至少 5 年，覆盖另一段市场阶段。
+全量段只回答“这套口径在可用数据上的总体表现”；两个子段用于识别行情阶段依赖。全量好看但任一子段超额反向、Sharpe 明显衰减或回撤失控，必须标记为过拟合/待验证，不进入正式保留集。修正风险配置后必须三段全部重跑，旧配置的 train/test 不能沿用。
 
-三跑使用同一代码版本、数据快照、费用和基准。全样本好看但任一子样本超额反向或 Sharpe 明显衰减，标记为过拟合/待验证，不进入正式保留集。修正风险配置后必须重新跑，旧配置的 train/test 不能沿用。
+当前行情库只覆盖 2013 年起，因此本门禁不能冒充 2007-2026 全样本门禁；若未来补齐 2007-2012，另行增加固定的 2007-2026 版本，不替换本三段基线。
 
 ### 0.6.7 第一批调研候选的历史预审
 
@@ -91,7 +116,7 @@ python3 main.py --update-backtests --strategies a,b --start 2007-01-04 --end 202
 
 ### 0.6.8 `smart_beta_multi_factor` 风格排查
 
-该策略 train 段小盘权重约 77%，2007–2013 年曾达到 87–94%；full/train 的高超额主要来自小盘风格 beta，而非已证明的多因子 alpha。它降级为参照策略，正式保留前仍需市值中性化和三跑验证。
+该策略 train 段小盘权重约 77%，2007–2013 年曾达到 87–94%；full/train 的高超额主要来自小盘风格 beta，而非已证明的多因子 alpha。它降级为参照策略，正式保留前仍需市值中性化并通过当前固定三段门禁。
 
 ### 0.6.10 第一批 10 个策略 canonical full
 
@@ -110,11 +135,11 @@ python3 main.py --update-backtests --strategies a,b --start 2007-01-04 --end 202
 | `illiquidity_value` | 345.00% | 8.24% | 215.73% | 76.25% | 0.42 | 5228 | ✅ 待样本外 |
 | `anti_lottery_defensive` | 639.00% | 11.20% | 509.73% | 63.47% | 0.56 | 3332 | ✅ 待样本外 |
 
-7/10 的 full 总收益超过沪深300，但这只是本轮“完成 10 个全周期回测”的停止条件，不是 7 个策略已通过三跑门禁。当前安全参考策略为 `graham_defensive_value`；`smart_beta_multi_factor` 仅作风格暴露参照。
+7/10 的 full 总收益超过沪深300，但这只是本轮“完成 10 个全周期回测”的停止条件，不是 7 个策略已通过当前固定三段门禁。当前安全参考策略为 `graham_defensive_value`；`smart_beta_multi_factor` 仅作风格暴露参照。
 
 ## 4. 结果解释与复现要求
 
-回测结果必须保留 `data/backtest/run-tune-{strategy}-full.json.gz` 及 `.meta.json`，并记录运行时的 Git commit、参数、数据截止日和缓存命中情况。删除某策略缓存只会删除可再生工件，不代表删除了策略代码或验证结论。
+回测结果必须保留 `data/backtest/run-tune-{strategy}-full.json.gz` 及 `.meta.json`，并记录运行时的 Git commit、参数、数据截止日和缓存命中情况。V2 正式三段结果必须遵守 §0.3.1 的 suite 目录契约；删除某策略缓存只会删除可再生工件，不代表删除了策略代码或验证结论。
 
 如果结果和旧报告不一致，先检查：
 
@@ -142,7 +167,7 @@ V2 是与 V1 并存的新评分/回测架构，目标是替换 V1 的量纲契�
 - canonical 因子档案为 `dividend_yield_ttm_v2`、`low_volatility_20d_v2`（hybrid 映射，当前行业字段不可点时追溯，因此不启用 `industry_history`）；旧的 `_v1` 档案仅保留作兼容复现。
 - 当前不作为 V2 阻塞项：其余旧因子迁移和 V1 物理归档删除；旧实现档案见
   `docs/SPECS/v2-unmigrated-operators.md`。历史沪深300成分已按日生效过滤；行业点时比较、
-  全部 V1 风险变体和 2007–2026/三跑研究门禁另立任务。本阶段已提供 `no_overlay_v1` 基线
+  全部 V1 风险变体和旧 2007–2026 full 结果另作历史参考；当前正式研究门禁采用 §0.3.1/§0.6.6 固定三段。本阶段已提供 `no_overlay_v1` 基线
   与 `v1_core_v1` V1-inspired 核心风险版。
 
 ### 5.3 命令
@@ -157,6 +182,23 @@ python3 main.py --backtest-v2 dividend_low_vol_v2 \
 # --checkpoint PATH：默认每 20 个交易日原子写入完整账户/历史/挂单/换手/risk 状态
 # --resume PATH：从完整 checkpoint 继续；固定 observation-count 后可延长 --end
 ```
+
+单次 `--backtest-v2` 仍保留给探索、调试和 checkpoint resume；正式研究使用固定三段编排入口：
+
+```bash
+# 当前十策略各跑三段（日度 deployment；约 30 次）
+python3 main.py --backtest-v2-segments all \
+  --codes hs300 --snapshot data/snapshots/stockfu-2ee50075f50c.db \
+  --observation-count 271 --canonical
+
+# 十策略 × 月/周/日 × 三段（约 90 次）；先 dry-run 查看计划
+python3 scripts/run_v2_segment_matrix.py \
+  --snapshot data/snapshots/stockfu-2ee50075f50c.db --codes hs300 --dry-run
+python3 scripts/run_v2_segment_matrix.py \
+  --snapshot data/snapshots/stockfu-2ee50075f50c.db --codes hs300 --canonical
+```
+
+分段入口不接受 `--start/--end`，避免调用方无意改变门禁区间；可用 `--segments full` 等只重跑单段的探索任务，但 `--canonical` 必须覆盖完整三段。矩阵输出的 `suite.json` 是批跑索引，单次 `<alpha_id>.checkpoint.json` 保留完整曲线、成交、订单、风控事件、持有批次、评分诊断和 manifest。
 
 ### 5.3.1 V2 记录层（recording schema 1）
 

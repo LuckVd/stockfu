@@ -9,7 +9,7 @@
 - 复用只读数据快照 `data/snapshots/stockfu-2ee50075f50c.db`(内容 SHA 与库数据 max 2026-08-04 一致)。
 - 基准:沪深300,区间收益 **−1.08%**。
 - 资金 1,000,000、T+1 开盘执行、涨跌停/停牌/整手/费用/滑点均按引擎主线;均为 **long-only**(A股融券受限)。
-- **数字为研究回测结果,用于风格对比与因子诊断,不代表策略优劣或实盘收益;尚未过 §0.6.6 三跑门禁。**
+- **数字为研究回测结果,用于风格对比与因子诊断,不代表策略优劣或实盘收益。** 这张表是历史的单窗口结果；正式结论必须按 `full`、`2013-2019`、`2020-2026` 三段门禁运行。
 
 ## 结果对比表
 
@@ -43,7 +43,7 @@
 
 **结论**:10 个策略风格各异、收益与回撤分化明显,引擎如实反映了各风格在该市场状态下的行为;
 亏损策略并非"实现错误",而是其风格在 2021–2024 A 股熊市中的真实暴露(文献已预告)。
-任何策略是否"可用"须按 §0.6.6 三跑门禁(全样本 2007–2026 + 两段 ≥5 年不同行情子区间)验证。
+任何策略是否"可用"须按 §0.6.6 三段门禁验证；不能用这张 2021–2026 单窗口表替代。
 
 ## 复现
 
@@ -56,11 +56,17 @@ python3 main.py --backtest-v2 <alpha_id> \
 # alpha_id 任选:dividend_income_v2 value_ep_bp_v2 momentum_jt_v2 reversal_jl_v2
 #   low_volatility_pure_v2 trend_following_v2 rsi_reversal_v2
 #   defensive_low_beta_v2 fifty_two_week_high_v2 multi_factor_v2
+
+# 正式三段（固定 full/2013-2019/2020-2026）
+python3 main.py --backtest-v2-segments <alpha_id> \
+  --snapshot data/snapshots/stockfu-2ee50075f50c.db \
+  --codes hs300 --observation-count 271 --canonical
 ```
 
 ## 已知限制 / 后续
 
-- 单窗口(2021–2026,偏熊市);未做三跑门禁(§0.6.6)与 2007–2026 全样本。
+- 本文件的主表是单窗口(2021–2026,偏熊市)历史结果；三段正式产物写入 `data/backtest/v2-segments/run-*/`，完整规则见 `docs/BACKTEST.md` §0.3.1/§0.6.6。
+- 当前行情库从 2013 年起；尚不能把三段结果称为 2007–2026 全样本门禁。
 - 多因子缺 Quality 维度(库内无 ROE/毛利等基本面数据);趋势用 signed_r²+动量代理(无 Donchian/MA 交叉算子),风险层忠实"截断亏损/追踪止盈/MA200 regime"。
 - 内存:`multi_factor_v2`(4 因子)峰值 RSS ~854MB,需单独运行(2 并发会与其它进程争内存触发 OOM);其余 9 个 2 并发可跑。
 - 全为 long-only(融券受限);因子收益是多头腿,不等同学术 long-short 因子溢价。

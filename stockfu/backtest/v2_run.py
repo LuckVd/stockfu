@@ -141,6 +141,7 @@ def build_v2_config(
     snapshot: dict | None = None,
     snapshots_dir: str | None = None,
     canonical: bool = False,
+    segment_id: str | None = None,
 ) -> V2RunConfig:
     validate_v2_alpha_id(alpha_id)
     alpha = alpha_from_dict(_load(f"alphas/{alpha_id}.yaml"))
@@ -201,6 +202,7 @@ def build_v2_config(
     kw["snapshot"] = snapshot
     kw["snapshots_dir"] = snapshots_dir
     kw["canonical"] = canonical
+    kw["segment_id"] = segment_id
     return V2RunConfig(**kw)
 
 
@@ -276,7 +278,8 @@ def run(alpha_id: str, *, eval_start: date, eval_end: date,
         checkpoint_every: int = 20,
         snapshot: dict | None = None,
         snapshots_dir: str | None = None,
-        canonical: bool = False) -> V2Result:
+        canonical: bool = False,
+        segment_id: str | None = None) -> V2Result:
     """便捷入口:默认 portfolio/risk 与 alpha 约定匹配。
 
     数据快照在股票池解析前确定（阻塞①）：未提供时新建或从 resume 工件恢复；
@@ -304,5 +307,5 @@ def run(alpha_id: str, *, eval_start: date, eval_end: date,
                           observation_count, universe_rules, checkpoint_path,
                           resume_from, checkpoint_every,
                           snapshot=snap, snapshots_dir=snapshots_dir,
-                          canonical=canonical)
+                          canonical=canonical, segment_id=segment_id)
     return run_v2_backtest(cfg)
