@@ -17,6 +17,7 @@
     python main.py --export-csv [DIR]  # 导出市场数据为 CSV（默认 data/，可入 git）
     python main.py --import-csv [DIR]  # 从 CSV 合并导入回库（换机同步；upsert 不丢数据）
     python main.py --backtest STRATEGY [--start --end --cash --codes --save]  # 回测（见 docs/BACKTEST.md）
+    python main.py --backtest-v2-segments ALPHA_ID|all [--codes --snapshot]  # V2 正式三段回测
     python main.py --update-backtests [--strategies a,b] [--start --end] [--dry-run] [--list-strategies]
         # 全周期重跑更新到最新(固化验收口径;不选策略=目录全部)
     python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md）
@@ -737,6 +738,108 @@ def run_v2_backtest_cli(alpha_id: str, start: str | None, end: str | None,
     print(f"  run_id: {res.manifest['run_id'][:16]}  formal_start: {res.manifest.get('formal_start')}")
 
 
+def run_v2_segmented_cli(
+    alpha_selection: str,
+    start: str | None,
+    end: str | None,
+    cash: float,
+    codes: str | None,
+    portfolio_id: str | None,
+    risk_id: str | None,
+    history_origin: str | None,
+    observation_count: int | None,
+    checkpoint_path: str | None,
+    resume_from: str | None,
+    checkpoint_every: int,
+    snapshot_path: str | None = None,
+    canonical: bool = False,
+    segments: str | None = None,
+    output_root: str = "data/backtest/v2-segments",
+    variant_id: str = "daily",
+) -> None:
+    """V2 正式分段回测：同一部署独立跑 full/2013-2019/2020-2026。"""
+    from datetime import date, datetime
+    from pathlib import Path
+
+    if start or end:
+        raise SystemExit("✗ --backtest-v2-segments 使用固定三段区间，不接受 --start/--end")
+    if checkpoint_path or resume_from:
+        raise SystemExit(
+            "--backtest-v2-segments 自动管理每段 checkpoint，不接受 --checkpoint/--resume"
+        )
+
+    from stockfu.backtest.segments import FULL_SEGMENT
+    from stockfu.backtest.v2_engine import canonical_preflight, resolve_snapshot
+    from stockfu.backtest.v2_run import (
+        default_universe, historical_full_universe,
+        historical_full_universe_rules, historical_hs300_universe_rules,
+        hs300_universe, validate_v2_alpha_id,
+    )
+    from stockfu.backtest.snapshot import descriptor_from_file, snapshot_engine
+    from stockfu.backtest.v2_suite import (
+        V2Deployment, resolve_alpha_ids, run_segmented_backtests,
+    )
+    from stockfu.db import init_db, use_read_engine
+    from stockfu.services.universe import resolve_base_codes
+
+    canonical_preflight(canonical)
+    alpha_ids = resolve_alpha_ids(alpha_selection)
+    for alpha_id in alpha_ids:
+        validate_v2_alpha_id(alpha_id)
+    init_db()
+    provided = descriptor_from_file(snapshot_path) if snapshot_path else None
+    snap = resolve_snapshot(provided=provided, resume_from=None, snapshots_dir=None)
+    with use_read_engine(snapshot_engine(snap)):
+        universe_rules = None
+        low_codes = codes.lower() if codes else None
+        if low_codes == "hs300":
+            code_list = hs300_universe()
+            universe_rules = historical_hs300_universe_rules()
+        elif low_codes in ("historical_indices", "historical_index", "csi300_csi500"):
+            code_list = historical_full_universe()
+            universe_rules = historical_full_universe_rules()
+        elif codes:
+            code_list = resolve_base_codes(codes)
+        else:
+            code_list = default_universe(FULL_SEGMENT.eval_start, FULL_SEGMENT.eval_end)
+
+    root = Path(output_root)
+    run_root = root / f"run-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+    ho = date.fromisoformat(history_origin) if history_origin else None
+    deployments = tuple(
+        V2Deployment(
+            alpha_id=alpha_id,
+            variant_id=variant_id,
+            portfolio_id=portfolio_id,
+            risk_id=risk_id,
+        )
+        for alpha_id in alpha_ids
+    )
+    suite = run_segmented_backtests(
+        deployments,
+        output_root=run_root,
+        segments=segments,
+        codes=code_list,
+        universe_rules=universe_rules,
+        history_origin=ho,
+        initial_cash=cash if cash else None,
+        observation_count=observation_count,
+        checkpoint_every=checkpoint_every,
+        snapshot=snap,
+        canonical=canonical,
+    )
+    print(f"✓ 分段回测完成: {len(suite.runs)} 个区间运行")
+    print(f"  suite: {suite.manifest_path}")
+    for item in suite.runs:
+        metrics = item.summary.get("metrics") or {}
+        print(
+            f"  {item.deployment.alpha_id} [{item.deployment.variant_id}] "
+            f"{item.segment.segment_id}: 总收益 {metrics.get('total_return')}% "
+            f"年化 {metrics.get('annualized')}% 回撤 {metrics.get('max_drawdown')}% "
+            f"Sharpe {metrics.get('sharpe')}"
+        )
+
+
 def run_backtest(strategy: str, start: str | None, end: str | None,
                  cash: float, codes: str | None, save: bool,
                  min_amount: float | None = None,
@@ -1056,6 +1159,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="V2 回测:alpha_id(如 dividend_low_vol_v2);"
                         "--codes hs300 或 historical_indices 使用历史成分；"
                         "复用 --start/--end/--cash")
+    p.add_argument("--backtest-v2-segments", metavar="ALPHA_ID|all", default=None,
+                   help="V2 正式分段回测:固定跑 full、2013-2019、2020-2026；"
+                        "传 all=当前十策略，产物自动分目录保留")
+    p.add_argument("--segments", default="all",
+                   help="--backtest-v2-segments:区间选择，逗号分隔或 all；默认 all")
+    p.add_argument("--segment-output-root", default="data/backtest/v2-segments",
+                   help="分段 suite 根目录；每次运行自动新建 run-时间戳 子目录")
+    p.add_argument("--segment-variant", default="daily",
+                   help="分段产物变体目录名（如 daily/weekly/monthly）")
     p.add_argument("--portfolio-v2", default=None,
                    help="V2 portfolio_policy_id(默认 cn_equity_top15_v2)")
     p.add_argument("--risk-v2", default=None,
@@ -1266,6 +1378,15 @@ def main() -> None:
         run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save,
                      min_amount=args.min_amount,
                      valuation_basis=args.valuation_basis)
+    elif args.backtest_v2_segments:
+        run_v2_segmented_cli(
+            args.backtest_v2_segments, args.start, args.end, args.cash,
+            args.codes, args.portfolio_v2, args.risk_v2,
+            args.history_origin, args.observation_count,
+            args.checkpoint_path, args.resume_from, args.checkpoint_every,
+            args.snapshot_path, args.canonical, args.segments,
+            args.segment_output_root, args.segment_variant,
+        )
     elif args.backtest_v2:
         run_v2_backtest_cli(args.backtest_v2, args.start, args.end, args.cash,
                             args.codes, args.portfolio_v2, args.risk_v2,
