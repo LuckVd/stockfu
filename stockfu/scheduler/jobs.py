@@ -70,6 +70,52 @@ def _fetch_today_via_baostock(code: str, end_date, days: int = 15) -> bool:
     return _apply_and_upsert(code, triple, preserve_qfq=False, cap_date=end) > 0
 
 
+def fetch_universe_quotes(target_date, *, index_codes=None, progress_every: int = 100) -> dict:
+    """补全市场成分当日行情:对指数时点成员逐只抓 baostock 三复权写 quote_snapshot。
+
+    与 run_scheduled_fetch(只抓 asset 自选 ~45 只)互补:本函数抓 hs300+zz500 时点
+    成分(~800 只活跃大盘股),把行情补到全成分口径。退市/停牌当日 baostock 返回
+    empty,_fetch_today_via_baostock 自然返回 False 跳过,不阻塞、不污染数据。
+
+    主线程串行抓取:绕开 _upsert_quote 的 _call_timeout 子线程——baostock 全局 socket
+    在双层子线程里登录态保不住,会陷入 login 循环(实测每只重 login、不入库)。
+
+    target_date: 目标交易日(str 或 date;由 validate_ingest_date 校验,非法即 raise)。
+    index_codes: 默认 HISTORICAL_INDEX_CODES(沪深300+中证500)。
+    返回 {total, ok, fail, elapsed_sec}。
+    """
+    import time as _t
+    from stockfu.services.index_universe import current_member_codes, HISTORICAL_INDEX_CODES
+    from stockfu.services.quote_writer import validate_ingest_date
+    from stockfu.data.baostock_proxy import ensure_baostock_login
+
+    init_db()
+    td = validate_ingest_date(target_date)
+    idx = tuple(index_codes) if index_codes else HISTORICAL_INDEX_CODES
+    codes = current_member_codes(td, idx)
+    if not ensure_baostock_login():
+        return {"total": len(codes), "ok": 0, "fail": len(codes),
+                "elapsed_sec": 0.0, "error": "baostock login failed"}
+
+    print(f"=== [fetch-universe] {td} members={len(codes)} indices={idx} ===", flush=True)
+    t0 = _t.time(); ok = fail = 0
+    for i, code in enumerate(codes, 1):
+        try:
+            if _fetch_today_via_baostock(code, td):
+                ok += 1
+            else:
+                fail += 1
+        except Exception:  # noqa: BLE001
+            fail += 1
+        if progress_every and i % progress_every == 0:
+            print(f"  universe {td} {i}/{len(codes)} ok={ok} fail={fail} "
+                  f"{_t.time() - t0:.0f}s", flush=True)
+    elapsed = _t.time() - t0
+    print(f"=== [fetch-universe] {td} done ok={ok} fail={fail} {elapsed:.0f}s ===",
+          flush=True)
+    return {"total": len(codes), "ok": ok, "fail": fail, "elapsed_sec": round(elapsed, 1)}
+
+
 def _upsert_quote(code: str, target_date=None, timeout: float = 35) -> bool:
     """拉最近交易日行情落 quote_snapshot(按市场路由)。
 
