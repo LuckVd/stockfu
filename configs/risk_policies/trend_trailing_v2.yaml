@@ -1,0 +1,29 @@
+# 趋势跟踪专用风险政策:截断亏损、让利润奔跑(经典趋势系统准则)。
+# - 较紧个股止损(10%):趋势交易快速认错;
+# - 分段追踪止盈(浮盈后按高点回撤卖出):让赢家跑;
+# - 沪深300 MA200 regime:大盘跌破趋势线时压缩敞口(不在熊市追趋势);
+# - 组合回撤刹车:整体回撤时降仓。
+risk_policy_id: trend_trailing_v2
+version: 1
+stop_loss: 0.10
+take_profit: null
+take_profit_tiers:
+  - {profit: 0.15, drawdown: 0.08, sell_fraction: 0.50}
+  - {profit: 0.30, drawdown: 0.05, sell_fraction: 0.50}
+take_profit_hard_pct: null
+drawdown_brake: 0.10
+drawdown_brake_scale: 0.50
+drawdown_brake_max_gross: null
+drawdown_brake_tiers: []
+drawdown_brake_mode: scale_all
+drawdown_recover_dd: null
+drawdown_recover_high_days: 0
+market_regime_code: sh000300
+market_regime_ma_days: 200
+market_regime_enter_band: 0.0
+market_regime_exit_band: 0.02
+market_regime_max_gross: 0.50
+volatility_target: null
+volatility_window: 63
+volatility_floor: 0.30
+max_gross: null

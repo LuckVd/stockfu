@@ -1,0 +1,10 @@
+# 短期反转(Jegadeesh-Lehmann 1990):近 20 日下跌者后续反弹概率高。
+# 周度再平衡(反转信号半衰期短于动量)。学术反转无止损。
+alpha_id: reversal_jl_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: reversal_20d_v2, weight: 1.0, critical: true}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

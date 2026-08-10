@@ -1,0 +1,10 @@
+# 高股息红利(Dividend Income / Dogs of the Dow):TTM 现金股息率单因子。
+# 选最高股息率的一篮子股票,月度再平衡。学术红利因子无止损,仅按月再平衡。
+alpha_id: dividend_income_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: dividend_yield_ttm_v2, weight: 1.0, critical: true}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

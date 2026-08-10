@@ -1,0 +1,18 @@
+# 学术因子通用组合:月度调仓、top15 等权、纯再平衡(无止损/软锁)。
+# 价值/动量/低波/52w高/多因子等学术因子组合按月再平衡,不在持仓层加止损
+# (止损属于 risk 层;学术因子默认 no_overlay)。
+portfolio_policy_id: pf_monthly_top15_v2
+version: 1
+rebalance: monthly
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.0
+cooldown_days: 0
+min_holding_days: 0
+stop_loss_pct: null
+hold_top_percentile: 0.0

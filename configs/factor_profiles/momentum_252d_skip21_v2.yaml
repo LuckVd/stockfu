@@ -1,0 +1,30 @@
+# 横截面动量(Jegadeesh-Titman 1993):12 个月收益剔除最近 1 个月。
+# window=252(≈12 月)、skip=21(≈1 月)。高收益 → 高分。
+profile_id: momentum_252d_skip21_v2
+version: 1
+raw_metric:
+  id: momentum
+  params: {window: 252, skip: 21, price_basis: qfq}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-60, 0], [-30, 20], [0, 50], [30, 72], [60, 85], [100, 95], [150, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

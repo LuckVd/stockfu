@@ -105,6 +105,35 @@ def _fair_price(close: float | None, cur_mult: float | None,
     return round(close * (med_mult / cur_mult), 4)
 
 
+def pe_pb_at(code: str, as_of: date) -> tuple[float | None, float | None]:
+    """点时单日 (PE, PB):正数保留,其余(缺失/负/0)→ None。
+
+    供 earnings_yield / book_to_price 等只需当日绝对估值的因子:复用回测估值
+    窗口(provider 在位时零排序、零额外 DB),不重算历史分位(那是 valuation_snapshot)。
+    当天缺失则返回 (None, None),由上层 missing 语义处理。
+    """
+    start = as_of - timedelta(days=20)               # 仅需当天,留缓冲防停牌
+    win: _ValWindow | None = None
+    if _BT_VALUATION_PROVIDER is not None:
+        win = _BT_VALUATION_PROVIDER(code, start, as_of)
+    if win is not None and len(win.pe) > 0:
+        pe_v = win.pe[win.ref_idx]
+        pb_v = win.pb[win.ref_idx]
+        pe = float(pe_v) if pe_v > 0 else None       # nan/0/负 → None
+        pb = float(pb_v) if pb_v > 0 else None
+        return pe, pb
+    with session_scope() as s:
+        row = s.exec(select(QuoteSnapshot).where(
+            QuoteSnapshot.asset_code == code,
+            QuoteSnapshot.quote_date <= as_of,
+        ).order_by(QuoteSnapshot.quote_date.desc())).first()
+    if row is None:
+        return None, None
+    pe = float(row.pe) if row.pe is not None and row.pe > 0 else None
+    pb = float(row.pb) if row.pb is not None and row.pb > 0 else None
+    return pe, pb
+
+
 def valuation_snapshot(
     code: str,
     as_of: date,

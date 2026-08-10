@@ -1,0 +1,11 @@
+# 低 Beta 防御(Betting Against Beta / 防御型):低 β + 低波动。
+# 与 low_volatility_pure(纯双波动)区分:本策略纳入对市场的低敏感度(beta)。
+alpha_id: defensive_low_beta_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: low_beta_v1, weight: 0.6, critical: true}
+  - {profile_id: low_volatility_20d_v2, weight: 0.4, critical: false}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation
