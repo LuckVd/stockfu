@@ -1,0 +1,16 @@
+# 高股息(Dogs of the Dow 风格):月度调仓、top10 等权、最高股息率。
+portfolio_policy_id: pf_monthly_top10_v2
+version: 1
+rebalance: monthly
+selection: {method: top_n_above_score, n: 10, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.10
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.0
+cooldown_days: 0
+min_holding_days: 0
+stop_loss_pct: null
+hold_top_percentile: 0.0

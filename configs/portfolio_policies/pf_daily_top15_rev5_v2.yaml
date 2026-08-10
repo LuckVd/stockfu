@@ -1,0 +1,19 @@
+# 日度引擎·短期反转(20日收益反向)。
+# Lehmann(1990,QJE 105(1))原版即"周反转",买上周输家、持有 **一周**。
+# daily 下用 min_holding_days=5(≈1周交易日)还原"周持有"语义,抑制日度机械换手。
+# 不设止损(反转因子无止损;A股短期反转效应显著,优于美股)。
+portfolio_policy_id: pf_daily_top15_rev5_v2
+version: 1
+rebalance: daily
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.02
+cooldown_days: 0
+min_holding_days: 5
+stop_loss_pct: null
+hold_top_percentile: 0.0

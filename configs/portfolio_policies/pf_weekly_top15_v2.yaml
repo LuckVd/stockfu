@@ -1,0 +1,16 @@
+# 周度调仓 top15:短期反转、趋势跟踪(信号频率较高,需更紧的再平衡)。
+portfolio_policy_id: pf_weekly_top15_v2
+version: 1
+rebalance: weekly
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.0
+cooldown_days: 0
+min_holding_days: 0
+stop_loss_pct: null
+hold_top_percentile: 0.0

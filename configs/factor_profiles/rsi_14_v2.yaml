@@ -1,0 +1,18 @@
+# RSI(14) 均值回归(Wilder):超卖(低 RSI)→ 反弹概率高 → 看多。
+# 固定锚点映射(RSI 有自然 0-100 量纲与 30/70 经典阈值),不依赖历史分位。
+profile_id: rsi_14_v2
+version: 1
+raw_metric:
+  id: rsi
+  params: {window: 14, price_basis: qfq}
+direction: lower_is_better
+raw_unit: rsi
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 1.0
+      knots: [[0, 100], [20, 85], [30, 80], [50, 50], [70, 20], [80, 15], [100, 0]]
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

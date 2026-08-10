@@ -1,0 +1,11 @@
+# 低波动(Low Volatility / 最小方差近似):总波动 + 下行波动。
+# 与 dividend_low_vol(含红利)、defensive_low_beta(含 beta)区分:纯低波双分量。
+alpha_id: low_volatility_pure_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: low_volatility_20d_v2, weight: 0.6, critical: false}
+  - {profile_id: downside_volatility_60d_v2, weight: 0.4, critical: true}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

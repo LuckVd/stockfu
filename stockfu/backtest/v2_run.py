@@ -19,7 +19,14 @@ from stockfu.backtest.v2_engine import (
 )
 from stockfu.factors.raw import raw_fingerprint
 from stockfu.factors.raw.beta import compute_low_beta
+from stockfu.factors.raw.book_to_price import compute_book_to_price
 from stockfu.factors.raw.dividend import compute_dividend_yield_ttm
+from stockfu.factors.raw.downside_volatility import compute_downside_volatility
+from stockfu.factors.raw.earnings_yield import compute_earnings_yield
+from stockfu.factors.raw.fifty_two_week_high import compute_fifty_two_week_high
+from stockfu.factors.raw.momentum import compute_momentum
+from stockfu.factors.raw.rsi import compute_rsi
+from stockfu.factors.raw.trend_linearity import compute_trend_linearity
 from stockfu.factors.raw.value import compute_value
 from stockfu.factors.raw.volatility import compute_low_volatility_20d
 from stockfu.scoring.profiles import profile_from_dict
@@ -50,6 +57,16 @@ RAW_COMPUTERS = {
     "low_beta": RawComputerSpec(compute_low_beta, "cov_over_var_vs_bench"),
     "low_volatility_20d": RawComputerSpec(compute_low_volatility_20d, "std_ret_x_sqrt252_x100"),
     "value": RawComputerSpec(compute_value, "pe_percentile"),
+    # —— 10 策略研究新增 raw metric(2026-08)——
+    "momentum": RawComputerSpec(compute_momentum, "pct_return_qfq"),
+    "rsi": RawComputerSpec(compute_rsi, "wilder_rsi"),
+    "fifty_two_week_high": RawComputerSpec(
+        compute_fifty_two_week_high, "close_over_max_close"),
+    "trend_linearity": RawComputerSpec(compute_trend_linearity, "signed_r2_linreg"),
+    "downside_volatility": RawComputerSpec(
+        compute_downside_volatility, "neg_ret_std_x_sqrt252_x100"),
+    "earnings_yield": RawComputerSpec(compute_earnings_yield, "inverse_pe_ttm_x100"),
+    "book_to_price": RawComputerSpec(compute_book_to_price, "inverse_pb"),
 }
 
 # alpha 的默认 deployment。显式传入 --portfolio-v2/--risk-v2 仍可做对照实验；
@@ -59,6 +76,22 @@ DEFAULT_V2_DEPLOYMENTS = {
         "portfolio_id": "cn_equity_top15_daily_softlock30_v2",
         "risk_id": "dividend_low_vol_trailing_v2",
     },
+    # —— 10 策略研究(2026-08):风格各异,调仓频率/风险贴合主流定义 ——
+    # 全部改为日度引擎 + 贴合换手保护(详见各 policy 注释):
+    #   - 月度因子簇(价值/动量/低波/低β/52w/多因子/高股息):min_hold=21 把"月度持有"固化进 daily;
+    #   - 反转:Lehmann 周反转→min_hold=5;趋势:保留 trend_trailing_v2 风控+min_hold=3;
+    #   - RSI:信号退出+min_hold=2。
+    # 旧 pf_monthly_*/pf_weekly_*/pf_daily_top15 policy 文件保留,可经 --portfolio-v2 复现月/周对照。
+    "dividend_income_v2":       {"portfolio_id": "pf_daily_top10_slow21_v2", "risk_id": "no_overlay_v1"},
+    "value_ep_bp_v2":           {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "momentum_jt_v2":           {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "reversal_jl_v2":           {"portfolio_id": "pf_daily_top15_rev5_v2",   "risk_id": "no_overlay_v1"},
+    "low_volatility_pure_v2":   {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "trend_following_v2":       {"portfolio_id": "pf_daily_top15_trend3_v2", "risk_id": "trend_trailing_v2"},
+    "rsi_reversal_v2":          {"portfolio_id": "pf_daily_top15_rsi2_v2",   "risk_id": "no_overlay_v1"},
+    "defensive_low_beta_v2":    {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "fifty_two_week_high_v2":   {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "multi_factor_v2":          {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
 }
 
 

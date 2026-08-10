@@ -1,0 +1,12 @@
+# 趋势跟踪(Trend Following):趋势线性度(signed r²)+ 12-1 动量确认。
+# 只追「涨得平稳且持续」的趋势,周度再平衡;trend_trailing_v2 风险层负责
+# 截断亏损/追踪止盈/大盘 regime(趋势系统经典:截断亏损、让利润奔跑)。
+alpha_id: trend_following_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: trend_linearity_60d_v2, weight: 0.6, critical: true}
+  - {profile_id: momentum_252d_skip21_v2, weight: 0.4, critical: false}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

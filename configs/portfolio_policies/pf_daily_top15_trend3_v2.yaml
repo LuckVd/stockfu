@@ -1,0 +1,21 @@
+# 日度引擎·趋势跟踪(趋势线性度 signed_r² + 12-1 动量)。
+# 策略本身有完整风控(risk=trend_trailing_v2:个股10%止损 + 分段追踪止盈[让赢家跑]
+# + 沪深300 MA200 regime + 组合回撤刹车,均为日级监控)。组合层只做轻量换手抑制:
+# min_holding_days=3(及时响应趋势变化),stop_loss_pct=0.10 与 risk 止损一致——
+# 浮亏≥10%时豁免软锁,确保该执行的止损不被最小持有期挡住。
+# 来源:Faber(2007) MA200;Original Turtle Trading(Donchian 20/55 + 2N 止损)。
+portfolio_policy_id: pf_daily_top15_trend3_v2
+version: 1
+rebalance: daily
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.02
+cooldown_days: 0
+min_holding_days: 3
+stop_loss_pct: 0.10
+hold_top_percentile: 0.0
