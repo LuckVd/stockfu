@@ -16,6 +16,10 @@ narrate() → 可选的 LLM 中文润色
 
 实盘入口是 `stockfu.ai.analyze.analyze`。回测不调用这条 LLM 链路，回测规则统一见 `docs/BACKTEST.md`。
 
+每日量化荐股与四顾问解释链分开：V2 十策略评分使用 `stockfu.services.v2_signal.V2SignalScorer`，自选股入口使用
+`python main.py --v2-watchlist-recommend`。它先依赖调度器的当前沪深300+中证500增量行情抓取，再只取
+`Asset.is_watch=1` 且 `asset_type=stock` 的自选股票；缺少目标日行情时拒绝生成不完整报告。该入口不读取持仓、不执行交易，LLM 顾问也不会改变策略分数。
+
 ## 4 个顾问
 
 | 顾问 | 立场 | 主用数据 |
