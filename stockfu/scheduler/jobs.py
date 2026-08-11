@@ -12,7 +12,10 @@ from datetime import date, timedelta
 from sqlmodel import select
 
 from stockfu.db import init_db, session_scope
-from stockfu.models import (Asset, EtfQuoteDaily, FundFlowSnapshot, IndexQuoteDaily, QuoteSnapshot)
+from stockfu.models import (
+    Asset, EtfQuoteDaily, FundFlowSnapshot, IndexQuoteDaily, QuoteSnapshot,
+    SecurityMaster,
+)
 
 # 指数基准 + 资金流追踪标的：宽基 & 热门行业 ETF
 INDEX_ETFS = [
@@ -70,6 +73,41 @@ def _fetch_today_via_baostock(code: str, end_date, days: int = 15) -> bool:
     return _apply_and_upsert(code, triple, preserve_qfq=False, cap_date=end) > 0
 
 
+def _current_index_fetch_codes(target_date, index_codes=None) -> list[str]:
+    """返回目标日沪深 300 + 中证 500 的有效成分代码。
+
+    成分快照定义“当前属于指数”，``security_master`` 再负责排除已退市、
+    未上市或状态非正常的代码。主数据缺失时不武断丢弃成分，方便先补行情再
+    补主数据；当前正式 300+500 快照应全部有对应主数据。
+    """
+    from stockfu.services.index_universe import current_member_codes, HISTORICAL_INDEX_CODES
+    from stockfu.services.quote_writer import _coerce_date
+
+    td = _coerce_date(target_date)
+    idx = tuple(index_codes) if index_codes else HISTORICAL_INDEX_CODES
+    codes = current_member_codes(td, idx)
+    if not codes:
+        return []
+    with session_scope() as s:
+        masters = {
+            row.code: row for row in s.exec(
+                select(SecurityMaster).where(SecurityMaster.code.in_(codes))
+            ).all()
+        }
+    inactive = {
+        code for code, row in masters.items()
+        if (row.list_date and row.list_date > td)
+        or (row.delist_date and row.delist_date <= td)
+        or str(row.status or "").strip() not in {"", "1"}
+    }
+    if inactive:
+        print(
+            f"  [fetch-universe] skip inactive={len(inactive)} "
+            f"codes={sorted(inactive)[:8]}", flush=True,
+        )
+    return [code for code in codes if code not in inactive]
+
+
 def fetch_universe_quotes(target_date, *, index_codes=None, progress_every: int = 100) -> dict:
     """补全市场成分当日行情:对指数时点成员逐只抓 baostock 三复权写 quote_snapshot。
 
@@ -85,21 +123,48 @@ def fetch_universe_quotes(target_date, *, index_codes=None, progress_every: int 
     返回 {total, ok, fail, elapsed_sec}。
     """
     import time as _t
-    from stockfu.services.index_universe import current_member_codes, HISTORICAL_INDEX_CODES
     from stockfu.services.quote_writer import validate_ingest_date
     from stockfu.data.baostock_proxy import ensure_baostock_login
 
     init_db()
     td = validate_ingest_date(target_date)
+    from stockfu.services.index_universe import HISTORICAL_INDEX_CODES
     idx = tuple(index_codes) if index_codes else HISTORICAL_INDEX_CODES
-    codes = current_member_codes(td, idx)
+    codes = _current_index_fetch_codes(td, idx)
+    with session_scope() as s:
+        existing = s.exec(select(QuoteSnapshot).where(
+            QuoteSnapshot.quote_date == td,
+            QuoteSnapshot.asset_code.in_(codes),
+        )).all()
+    fresh = {
+        row.asset_code for row in existing
+        if (row.close_qfq is not None and row.close_qfq > 0)
+        or (row.close is not None and row.close > 0)
+    }
+    pending = [code for code in codes if code not in fresh]
+    skipped = len(codes) - len(pending)
+    if not pending:
+        print(
+            f"=== [fetch-universe] {td} members={len(codes)} "
+            f"pending=0 skipped={skipped} ===",
+            flush=True,
+        )
+        return {
+            "total": len(codes), "pending": 0, "skipped": skipped,
+            "ok": 0, "fail": 0, "elapsed_sec": 0.0,
+        }
     if not ensure_baostock_login():
-        return {"total": len(codes), "ok": 0, "fail": len(codes),
+        return {"total": len(codes), "pending": len(pending), "skipped": skipped,
+                "ok": 0, "fail": len(pending),
                 "elapsed_sec": 0.0, "error": "baostock login failed"}
 
-    print(f"=== [fetch-universe] {td} members={len(codes)} indices={idx} ===", flush=True)
+    print(
+        f"=== [fetch-universe] {td} members={len(codes)} "
+        f"pending={len(pending)} skipped={skipped} indices={idx} ===",
+        flush=True,
+    )
     t0 = _t.time(); ok = fail = 0
-    for i, code in enumerate(codes, 1):
+    for i, code in enumerate(pending, 1):
         try:
             if _fetch_today_via_baostock(code, td):
                 ok += 1
@@ -108,12 +173,15 @@ def fetch_universe_quotes(target_date, *, index_codes=None, progress_every: int 
         except Exception:  # noqa: BLE001
             fail += 1
         if progress_every and i % progress_every == 0:
-            print(f"  universe {td} {i}/{len(codes)} ok={ok} fail={fail} "
+            print(f"  universe {td} {i}/{len(pending)} ok={ok} fail={fail} "
                   f"{_t.time() - t0:.0f}s", flush=True)
     elapsed = _t.time() - t0
     print(f"=== [fetch-universe] {td} done ok={ok} fail={fail} {elapsed:.0f}s ===",
           flush=True)
-    return {"total": len(codes), "ok": ok, "fail": fail, "elapsed_sec": round(elapsed, 1)}
+    return {
+        "total": len(codes), "pending": len(pending), "skipped": skipped,
+        "ok": ok, "fail": fail, "elapsed_sec": round(elapsed, 1),
+    }
 
 
 def _upsert_quote(code: str, target_date=None, timeout: float = 35) -> bool:
@@ -807,6 +875,16 @@ def run_scheduled_fetch(target_date) -> dict:
         ok.extend(ok2)
     print(f"  quotes ok={len(ok)} fail={len(fail)}", flush=True)
 
+    print("=== [fetch] 1b/6 current index universe ===", flush=True)
+    try:
+        universe_quotes = fetch_universe_quotes(td)
+    except Exception as exc:  # noqa: BLE001
+        universe_quotes = {
+            "total": 0, "pending": 0, "skipped": 0, "ok": 0, "fail": 0,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        print(f"  [warn] fetch-universe failed: {universe_quotes['error']}", flush=True)
+
     print("=== [fetch] 2/6 index + sector ETF ===", flush=True)
     for _idx in ("sh000001", "sz399006", "sh000688"):
         try:
@@ -905,6 +983,7 @@ def run_scheduled_fetch(target_date) -> dict:
 
     summary = {
         "quotes": len(ok),
+        "universe_quotes": universe_quotes,
         "retries": retries,
         "still_failed": len(fail),
         "still_failed_codes": fail[:20],
