@@ -131,3 +131,59 @@ def test_canonical_segment_suite_rejects_partial_selection(tmp_path):
             segments="full",
             canonical=True,
         )
+
+
+def test_segmented_suite_resume_skips_complete_and_reuses_checkpoint(monkeypatch, tmp_path):
+    import stockfu.backtest.v2_suite as suite
+
+    calls: list[dict] = []
+
+    def fake_run(alpha_id, **kwargs):
+        calls.append({"alpha_id": alpha_id, **kwargs})
+        checkpoint = Path(kwargs["checkpoint_path"])
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.write_text("checkpoint", encoding="utf-8")
+        Path(str(checkpoint) + ".audit.jsonl").write_text("", encoding="utf-8")
+        return SimpleNamespace(
+            manifest={
+                "data_coverage": {
+                    "effective_eval_end": kwargs["eval_end"].isoformat(),
+                    "data_end": "2026-08-04",
+                    "truncated": False,
+                },
+                "observation_count": kwargs["observation_count"],
+                "formal_start": kwargs["eval_start"].isoformat(),
+                "run_id": f"run-{kwargs['segment_id']}",
+                "risk_metrics": {},
+            },
+            metrics={}, formal_summary={"n_days": 1},
+            observation_summary={}, first_trade_date=None,
+            last_trade_date=None, trades=[], score_diagnostics={},
+        )
+
+    monkeypatch.setattr(suite, "run", fake_run)
+    root = tmp_path / "suite"
+    kwargs = dict(
+        codes=["A"], snapshot={"snapshot_id": "sha256:" + "0" * 64},
+        observation_count=1,
+    )
+    run_segmented_backtests(
+        [V2Deployment("dividend_low_vol_v2", variant_id="daily")],
+        output_root=root, **kwargs,
+    )
+    assert len(calls) == 3
+
+    manifest_path = root / "suite.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    interrupted = manifest["entries"][1]
+    interrupted["status"] = "running"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    resumed = run_segmented_backtests(
+        [V2Deployment("dividend_low_vol_v2", variant_id="daily")],
+        output_root=root, resume_existing=True, **kwargs,
+    )
+    assert len(resumed.runs) == 3
+    assert len(calls) == 4
+    assert calls[-1]["segment_id"] == interrupted["segment_id"]
+    assert calls[-1]["resume_from"] == str(root / interrupted["checkpoint"])

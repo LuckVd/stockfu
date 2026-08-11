@@ -4,7 +4,11 @@ from __future__ import annotations
 from datetime import date
 
 from stockfu.scoring.contracts import RawFactorObservation
-from stockfu.scoring.history import HistoryState, compute_sample_dates
+from stockfu.scoring.history import (
+    HistoryState,
+    build_history_retention,
+    compute_sample_dates,
+)
 from stockfu.scoring.profiles import profile_from_dict
 from stockfu.scoring.scorer import FactorScorer
 
@@ -43,6 +47,94 @@ def test_self_rolling_window():
     # cutoff=2025-06-01, years=1 → 窗口 (2024-06-02, 2025-06-01]
     s = h.self_samples("m", "c1", D(2025, 6, 1), 1.0)
     assert s == [2.0, 3.0]   # 2025-01-01 与 2025-06-01
+
+
+def test_rolling_retention_prunes_only_invisible_rows_and_keeps_expanding():
+    retention = {
+        "m": {
+            "self": ("rolling", 1.0),
+            "market": ("rolling", 1.0),
+            "industry": ("expanding", None),
+        }
+    }
+    h = HistoryState(retention=retention)
+    days = [D(2024, 6, 1), D(2024, 6, 2), D(2025, 6, 1)]
+    for i, d in enumerate(days, 1):
+        h.update(
+            d, {"m": {"a": float(i), "b": float(i + 10)}},
+            {"a": "银行", "b": "银行"}, "cn_equity",
+            {"m": {"self": True, "market": True, "industry": True}},
+        )
+
+    # _window_lo(2025-06-01, 1) == 2024-06-01; rolling reads exclude the
+    # boundary itself, so the physically retained rows are exactly visible.
+    assert h.self_samples("m", "a", D(2025, 6, 1), 1.0) == [2.0, 3.0]
+    assert h.market_samples("m", "cn_equity", D(2025, 6, 1), 1.0) == [2.0, 12.0, 3.0, 13.0]
+    # The independent expanding component must retain the old row.
+    assert h.industry_samples("m", "银行", D(2025, 6, 1), 1.0, "expanding") == [
+        1.0, 11.0, 2.0, 12.0, 3.0, 13.0
+    ]
+
+
+def test_retention_merge_uses_widest_window_and_expanding_wins():
+    p1 = profile_from_dict({
+        **PROFILE_DICT,
+        "profile_id": "retention_test_1",
+        "mapping": {
+            "mode": "hybrid",
+            "components": {
+                "absolute": {"weight": 0.5, "knots": [[0, 0], [5, 50], [12, 100]]},
+                "self_history": {"weight": 0.2, "state": "rolling", "years": 1,
+                                  "sampling": "month_end", "min_observations": 2},
+                "market_history": {"weight": 0.3, "state": "expanding", "years": 2,
+                                    "sampling": "month_end_cross_section", "min_observations": 3},
+            },
+        },
+    })
+    p2 = profile_from_dict({
+        **PROFILE_DICT,
+        "profile_id": "retention_test_2",
+        "mapping": {
+            "mode": "hybrid",
+            "components": {
+                "absolute": {"weight": 0.5, "knots": [[0, 0], [5, 50], [12, 100]]},
+                "self_history": {"weight": 0.2, "state": "rolling", "years": 3,
+                                  "sampling": "month_end", "min_observations": 2},
+                "market_history": {"weight": 0.3, "state": "rolling", "years": 5,
+                                    "sampling": "month_end_cross_section", "min_observations": 3},
+            },
+        },
+    })
+    assert build_history_retention([p1, p2]) == {
+        "test_metric": {
+            "self": ("rolling", 3.0),
+            "market": ("expanding", None),
+        }
+    }
+
+
+def test_pruned_history_checkpoint_resume_is_equivalent():
+    retention = {"m": {"self": ("rolling", 1.0), "market": ("rolling", 1.0)}}
+    days = [D(2023, 1, 31), D(2024, 1, 31), D(2024, 6, 28), D(2025, 1, 31)]
+
+    def append(h, d, value):
+        h.update(d, {"m": {"a": value, "b": value + 10}}, {}, "cn_equity",
+                 {"m": {"self": True, "market": True}})
+
+    full = HistoryState(retention=retention)
+    for i, d in enumerate(days, 1):
+        append(full, d, float(i))
+
+    first = HistoryState(retention=retention)
+    for i, d in enumerate(days[:2], 1):
+        append(first, d, float(i))
+    resumed = HistoryState.from_checkpoint(first.to_checkpoint(), retention=retention)
+    for i, d in enumerate(days[2:], 3):
+        append(resumed, d, float(i))
+
+    assert full.to_checkpoint() == resumed.to_checkpoint()
+    assert full.self_samples("m", "a", days[-1], 1.0) == \
+        resumed.self_samples("m", "a", days[-1], 1.0)
 
 
 def test_market_pool_merges_cross_sections():

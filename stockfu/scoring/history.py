@@ -15,7 +15,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections import defaultdict
 from datetime import date, timedelta
-from typing import Any, Iterable
+from typing import Any, Iterable, TypeAlias
 
 from stockfu.scoring.contracts import fingerprint
 from stockfu.scoring.profiles import (
@@ -27,9 +27,55 @@ from stockfu.scoring.profiles import (
 
 _DAYS_PER_YEAR = 365.25
 
+# metric -> history component (self/market/industry) -> (state, years).
+# ``years`` is None for expanding state.  A retention policy is an execution
+# detail, not part of a profile: when several profiles share one raw metric,
+# the merged policy keeps the widest rolling window, or everything if any
+# consumer is expanding.
+HistoryRetention: TypeAlias = dict[str, dict[str, tuple[str, float | None]]]
+_COMPONENT_SHORT = {
+    "self_history": "self",
+    "market_history": "market",
+    "industry_history": "industry",
+}
+
 
 def _window_lo(cutoff: date, years: float) -> date:
     return cutoff - timedelta(days=int(years * _DAYS_PER_YEAR))
+
+
+def build_history_retention(profiles: Iterable[Any]) -> HistoryRetention:
+    """从一组 FactorProfile 合并出安全的历史保留窗口。
+
+    一个 raw metric 可能被多个 profile 复用。对同一 component：
+
+    - 任意 profile 为 ``expanding``，必须保留全部历史；
+    - 否则只需保留所有 rolling profile 中最大的 ``years``。
+
+    这样裁剪不会改变任何 profile 的可见样本，同时避免把 profile 配置
+    细节耦合到 HistoryState 本身。没有传入策略配置的 HistoryState 仍保持
+    原来的无界行为，兼容评分器单测和外部调用方。
+    """
+    merged: HistoryRetention = {}
+    for profile in profiles:
+        metric = str(profile.raw_metric_id)
+        metric_policy = merged.setdefault(metric, {})
+        for component, spec in profile.history_specs.items():
+            try:
+                short = _COMPONENT_SHORT[component]
+            except KeyError as exc:
+                raise ValueError(f"未知历史分量: {component}") from exc
+
+            if spec.state == "expanding":
+                metric_policy[short] = ("expanding", None)
+                continue
+
+            old = metric_policy.get(short)
+            if old is not None and old[0] == "expanding":
+                continue
+            years = max(float(spec.years), float(old[1]) if old else 0.0)
+            metric_policy[short] = ("rolling", years)
+    return merged
 
 
 def compute_sample_dates(dates: Iterable[date], sampling: str) -> set[date]:
@@ -62,7 +108,7 @@ def compute_sample_dates(dates: Iterable[date], sampling: str) -> set[date]:
 class HistoryState:
     """历史参考状态机。所有写入按 as_of 升序追加(回测逐日推进)。"""
 
-    def __init__(self) -> None:
+    def __init__(self, retention: HistoryRetention | None = None) -> None:
         # metric -> code -> [(date, value)]  (按 date 升序)
         self._self: dict[str, dict[str, list[tuple[date, float]]]] = defaultdict(
             lambda: defaultdict(list))
@@ -73,6 +119,61 @@ class HistoryState:
         self._industry: dict[str, dict[str, list[tuple[date, list[float]]]]] = defaultdict(
             lambda: defaultdict(list))
         self.cutoff: date | None = None
+        # No policy means backwards-compatible unbounded storage.  Copy the
+        # nested mappings so a caller cannot mutate retention while a run is
+        # in progress and silently change its semantics.
+        self._retention: HistoryRetention = {
+            str(metric): {
+                str(component): (str(state), float(years) if years is not None else None)
+                for component, (state, years) in components.items()
+            }
+            for metric, components in (retention or {}).items()
+        }
+
+    @staticmethod
+    def _trim_pairs(arr: list, cutoff: date) -> None:
+        """删除日期 <= cutoff 的前缀；保留与读取 bisect 完全一致的边界。"""
+        if not arr or arr[0][0] > cutoff:
+            return
+        dates = [d for d, _value in arr]
+        n = bisect_right(dates, cutoff)
+        if n:
+            del arr[:n]
+
+    def _prune(self, as_of: date) -> None:
+        """按已配置窗口逐出不可见历史。
+
+        读取 rolling 窗口使用 ``bisect_right(window_lo)``，所以边界日
+        ``<= window_lo`` 永远不可见，删除它不会改变任何分位数。不同
+        component 独立裁剪；同一 metric 的 expanding component 不受影响。
+        """
+        for metric, components in self._retention.items():
+            for component, (state, years) in components.items():
+                if state == "expanding" or years is None:
+                    continue
+                cutoff = _window_lo(as_of, years)
+                if component == "self":
+                    groups = self._self.get(metric)
+                elif component == "market":
+                    groups = self._market.get(metric)
+                elif component == "industry":
+                    groups = self._industry.get(metric)
+                else:
+                    raise ValueError(f"未知历史保留分量: {component}")
+                if not groups:
+                    continue
+                for key in list(groups):
+                    self._trim_pairs(groups[key], cutoff)
+                    if not groups[key]:
+                        del groups[key]
+                if not groups:
+                    # 删除空 metric，释放 defaultdict 对象及其 key。
+                    if component == "self":
+                        self._self.pop(metric, None)
+                    elif component == "market":
+                        self._market.pop(metric, None)
+                    else:
+                        self._industry.pop(metric, None)
 
     # ----------------------------------------------------------- 写入(§9.3 step8)
 
@@ -112,6 +213,7 @@ class HistoryState:
                 for ind in sorted(by_ind):
                     self._industry[metric][ind].append((as_of, by_ind[ind]))
         self.cutoff = as_of
+        self._prune(as_of)
 
     # ----------------------------------------------------------- 读取(§9.3 step2-4)
 
@@ -171,8 +273,9 @@ class HistoryState:
         }
 
     @classmethod
-    def from_checkpoint(cls, data: dict[str, Any]) -> "HistoryState":
-        h = cls()
+    def from_checkpoint(cls, data: dict[str, Any], *,
+                        retention: HistoryRetention | None = None) -> "HistoryState":
+        h = cls(retention=retention)
         for m, codes in data.get("self", {}).items():
             for c, arr in codes.items():
                 h._self[m][c] = [(date.fromisoformat(d), float(v)) for d, v in arr]
@@ -184,6 +287,10 @@ class HistoryState:
                 h._industry[m][ind] = [(date.fromisoformat(d), [float(x) for x in vs]) for d, vs in arr]
         co = data.get("cutoff")
         h.cutoff = date.fromisoformat(co) if co else None
+        if h.cutoff is not None:
+            # 兼容由旧版本生成的未裁剪 checkpoint；恢复后立即压到当前
+            # profile 的安全窗口，后续读取与连续运行保持同一语义。
+            h._prune(h.cutoff)
         return h
 
     def state_hash(self, metric: str, scope: str | None = None) -> str:

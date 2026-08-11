@@ -922,3 +922,26 @@ offset/文件大小、2.1 GiB 快照 SHA/只读位以及快照中 939 只沪深3
   ruff 全绿。as_of 超 DB 数据末日时截断到 `max(sctx.dates)`（踩过交易日历预埋未来日的坑，已修）。
 - **未做（后续）**：评分未持久化（无 V2 版 `signal_scan_run`，每次内存一次性）、未接 `--schedule`
   定时、无逐股订阅模型。本能力为研究阶段产物，非实盘信号。
+
+## 6 V2 回测内存预算修复（2026-08-11，当前分支待提交）
+
+本轮定位确认：策略/分段之间没有共享 `HistoryState` 数据；真正的问题是单个运行
+内部 rolling 历史只在读取时切片、从不物理逐出，以及多个长回测在同一 Python 进程
+内连续执行。修复口径如下：
+
+- `HistoryState` 从本次运行的 profiles 合并每个 raw metric/component 的最大 rolling
+  窗口；写入后删除 `date <= cutoff - years * 365.25` 的不可见前缀。若同一 component
+  有任一 `expanding` profile，则该 component 保留全量。旧 checkpoint 恢复后也按当前
+  profile 安全裁剪；窗口内分数、连续/恢复结果保持逐位一致。checkpoint 的历史前缀
+  不再保证跨更晚 cutoff 保留已经过期的旧行，这是有意的内存契约变化；输出和窗口内
+  样本的 prefix invariance 仍由测试锁定。
+- `run_segmented_backtests` 默认让每个 deployment/segment 进入独立 `spawn` worker，
+  worker 只落 checkpoint/summary，父进程不接收完整 `V2Result`；worker 退出后由操作系统
+  回收 Python heap/RSS。worker 无返回或被信号终止时 suite 标记失败。`resume_existing=True`
+  及 `--resume-segment-suite` 可跳过已完成项，从未完成项 checkpoint 续跑。
+- checkpoint 写盘改为 `json.dump(..., default=...)` 流式递归输出，避免同时构造完整
+  jsonable 副本和完整 JSON 字符串；最终 state checksum 在 finalize 后复用，避免重复复制。
+
+剩余单个 worker 的峰值仍来自列式行情预载和订单/风险事件等完整可追溯记录；正式矩阵
+恢复前仍需用 `/usr/bin/time -v`/宿主进程表实测 RSS，并视结果继续做按需列预载或事件
+delta/流式记录。当前机器无 swap，不应在未完成该实测前盲目恢复十策略矩阵。

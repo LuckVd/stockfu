@@ -7,7 +7,9 @@ append-only audit。每次 suite 使用新的 output_root，避免新结果覆�
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
 import os
+import traceback
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -22,6 +24,12 @@ from stockfu.backtest.segments import (
 from stockfu.backtest.v2_engine import V2Result
 from stockfu.backtest.v2_run import DEFAULT_V2_DEPLOYMENTS, run
 from stockfu.services.universe import UniverseRules
+
+
+# A monkeypatched runner is a useful unit-test seam but cannot be imported by a
+# fresh worker process.  Keep a reference so tests and embedding callers that
+# deliberately replace ``run`` retain the old in-process behavior.
+_ORIGINAL_RUN = run
 
 
 RESEARCH_FREQUENCIES = ("monthly", "weekly", "daily")
@@ -158,6 +166,89 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     os.replace(temporary, path)
 
 
+def _suite_worker(payload: dict, sender) -> None:
+    """执行一条 suite item，并只把小型结果通过 IPC 返回。
+
+    V2Result 含完整曲线、订单和诊断数组，不能跨进程 pickle 回父进程；
+    worker 直接落 summary，父进程只读取这个小文件和 snapshot descriptor。
+    worker 退出后由操作系统回收整个 Python heap/RSS。
+    """
+    try:
+        result = run(payload["alpha_id"], **payload["run_kwargs"])
+        summary = build_result_summary(
+            result,
+            payload["deployment"],
+            payload["segment"],
+            payload["history_origin"],
+            Path(payload["summary_path"]),
+            Path(payload["checkpoint_path"]),
+            Path(payload["output_root"]),
+        )
+        _atomic_write_json(Path(payload["summary_path"]), summary)
+        sender.send({
+            "ok": True,
+            "snapshot": result.manifest.get("data_snapshot"),
+        })
+    except BaseException as exc:  # child must report OOM/termination context when possible
+        try:
+            sender.send({
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(),
+            })
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+    finally:
+        sender.close()
+
+
+def _run_one_inline(payload: dict) -> tuple[dict | None, dict]:
+    """测试 seam/显式禁用隔离时的单项执行。"""
+    result = run(payload["alpha_id"], **payload["run_kwargs"])
+    summary = build_result_summary(
+        result,
+        payload["deployment"],
+        payload["segment"],
+        payload["history_origin"],
+        Path(payload["summary_path"]),
+        Path(payload["checkpoint_path"]),
+        Path(payload["output_root"]),
+    )
+    _atomic_write_json(Path(payload["summary_path"]), summary)
+    return result.manifest.get("data_snapshot"), summary
+
+
+def _run_one_isolated(payload: dict) -> tuple[dict | None, dict]:
+    """启动一个干净子进程，避免 suite 内多项回测共享 Python 堆。"""
+    # spawn 不继承父进程的 SQLAlchemy/SQLite 连接和 allocator 状态；Linux
+    # 上也优先使用它，代价是每项多一次 import，换来明确的 RSS 上限。
+    ctx = mp.get_context("spawn")
+    receiver, sender = ctx.Pipe(duplex=False)
+    process = ctx.Process(target=_suite_worker, args=(payload, sender))
+    process.start()
+    sender.close()
+    process.join()
+    message = receiver.recv() if receiver.poll() else None
+    receiver.close()
+
+    if not message:
+        raise RuntimeError(
+            "suite worker 未返回结果，"
+            f"exitcode={process.exitcode}（可能被 OOM killer/外部信号终止）"
+        )
+    if not message.get("ok"):
+        detail = message.get("traceback") or message.get("error") or "未知 worker 错误"
+        raise RuntimeError(f"suite worker 执行失败: {detail}")
+    if process.exitcode != 0:
+        raise RuntimeError(f"suite worker 异常退出: exitcode={process.exitcode}")
+
+    summary_path = Path(payload["summary_path"])
+    if not summary_path.is_file():
+        raise RuntimeError(f"suite worker 未生成 summary: {summary_path}")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    return message.get("snapshot"), summary
+
+
 def _resolved_policy_id(deployment: V2Deployment) -> tuple[str, str]:
     defaults = DEFAULT_V2_DEPLOYMENTS.get(deployment.alpha_id, {})
     return (
@@ -235,11 +326,17 @@ def run_segmented_backtests(
     snapshot: dict | None = None,
     snapshots_dir: str | None = None,
     canonical: bool = False,
+    isolate_processes: bool = True,
+    resume_existing: bool = False,
 ) -> SegmentedBacktestSuite:
     """在固定样本区间上运行并保留一组 V2 部署。
 
     ``output_root`` 必须是本次 suite 的新目录。函数拒绝复用非空目录，
     以防不同代码/快照的结果静默覆盖；每段运行独立初始化账户和历史状态。
+    默认每条 deployment/segment 在独立 worker 进程执行，worker 退出后由
+    操作系统回收 Python heap；``isolate_processes=False`` 仅用于小型测试或
+    明确需要在当前进程注入 runner 的场景。传入 ``resume_existing=True``
+    时允许打开已有 suite，跳过已完成项，并从未完成项的 checkpoint 续跑。
     """
     deployments = tuple(deployments)
     if not deployments:
@@ -258,7 +355,8 @@ def run_segmented_backtests(
         canonical_preflight(canonical)
 
     root = Path(output_root)
-    if root.exists() and any(root.iterdir()):
+    root_exists = root.exists() and any(root.iterdir())
+    if root_exists and not resume_existing:
         raise FileExistsError(
             f"回测 suite 输出目录必须为空以保留历史产物: {root}; 请新建 run-* 目录"
         )
@@ -289,53 +387,137 @@ def run_segmented_backtests(
                 "status": "pending",
             })
 
-    suite_manifest = {
-        "schema_version": 1,
-        "kind": "stockfu.v2.backtest.segment_suite",
-        "status": "running",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "output_root": str(root),
-        "segments": [segment.to_dict() for segment in selected_segments],
-        "observation_count": observation_count,
-        "checkpoint_every": checkpoint_every,
-        "canonical": canonical,
-        "entries": entries,
-    }
+    if resume_existing:
+        if not manifest_path.is_file():
+            raise FileNotFoundError(
+                f"resume_existing 要求 suite manifest 存在: {manifest_path}")
+        old_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if old_manifest.get("kind") != "stockfu.v2.backtest.segment_suite":
+            raise ValueError(f"suite manifest kind 不匹配: {manifest_path}")
+        for field, expected in (
+            ("observation_count", observation_count),
+            ("checkpoint_every", checkpoint_every),
+            ("canonical", canonical),
+        ):
+            if field in old_manifest and old_manifest[field] != expected:
+                raise ValueError(
+                    f"续跑 suite 的 {field} 不匹配: "
+                    f"已有={old_manifest[field]!r}, 当前={expected!r}"
+                )
+        old_entries = {
+            (str(item.get("variant_id")), str(item.get("alpha_id")),
+             str(item.get("segment_id"))): item
+            for item in old_manifest.get("entries", [])
+        }
+        expected_keys = {
+            (str(item["variant_id"]), str(item["alpha_id"]), str(item["segment_id"]))
+            for item in entries
+        }
+        if set(old_entries) != expected_keys:
+            raise ValueError(
+                "续跑 suite 的 deployment/segment 集合不匹配；"
+                "请使用原始 alpha、variant 和 segments 参数"
+            )
+        for item in entries:
+            key = (str(item["variant_id"]), str(item["alpha_id"]),
+                   str(item["segment_id"]))
+            old = old_entries[key]
+            summary_file = root / item["summary"]
+            checkpoint_file = root / item["checkpoint"]
+            complete = (
+                old.get("status") == "complete"
+                and summary_file.is_file()
+                and checkpoint_file.is_file()
+            )
+            if complete:
+                for field in ("status", "run_id", "effective_eval_end", "metrics"):
+                    if field in old:
+                        item[field] = old[field]
+            else:
+                item["status"] = "pending"
+        suite_manifest = dict(old_manifest)
+        suite_manifest.update({
+            "status": "running",
+            "entries": entries,
+            "checkpoint_every": checkpoint_every,
+            "observation_count": observation_count,
+            "canonical": canonical,
+            "resumed_at": datetime.now(timezone.utc).isoformat(),
+        })
+        suite_manifest.pop("error", None)
+    else:
+        suite_manifest = {
+            "schema_version": 1,
+            "kind": "stockfu.v2.backtest.segment_suite",
+            "status": "running",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "output_root": str(root),
+            "segments": [segment.to_dict() for segment in selected_segments],
+            "observation_count": observation_count,
+            "checkpoint_every": checkpoint_every,
+            "canonical": canonical,
+            "entries": entries,
+            "snapshot": snapshot,
+        }
     _atomic_write_json(manifest_path, suite_manifest)
 
     results: list[SegmentedBacktestRun] = []
-    shared_snapshot = snapshot
+    shared_snapshot = snapshot or suite_manifest.get("snapshot")
+    use_isolation = isolate_processes and run is _ORIGINAL_RUN
+    suite_manifest["process_isolation"] = use_isolation
+    _atomic_write_json(manifest_path, suite_manifest)
     try:
         for index, (deployment, segment, summary_path, checkpoint_path) in enumerate(run_specs):
             entry = entries[index]
+            if entry.get("status") == "complete":
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                results.append(SegmentedBacktestRun(
+                    deployment=deployment,
+                    segment=segment,
+                    summary_path=summary_path,
+                    checkpoint_path=checkpoint_path,
+                    summary=summary,
+                ))
+                continue
             entry["status"] = "running"
             _atomic_write_json(manifest_path, suite_manifest)
             segment_history_origin = history_origin or segment.history_origin()
-            result = run(
-                deployment.alpha_id,
-                eval_start=segment.eval_start,
-                eval_end=segment.eval_end,
-                codes=codes,
-                portfolio_id=deployment.portfolio_id,
-                risk_id=deployment.risk_id,
-                history_origin=segment_history_origin,
-                initial_cash=initial_cash,
-                observation_count=observation_count,
-                universe_rules=universe_rules,
-                checkpoint_path=str(checkpoint_path),
-                checkpoint_every=checkpoint_every,
-                snapshot=shared_snapshot,
-                snapshots_dir=snapshots_dir,
-                canonical=canonical,
-                segment_id=segment.segment_id,
-            )
+            payload = {
+                "alpha_id": deployment.alpha_id,
+                "deployment": deployment,
+                "segment": segment,
+                "history_origin": segment_history_origin,
+                "summary_path": str(summary_path),
+                "checkpoint_path": str(checkpoint_path),
+                "output_root": str(root),
+                "run_kwargs": {
+                    "eval_start": segment.eval_start,
+                    "eval_end": segment.eval_end,
+                    "codes": codes,
+                    "portfolio_id": deployment.portfolio_id,
+                    "risk_id": deployment.risk_id,
+                    "history_origin": segment_history_origin,
+                    "initial_cash": initial_cash,
+                    "observation_count": observation_count,
+                    "universe_rules": universe_rules,
+                    "checkpoint_path": str(checkpoint_path),
+                    "resume_from": (
+                        str(checkpoint_path) if checkpoint_path.is_file() else None
+                    ),
+                    "checkpoint_every": checkpoint_every,
+                    "snapshot": shared_snapshot,
+                    "snapshots_dir": snapshots_dir,
+                    "canonical": canonical,
+                    "segment_id": segment.segment_id,
+                },
+            }
+            if use_isolation:
+                worker_snapshot, summary = _run_one_isolated(payload)
+            else:
+                worker_snapshot, summary = _run_one_inline(payload)
             if shared_snapshot is None:
-                shared_snapshot = result.manifest.get("data_snapshot")
-            summary = build_result_summary(
-                result, deployment, segment, segment_history_origin,
-                summary_path, checkpoint_path, root,
-            )
-            _atomic_write_json(summary_path, summary)
+                shared_snapshot = worker_snapshot
+            suite_manifest["snapshot"] = shared_snapshot
             entry.update({
                 "status": "complete",
                 "run_id": summary.get("run_id"),

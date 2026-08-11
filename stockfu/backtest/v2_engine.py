@@ -54,7 +54,11 @@ from stockfu.scoring.contracts import (
     ScoreStatus,
     fingerprint,
 )
-from stockfu.scoring.history import HistoryState, compute_sample_dates
+from stockfu.scoring.history import (
+    HistoryState,
+    build_history_retention,
+    compute_sample_dates,
+)
 from stockfu.scoring.scorer import FactorScorer
 from stockfu.scoring.profiles import FactorProfile
 from stockfu.strategy.alpha import AlphaAggregator, AlphaDefinition
@@ -663,6 +667,15 @@ def _checkpoint_jsonable(value: Any) -> Any:
     return value
 
 
+def _checkpoint_json_default(value: Any) -> Any:
+    """json.dump 的无复制转换器，避免 checkpoint 写盘前复制整棵 state。"""
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, set):
+        return sorted(value)
+    raise TypeError(f"checkpoint 中存在不可 JSON 化对象: {type(value).__name__}")
+
+
 def _account_to_checkpoint(account: VirtualAccount) -> dict[str, Any]:
     return {
         "initial": account.initial,
@@ -740,10 +753,13 @@ def _atomic_write_checkpoint(path: str, payload: dict[str, Any]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.tmp")
-    temporary.write_text(
-        json.dumps(_checkpoint_jsonable(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
+    # 直接让 JSONEncoder 递归写入临时文件；旧实现先构造完整 jsonable 副本，
+    # 再构造完整字符串，checkpoint 峰值会同时持有 state + 副本 + 字符串。
+    with temporary.open("w", encoding="utf-8") as f:
+        json.dump(
+            payload, f, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            default=_checkpoint_json_default,
+        )
     os.replace(temporary, target)
 
 
@@ -1023,7 +1039,11 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
                     if d <= effective_end
                 }
 
-    history = HistoryState()
+    # HistoryState 的读取窗口来自 profile；把同一 raw metric 的多个 profile
+    # 合并成安全保留策略，物理删除所有 rolling 窗口之外的样本。expanding
+    # component 会在 build_history_retention 中阻止对应分量被裁剪。
+    history_retention = build_history_retention(profiles.values())
+    history = HistoryState(retention=history_retention)
     scorers = {pid: FactorScorer(profiles[pid]) for pid in alpha_profile_ids}
     aggregator = AlphaAggregator(alpha)
 
@@ -1149,7 +1169,8 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
             raise ValueError("checkpoint 已超过本次 eval_end，不能倒退续跑")
         if resume_last_completed not in dates_all:
             raise ValueError(f"checkpoint 日期不在本次交易日历中: {resume_last_completed}")
-        history = HistoryState.from_checkpoint(raw_state.get("history") or {})
+        history = HistoryState.from_checkpoint(
+            raw_state.get("history") or {}, retention=history_retention)
         acct = _account_from_checkpoint(raw_state["account"])
         _rebalancer_from_checkpoint(rebalancer, raw_state.get("rebalancer") or {})
         equity_curve = [
@@ -1335,19 +1356,24 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
                 first_mature_date.isoformat() if first_mature_date else None),
         }
 
-    def build_checkpoint_payload(state: dict, manifest: dict) -> dict:
+    def build_checkpoint_payload(state: dict, manifest: dict,
+                                 state_checksum: str | None = None) -> dict:
+        if state_checksum is None:
+            state_checksum = fingerprint(
+                _checkpoint_jsonable(state), prefix="v2.checkpoint.state")
         return {
             "kind": "stockfu.v2.backtest.checkpoint",
             "schema_version": _CHECKPOINT_SCHEMA_VERSION,
             "config_fingerprint": cfg.checkpoint_identity(),
             "manifest": manifest,
             "state": state,
-            "state_checksum": fingerprint(
-                _checkpoint_jsonable(state), prefix="v2.checkpoint.state"),
+            "state_checksum": state_checksum,
         }
 
-    def persist_checkpoint(path: str, state: dict, manifest: dict) -> None:
-        _atomic_write_checkpoint(path, build_checkpoint_payload(state, manifest))
+    def persist_checkpoint(path: str, state: dict, manifest: dict,
+                           state_checksum: str | None = None) -> None:
+        _atomic_write_checkpoint(
+            path, build_checkpoint_payload(state, manifest, state_checksum))
 
     def build_manifest(last_completed: date | None, *, finalized: bool,
                        state_checksum: str | None = None) -> dict:
@@ -2069,7 +2095,8 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
             _checkpoint_jsonable(final_state), prefix="v2.checkpoint.state")
         manifest = build_manifest(
             final_completed, finalized=True, state_checksum=final_state_checksum)
-        persist_checkpoint(checkpoint_target, final_state, manifest)
+        persist_checkpoint(
+            checkpoint_target, final_state, manifest, final_state_checksum)
     else:
         manifest = build_manifest(
             final_completed, finalized=True, state_checksum=None)

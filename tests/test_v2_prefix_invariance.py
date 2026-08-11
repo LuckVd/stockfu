@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 import stockfu.backtest.snapshot as snap_mod
+from stockfu.backtest.v2_run import build_v2_config
 from stockfu.backtest.v2_run import run
+from stockfu.scoring.history import build_history_retention
 
 _FAKE_SNAPSHOT = {
     "snapshot_id": "sha256:" + "0" * 64, "path": "synthetic.db",
@@ -165,17 +167,32 @@ def test_checkpoint_state_prefix_matches_shorter_run(tmp_path):
     s2 = json.loads(ckpt2.read_text(encoding="utf-8"))["state"]
     assert s1["last_completed_date"] == t1.isoformat()
 
+    retention = build_history_retention(build_v2_config(
+        "dividend_low_vol_v2", "cn_equity_top15_v2", "v1_core_v1", codes,
+        start, t2, HISTORY_ORIGIN, observation_count=10,
+    ).profiles.values())
+
     def _prefix(arr2, cutoff):
         return [row for row in arr2
                 if date.fromisoformat(
                     row["date"] if isinstance(row, dict) else row[0]) <= cutoff]
 
-    # 历史状态：self/market/industry 每序列按日期截取后与短跑完全一致。
+    # 历史状态：rolling 分量在长跑 checkpoint 中会按更晚 cutoff 逐出更老
+    # 的行；比较两者仍共同保留的可见前缀。expanding 分量仍要求完整前缀。
     for scope in ("self", "market", "industry"):
         for metric, groups in s1["history"].get(scope, {}).items():
             for key, arr1 in groups.items():
-                arr2 = s2["history"][scope][metric][key]
-                assert arr1 == _prefix(arr2, t1), f"{scope}/{metric}/{key} 前缀不一致"
+                arr2 = s2["history"].get(scope, {}).get(metric, {}).get(key, [])
+                policy = retention.get(metric, {}).get(scope)
+                if policy is None or policy[0] == "expanding":
+                    expected = arr1
+                else:
+                    boundary = t2 - timedelta(days=int(policy[1] * 365.25))
+                    expected = [
+                        row for row in arr1
+                        if date.fromisoformat(str(row[0])) > boundary
+                    ]
+                assert expected == _prefix(arr2, t1), f"{scope}/{metric}/{key} 前缀不一致"
     # 净值 / 成交 / 宇宙大小前缀一致。
     assert s1["equity_curve"] == _prefix(s2["equity_curve"], t1)
     assert s1["trades"] == _prefix(s2["trades"], t1)
