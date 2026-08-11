@@ -732,6 +732,19 @@ def _batch_fetch_today(codes: list[str], target_date=None) -> tuple[list[str], l
     return ok, fail
 
 
+def _current_watch_codes() -> list[str]:
+    """返回当前自选/追踪资产。
+
+    ``asset`` 同时保留历史回测资产（``is_watch=False``），不能把整张表
+    当成每日行情抓取清单；否则退市/历史 PT、ST 代码会在 baostock 上反复
+    返回空结果并拖慢整轮重试。
+    """
+    with session_scope() as s:
+        return list(s.exec(
+            select(Asset.code).where(Asset.is_watch == True)  # noqa: E712
+        ).all())
+
+
 def _call_timeout(fn, timeout: float, label: str = "", default=None):
     """在守护线程跑 fn，超时返回 default（不杀线程，但主流程不阻塞）。"""
     import threading
@@ -776,8 +789,7 @@ def run_scheduled_fetch(target_date) -> dict:
     t_all = _t.time()
     # 预热 baostock 免费代理池（PE/分红/状态等依赖；直连已黑名单）
     # 行情主路径走东财/腾讯（直连）；baostock 代理延后到分红/情绪，避免全局污染
-    with session_scope() as s:
-        codes = [a.code for a in s.exec(select(Asset)).all()]
+    codes = _current_watch_codes()
     targets = list(dict.fromkeys(codes + INDEX_ETFS))
 
     print(f"=== [fetch] 1/6 quotes targets={len(targets)} as_of={td} ===", flush=True)
@@ -816,8 +828,7 @@ def run_scheduled_fetch(target_date) -> dict:
 
     # 后半段：分红 / ETF 份额 / 三层指数
     from stockfu.services import composite, dividend as div_svc
-    with session_scope() as s:
-        all_codes = [a.code for a in s.exec(select(Asset)).all()]
+    all_codes = list(codes)
 
     print("=== [fetch] 4/6 warm baostock proxy (for div/PE) ===", flush=True)
     try:
