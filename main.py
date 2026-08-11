@@ -31,6 +31,7 @@
     python main.py --clear-dividend-cache  # 清错误口径 dividend_yield 的 operator_result
 """
 import argparse
+import json
 from datetime import date
 
 
@@ -756,6 +757,7 @@ def run_v2_segmented_cli(
     segments: str | None = None,
     output_root: str = "data/backtest/v2-segments",
     variant_id: str = "daily",
+    resume_suite: str | None = None,
 ) -> None:
     """V2 正式分段回测：同一部署独立跑 full/2013-2019/2020-2026。"""
     from datetime import date, datetime
@@ -787,7 +789,24 @@ def run_v2_segmented_cli(
     for alpha_id in alpha_ids:
         validate_v2_alpha_id(alpha_id)
     init_db()
-    provided = descriptor_from_file(snapshot_path) if snapshot_path else None
+    if resume_suite:
+        suite_manifest_path = Path(resume_suite) / "suite.json"
+        if not suite_manifest_path.is_file():
+            raise SystemExit(
+                f"✗ --resume-segment-suite 缺少 suite.json: {suite_manifest_path}"
+            )
+        old_suite = json.loads(suite_manifest_path.read_text(encoding="utf-8"))
+        provided = (
+            descriptor_from_file(snapshot_path) if snapshot_path
+            else old_suite.get("snapshot")
+        )
+        if not provided:
+            raise SystemExit(
+                "✗ 续跑旧 suite 时无法从 suite.json 找到快照 descriptor；"
+                "请显式提供 --snapshot SNAPSHOT.db"
+            )
+    else:
+        provided = descriptor_from_file(snapshot_path) if snapshot_path else None
     snap = resolve_snapshot(provided=provided, resume_from=None, snapshots_dir=None)
     with use_read_engine(snapshot_engine(snap)):
         universe_rules = None
@@ -804,7 +823,7 @@ def run_v2_segmented_cli(
             code_list = default_universe(FULL_SEGMENT.eval_start, FULL_SEGMENT.eval_end)
 
     root = Path(output_root)
-    run_root = root / f"run-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+    run_root = Path(resume_suite) if resume_suite else root / f"run-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
     ho = date.fromisoformat(history_origin) if history_origin else None
     deployments = tuple(
         V2Deployment(
@@ -827,6 +846,7 @@ def run_v2_segmented_cli(
         checkpoint_every=checkpoint_every,
         snapshot=snap,
         canonical=canonical,
+        resume_existing=bool(resume_suite),
     )
     print(f"✓ 分段回测完成: {len(suite.runs)} 个区间运行")
     print(f"  suite: {suite.manifest_path}")
@@ -1168,6 +1188,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="分段 suite 根目录；每次运行自动新建 run-时间戳 子目录")
     p.add_argument("--segment-variant", default="daily",
                    help="分段产物变体目录名（如 daily/weekly/monthly）")
+    p.add_argument("--resume-segment-suite", default=None,
+                   help="续跑已有 V2 suite 目录；跳过已完成项并从未完成 checkpoint 接续")
     p.add_argument("--portfolio-v2", default=None,
                    help="V2 portfolio_policy_id(默认 cn_equity_top15_v2)")
     p.add_argument("--risk-v2", default=None,
@@ -1386,6 +1408,7 @@ def main() -> None:
             args.checkpoint_path, args.resume_from, args.checkpoint_every,
             args.snapshot_path, args.canonical, args.segments,
             args.segment_output_root, args.segment_variant,
+            args.resume_segment_suite,
         )
     elif args.backtest_v2:
         run_v2_backtest_cli(args.backtest_v2, args.start, args.end, args.cash,

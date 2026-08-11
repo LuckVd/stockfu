@@ -37,7 +37,11 @@ from stockfu.backtest.v2_run import (
 )
 from stockfu.factors.raw import raw_fingerprint
 from stockfu.scoring.contracts import ScoreStatus, StrategyScoreObservation
-from stockfu.scoring.history import HistoryState, compute_sample_dates
+from stockfu.scoring.history import (
+    HistoryState,
+    build_history_retention,
+    compute_sample_dates,
+)
 from stockfu.scoring.profiles import FactorProfile, profile_from_dict
 from stockfu.scoring.scorer import FactorScorer
 from stockfu.services.universe import DayFlags, UniverseContext
@@ -215,7 +219,8 @@ class V2SignalScorer:
         for s in sample_dates.values():
             all_sample_dates |= s
 
-        history = HistoryState()
+        history = HistoryState(
+            retention=build_history_retention(self.profiles.values()))
         scorers = {pid: FactorScorer(self.profiles[pid]) for pid in self.profiles}
         trade_days = _trade_calendar_days(history_origin, as_of)
 
