@@ -1,0 +1,10 @@
+# 阶段二候选：提高 B/P 权重，检验传统 HML 价值腿是否更稳健。
+alpha_id: value_ep_bp_bp60_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: earnings_yield_v2, weight: 0.4, critical: false}
+  - {profile_id: book_to_price_v2, weight: 0.6, critical: true}
+minimum_coverage: 0.50
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation
