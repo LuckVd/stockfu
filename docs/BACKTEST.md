@@ -137,6 +137,14 @@ python3 main.py --update-backtests --strategies a,b --start 2007-01-04 --end 202
 
 7/10 的 full 总收益超过沪深300，但这只是本轮“完成 10 个全周期回测”的停止条件，不是 7 个策略已通过当前固定三段门禁。当前安全参考策略为 `graham_defensive_value`；`smart_beta_multi_factor` 仅作风格暴露参照。
 
+### 0.6.11 V2 十策略三段筛选（2026-08-12，研究性 / 非 canonical）
+
+基于 `run-...188679`（monthly/weekly，git-dirty 时执行，49/90 complete 后被 canonical 门禁拒）+ 新跑 canonical `value_ep_bp_v2 daily`（`run-20260812-112002-663595`）做的 V2 十策略筛选性三段分析。回测引擎代码在 188679 之后未改（后续提交 88e3083/01df060/d1cb934 仅涉及 scheduler/recommend），故结论用于「决定优化哪个策略」可信；**但 provenance 非 canonical（未绑 clean commit SHA），不得作为正式准入门禁结论**。坐实须 git clean 重跑三段。
+
+各策略取最优频率 full 段结果：多因子(monthly, Sharpe 0.99)、价值(daily, 0.81)、高股息(monthly, 0.65)三段超额全正且有实质超额(+174~+395)，为唯一值得继续投入的三条；低波动(monthly, 0.59)方向稳但超额仅 +9（弱 alpha）；低Beta防御(monthly, 0.54)full 超额 +1 且 2013-2019 牛市跑输 29%，属防御风格 beta 非 alpha；52周新高/动量/反转/趋势/RSI 三段方向混乱或 full 即跑输，淘汰（印证 A 股短期动量弱、反转接飞刀）。
+
+频率验证：value_ep_bp 随调仓频率单调改善（月 0.64→周 0.73→日 0.81，daily 换手 472% 反低于 weekly 814%）；multi_factor/dividend/low_vol 高频劣化、甜点为 monthly（low_vol weekly 已现门禁裂缝 --+）。multi_factor daily 子段因 OOM 缺失（4 因子 × 全量段 × 日度，3.6G 内存无 swap）。完整结果表见 `docs/SPECS/ten-strategies-results.md` 文末。
+
 ## 4. 结果解释与复现要求
 
 回测结果必须保留 `data/backtest/run-tune-{strategy}-full.json.gz` 及 `.meta.json`，并记录运行时的 Git commit、参数、数据截止日和缓存命中情况。V2 正式三段结果必须遵守 §0.3.1 的 suite 目录契约；删除某策略缓存只会删除可再生工件，不代表删除了策略代码或验证结论。
