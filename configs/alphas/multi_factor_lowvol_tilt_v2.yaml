@@ -1,0 +1,12 @@
+# 阶段二候选：提高低波权重，检验能否保留收益同时进一步降低回撤/换手。
+alpha_id: multi_factor_lowvol_tilt_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: earnings_yield_v2, weight: 0.20, critical: false}
+  - {profile_id: book_to_price_v2, weight: 0.15, critical: false}
+  - {profile_id: momentum_252d_skip21_v2, weight: 0.25, critical: true}
+  - {profile_id: low_volatility_20d_v2, weight: 0.40, critical: false}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 2
+formal_maturity_policy: force_mature_after_observation

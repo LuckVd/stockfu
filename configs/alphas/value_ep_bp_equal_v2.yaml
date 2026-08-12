@@ -1,0 +1,10 @@
+# 阶段二候选：价值 E/P 与 B/P 等权。
+alpha_id: value_ep_bp_equal_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: earnings_yield_v2, weight: 0.5, critical: false}
+  - {profile_id: book_to_price_v2, weight: 0.5, critical: true}
+minimum_coverage: 0.50
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

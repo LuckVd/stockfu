@@ -1,0 +1,10 @@
+# 阶段二候选：价值因子提高 E/P 权重，检验盈利收益率相对 B/P 的边际贡献。
+alpha_id: value_ep_bp_ep70_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: earnings_yield_v2, weight: 0.7, critical: false}
+  - {profile_id: book_to_price_v2, weight: 0.3, critical: true}
+minimum_coverage: 0.50
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation
