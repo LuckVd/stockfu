@@ -1,0 +1,18 @@
+# 第一阶段执行层实验 R2：日信号、慢速替换。
+# 与 pf_daily_top15_slow21_v2 只比较执行约束，不改变 top15、等权、总仓位和筛选门槛。
+portfolio_policy_id: pf_daily_top15_r2_hold42_v2
+version: 1
+rebalance: daily
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.95
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.05
+cooldown_days: 0
+min_holding_days: 42
+stop_loss_pct: null
+hold_top_percentile: 0.20
+max_replace: 2

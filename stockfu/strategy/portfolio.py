@@ -36,6 +36,7 @@ class PortfolioPolicy:
     min_holding_days: int = 0             # 建仓后 N 个交易日内不卖/不清仓;0=关
     stop_loss_pct: float | None = None    # 浮亏 ≥ 此值豁免 min_holding(软锁:大跌该止损能卖);None=关
     hold_top_percentile: float = 0.0      # 持仓排名在票池前 N% 时不普通卖出;0=关
+    max_replace: int = 0                  # 每个决策日最多更换的股票数;0=关
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +53,7 @@ class PortfolioPolicy:
             "min_holding_days": self.min_holding_days,
             "stop_loss_pct": self.stop_loss_pct,
             "hold_top_percentile": self.hold_top_percentile,
+            "max_replace": self.max_replace,
         }
 
     def fingerprint(self) -> str:
@@ -63,6 +65,9 @@ def portfolio_from_dict(d: dict[str, Any]) -> PortfolioPolicy:
     hold_top_percentile = float(d.get("hold_top_percentile", 0.0) or 0.0)
     if not 0.0 <= hold_top_percentile <= 1.0:
         raise ValueError("hold_top_percentile 必须在 0 到 1 之间")
+    max_replace = int(d.get("max_replace", 0) or 0)
+    if max_replace < 0:
+        raise ValueError("max_replace 不得为负")
     return PortfolioPolicy(
         portfolio_policy_id=str(d["portfolio_policy_id"]), version=int(d["version"]),
         rebalance=str(d.get("rebalance", "monthly")),
@@ -79,6 +84,7 @@ def portfolio_from_dict(d: dict[str, Any]) -> PortfolioPolicy:
         min_holding_days=int(d.get("min_holding_days", 0)),
         stop_loss_pct=d.get("stop_loss_pct"),
         hold_top_percentile=hold_top_percentile,
+        max_replace=max_replace,
     )
 
 
