@@ -1144,6 +1144,20 @@ def build_parser() -> argparse.ArgumentParser:
                    help="配合 --audit-corporate-actions：结束年（默认当年）")
     p.add_argument("--backfill-index-universe", action="store_true",
                    help="导入默认指数当前成分快照(只按文件日期写入；不伪造历史)")
+    p.add_argument("--backfill-financial", action="store_true",
+                   help="baostock 财务三表 PIT 回补（分段+每日配额+断点续传）")
+    p.add_argument("--fin-interfaces", default=None,
+                   help="逗号分隔接口：profit,growth,balance,operation,cashflow,dupont（默认全部）")
+    p.add_argument("--fin-budget", type=int, default=40000,
+                   help="每日调用配额（baostock 上限约 5 万/天，默认 40000 留余量）")
+    p.add_argument("--fin-codes", default=None,
+                   help="逗号分隔股票代码过滤（默认全部有行情的 A 股）")
+    p.add_argument("--fin-prefetch", action="store_true",
+                   help="只预取上市日期（query_stock_basic → security_master.list_date）")
+    p.add_argument("--fin-status", action="store_true",
+                   help="只打印财务回补进度统计")
+    p.add_argument("--fin-year-from", type=int, default=2007,
+                   help="财务数据起始年份（默认 2007）")
     p.add_argument("--backfill-index-universe-history", action="store_true",
                    help="逐交易日串行回补沪深300+中证500历史成分（baostock，待正式档案核验）")
     p.add_argument("--backfill-index-universe-history-refresh", action="store_true",
@@ -1364,6 +1378,24 @@ def main() -> None:
                                     args.corporate_action_end_year)
     elif args.repair_known_dividend_conflicts:
         run_repair_known_dividend_conflicts()
+    elif args.backfill_financial:
+        from stockfu.db import init_db
+        init_db()  # create_all：财务表为新增，需建缺失表
+        from stockfu.services.backfill_financial import (backfill_financial,
+                                                         financial_status,
+                                                         prefetch_listing_dates)
+        if args.fin_status:
+            st = financial_status()
+            print(json.dumps(st, ensure_ascii=False, indent=2))
+        else:
+            ifaces = (args.fin_interfaces.split(",") if args.fin_interfaces else None)
+            codes = (args.fin_codes.split(",") if args.fin_codes else None)
+            if args.fin_prefetch:
+                prefetch_listing_dates(codes)
+            else:
+                backfill_financial(interfaces=ifaces, codes=codes,
+                                   daily_budget=args.fin_budget,
+                                   year_from=args.fin_year_from)
     elif args.backfill_index_universe:
         run_backfill_index_universe(args.index_codes)
     elif args.backfill_index_universe_history:
