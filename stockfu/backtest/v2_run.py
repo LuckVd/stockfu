@@ -25,6 +25,11 @@ from stockfu.factors.raw.downside_volatility import compute_downside_volatility
 from stockfu.factors.raw.earnings_yield import compute_earnings_yield
 from stockfu.factors.raw.fifty_two_week_high import compute_fifty_two_week_high
 from stockfu.factors.raw.momentum import compute_momentum
+from stockfu.factors.raw.quality import (
+    compute_gross_margin,
+    compute_leverage,
+    compute_quality_roe,
+)
 from stockfu.factors.raw.rsi import compute_rsi
 from stockfu.factors.raw.trend_linearity import compute_trend_linearity
 from stockfu.factors.raw.value import compute_value
@@ -67,7 +72,12 @@ RAW_COMPUTERS = {
         compute_downside_volatility, "neg_ret_std_x_sqrt252_x100"),
     "earnings_yield": RawComputerSpec(compute_earnings_yield, "inverse_pe_ttm_x100"),
     "book_to_price": RawComputerSpec(compute_book_to_price, "inverse_pb"),
-}
+        # —— 质量因子 raw（2026-08，财务三表 PIT，见 style-factor-research-2026.md）——
+        "quality_roe": RawComputerSpec(
+            compute_quality_roe, "roe_level_minus_annual_std"),
+        "gross_margin": RawComputerSpec(compute_gross_margin, "latest_gp_margin_pct"),
+        "leverage": RawComputerSpec(compute_leverage, "latest_liability_to_asset_pct"),
+    }
 
 # alpha 的默认 deployment。显式传入 --portfolio-v2/--risk-v2 仍可做对照实验；
 # 其他 alpha 继续沿用原有默认组合与风险政策，避免策略间相互污染。

@@ -77,8 +77,28 @@ ORDER BY f.year DESC, f.quarter DESC LIMIT 1;
 2. 退市股历史报告期：东财按报告期快照，退市股早期数据可能缺失（baostock 按股票查可覆盖）；成分股中退市股极少，暂不处理。
 3. `yoy_equity`（股东权益同比）：需要跨报告期自算，暂留空，因子层按需计算。
 4. 部分指标如流动比率/速动比率（需流动负债明细）：东财资产负债表无流动负债单列，留空。
+5. **2025Q4 报告期部分公司数值异常（2026-08 实测）**：约 148 家公司 2024 年报 ROE>10% 而
+   2025 年报 ROE 腰斩（如五粮液 23.4→6.9、营收 891→405 亿，营收/净利/ROE/同比同步变化，
+   疑似源数据整体错位）。接口原始返回即如此，非解析 bug；因子层按原值计算（GIGO），
+   横截面 ECDF/knots 会吸收，但引用 2025 年报的结论需注意该批公司可能被低估质量。
+   复检方式：重拉该报告期对照或交叉验证净利/营收同比。
 
-## 6. 入口
+## 6. 质量因子 raw 接入（2026-08-13 实现）
+
+`stockfu/factors/raw/quality.py`，PIT 统一走 `stockfu/services/financial.py`：
+
+| raw_metric_id | 计算 | 口径 |
+|---|---|---|
+| `quality_roe` | 最新完整年度 ROE − pstdev(近 5 个年度 ROE)，不足 3 个年度退化纯水平 | 全部年报（quarter=4），避免单季/年度混用季节性偏误 |
+| `gross_margin` | 最新已公告报告期销售毛利率 XSMLL | 可负（真实信息），银行/券商等无此字段 → 缺失 |
+| `leverage` | 最新已公告报告期资产负债率 LIABILITY_TO_ASSET | ≤0 视为异常缺失；>100（资不抵债）保留原值 |
+
+- 回测性能：`backtest.engine._preload_financial_reports` 一次 SQL 预载宇宙财务行，
+  `_backtest_series_ctx` 挂 `financial provider` 按日 bisect 切片，零逐票查库；
+  v2 引擎默认挂载，旧引擎/未预载路径回落 DB（语义等价，测试盯）。
+- 设计依据：docs/SPECS/style-factor-research-2026.md（简单 ROE 弱、稳定性改进版才显著）。
+
+## 7. 入口
 
 ```bash
 python3 main.py --backfill-financial                 # 全量（2010Q1 起，约 1-2 小时）
