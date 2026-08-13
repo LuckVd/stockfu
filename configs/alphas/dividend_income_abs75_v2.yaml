@@ -1,0 +1,9 @@
+# 阶段二候选：红利率以绝对收益率为主的 mapping。
+alpha_id: dividend_income_abs75_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: dividend_yield_ttm_abs75_v2, weight: 1.0, critical: true}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation
