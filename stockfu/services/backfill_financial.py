@@ -1,326 +1,238 @@
-"""baostock 财务三表 PIT 回补（分段 + 每日配额 + 断点续传，2026-08）。
+"""东财 datacenter-web 财务三表 PIT 回补（按报告期拉全市场，2026-08）。
 
-背景约束（已确认）：
-- baostock 每日调用上限约 5 万次，超出进黑名单 → 默认每日配额 40000 次（留余量）。
-- 不支持并发连接 → 全程串行（单 IP 单 session）。
-- 单次调用只返回单季单接口（实测），按 (code, year, quarter) 逐次调用。
+替代 baostock 方案：baostock 按 (股票×年×季) 逐次调用约 82 万次、受 5 万/天上限
+需 15-20 天；东财按报告期一次返回全市场（~5000 只），66 报告期 × 3 接口 ≈
+2,400 次请求、约 1-2 小时完成。设计见 docs/SPECS/financial-data-design.md。
 
 流程：
-1. 预取上市日期：query_stock_basic(code) → 回填 stock_basic.listing_date（幂等）。
-   之后主回补按上市年份过滤，新股不拉上市前的年份。
-2. 主回补：遍历 (code × 有效年份 × 1-4 季 × 接口)，
-   - checkpoint(task_key="financial-v1", scope_key=接口名, item_key="code:year:quarter")
-   - 每日配额写 data/financial_daily_count.json（跨进程防呆，超限直接退出）
-   - error_code="0" 且 0 行 → 视为"该期无数据"，标 success 不再重试
-   - 连续失败 N 次 → rotate_proxy 换代理重登
+- 报告期列表：2010Q1 → 最近已结束报告期（动态按今天计算）。
+- 每接口 × 每报告期：分页拉取（pageSize=500）→ 过滤 A 股（0/3/6 开头）→ 落库。
+- checkpoint：task_key="financial-em-v1"，scope_key=接口，item_key=报告期；断点续传。
+- 限流：分页间隔 0.3-0.5s；单页失败重试 2 次；报告期失败留 failed 下次续跑。
+- 无每日配额（东财 datacenter-web 实测宽松；push2/push2his 仍封死，不涉及）。
 
 用法（main.py 入口）：
-  python3 main.py --backfill-financial                          # 全量（默认预算 40000/天）
-  python3 main.py --backfill-financial --fin-interfaces profit,balance
-  python3 main.py --backfill-financial --fin-budget 5000
-  python3 main.py --backfill-financial --fin-prefetch           # 只预取上市日期
-  python3 main.py --backfill-financial --fin-status             # 只打印进度统计
+  python3 main.py --backfill-financial                         # 全量 2010Q1 起
+  python3 main.py --backfill-financial --fin-reports 20240331,20240630
+  python3 main.py --backfill-financial --fin-status            # 进度统计
 """
 from __future__ import annotations
 
-import json
 import logging
-import random
 import time
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
+import requests
+from sqlalchemy import func
 from sqlmodel import select
 
 from stockfu.db import session_scope
 from stockfu.models import (BackfillCheckpoint, FinancialBalance, FinancialCashflow,
-                            FinancialDupont, FinancialGrowth, FinancialOperation,
-                            FinancialProfit, QuoteSnapshot, SecurityMaster)
+                            FinancialGrowth, FinancialProfit)
 
 log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
-DAILY_COUNT_FILE = ROOT / "data" / "financial_daily_count.json"
 
-TASK_KEY = "financial-v1"
-DEFAULT_BUDGET = 40_000          # 每日调用上限（5 万硬限，留 20% 余量）
-DEFAULT_YEAR_FROM = 2007         # baostock 财务数据最早约 2007（实测 2006 前无数据）
-MAX_CONSECUTIVE_FAILURES = 5     # 连续失败后换代理
+TASK_KEY = "financial-em-v1"
+API_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+PAGE_SIZE = 500
+PAGE_SLEEP = (0.3, 0.5)          # 分页间隔（秒）
+MAX_PAGE_RETRY = 2               # 单页失败重试次数
+YEAR_FROM = 2010                 # 东财按报告期数据从 2010Q1 起
 
-# 接口定义：名称 → (baostock 函数名, 模型类, 字段映射 {源字段: 模型字段})
-# 源字段名以 baostock 文档为准；运行时按 rs.fields 动态取，映射外的字段跳过。
-INTERFACES: dict[str, tuple[str, type, dict[str, str]]] = {
-    "profit": ("query_profit_data", FinancialProfit, {
-        "pubDate": "pub_date", "statDate": "stat_date",
-        "roeAvg": "roe_avg", "npMargin": "np_margin", "gpMargin": "gp_margin",
-        "netProfit": "net_profit", "epsTTM": "eps_ttm", "MBRevenue": "mb_revenue",
-        "totalShare": "total_share", "liqaShare": "liqa_share",
-    }),
-    "growth": ("query_growth_data", FinancialGrowth, {
-        "pubDate": "pub_date", "statDate": "stat_date",
-        "YOYEquity": "yoy_equity", "YOYAsset": "yoy_asset", "YOYNI": "yoy_ni",
-        "YOYEPSBasic": "yoy_eps_basic", "YOYPNI": "yoy_pni",
-    }),
-    "balance": ("query_balance_data", FinancialBalance, {
-        "pubDate": "pub_date", "statDate": "stat_date",
-        "currentRatio": "current_ratio", "quickRatio": "quick_ratio",
-        "cashRatio": "cash_ratio", "YOYLiability": "yoy_liability",
-        "liabilityToAsset": "liability_to_asset", "assetToEquity": "asset_to_equity",
-    }),
-    "operation": ("query_operation_data", FinancialOperation, {
-        "pubDate": "pub_date", "statDate": "stat_date",
-        "NRTurnRatio": "nr_turn_ratio", "NRTurnDays": "nr_turn_days",
-        "INVTurnRatio": "inv_turn_ratio", "INVTurnDays": "inv_turn_days",
-        "CATurnRatio": "ca_turn_ratio", "ASSETTurnRatio": "asset_turn_ratio",
-    }),
-    "cashflow": ("query_cash_flow_data", FinancialCashflow, {
-        "pubDate": "pub_date", "statDate": "stat_date",
-        "CAToAsset": "ca_to_asset", "NCAToAsset": "nca_to_asset",
-        "tangibleAssetToAsset": "tangible_asset_to_asset",
-        "ebitToInterest": "ebit_to_interest",
-        "CFOToOR": "cfo_to_or", "CFOToNP": "cfo_to_np", "CFOToGr": "cfo_to_gr",
-    }),
-    "dupont": ("query_dupont_data", FinancialDupont, {
-        "pubDate": "pub_date", "statDate": "stat_date",
-        "dupontROE": "dupont_roe", "dupontAssetStoEquity": "dupont_asset_sto_equity",
-        "dupontAssetTurn": "dupont_asset_turn", "dupontPnitoni": "dupont_pnitoni",
-        "dupontNitogr": "dupont_nitogr", "dupontTaxBurden": "dupont_tax_burden",
-        "dupontIntburden": "dupont_intburden", "dupontEbittogr": "dupont_ebittogr",
-    }),
+# A 股过滤（与回测池一致）：深主板 0 / 创业板 3 / 沪主板 6 开头
+A_SHARE_PREFIXES = ("0", "3", "6")
+
+# 资产负债表/现金流量表共用的过滤条件（排除北交所、只留 A 股类型）
+BAL_FILTER = '(SECURITY_TYPE_CODE in ("058001001","058001008"))' \
+             '(TRADE_MARKET_CODE!="069001017")(REPORT_DATE=\'%s\')'
+
+# 接口定义：名称 → (reportName, 报告期过滤模板, [(模型, 源字段→模型字段映射), ...])
+# 一个报告期的数据可回填多张表（如业绩报表的同比字段写 financial_growth）。
+REPORT_INTERFACES: dict[str, dict] = {
+    "profit": {
+        "report_name": "RPT_LICO_FN_CPD",
+        "filter": "(REPORTDATE='%s')",
+        "targets": [
+            (FinancialProfit, {
+                "WEIGHTAVG_ROE": "roe_avg",
+                "XSMLL": "gp_margin",
+                "PARENT_NETPROFIT": "net_profit",
+                "BASIC_EPS": "eps",
+                "TOTAL_OPERATE_INCOME": "revenue",
+                "YSTZ": "revenue_yoy",
+                "SJLTZ": "net_profit_yoy",
+                "BPS": "bps",
+                "MGJYXJJE": "cash_per_share",
+            }),
+            (FinancialGrowth, {"SJLTZ": "yoy_ni"}),
+        ],
+    },
+    "balance": {
+        "report_name": "RPT_DMSK_FN_BALANCE",
+        "filter": BAL_FILTER,
+        "targets": [
+            (FinancialBalance, {
+                "TOTAL_ASSETS": "total_assets",
+                "TOTAL_LIABILITIES": "total_liabilities",
+                "DEBT_ASSET_RATIO": "liability_to_asset",
+                "TOTAL_EQUITY": "equity",
+                "MONETARYFUNDS": "monetary_fund",
+                "ACCOUNTS_RECE": "receivables",
+                "INVENTORY": "inventory",
+                "ACCOUNTS_PAYABLE": "payable",
+                "CURRENT_RATIO": "current_ratio",
+            }),
+        ],
+    },
+    "cashflow": {
+        "report_name": "RPT_DMSK_FN_CASHFLOW",
+        "filter": BAL_FILTER,
+        "targets": [
+            (FinancialCashflow, {
+                "NETCASH_OPERATE": "net_cash_oper",
+                "NETCASH_INVEST": "net_cash_inv",
+                "NETCASH_FINANCE": "net_cash_fin",
+                "CCE_ADD": "net_cash_total",
+            }),
+        ],
+    },
 }
 
 
-def _bs_code(code: str) -> str:
-    return ("sh." if code[0] in ("6", "9", "5") else "sz.") + code
+def report_periods(year_from: int = YEAR_FROM, year_to: int | None = None) -> list[str]:
+    """2010Q1 → 最近已结束报告期的全部季度末日期（YYYYMMDD）。"""
+    yto = year_to or date.today().year
+    today = date.today()
+    periods: list[str] = []
+    for year in range(year_from, yto + 1):
+        for month, day in (("03", "31"), ("06", "30"), ("09", "30"), ("12", "31")):
+            p = f"{year}{month}{day}"
+            if date(year, int(month), int(day)) <= today:   # 未来报告期不拉
+                periods.append(p)
+    return periods
 
 
-def _f(v: str) -> float | None:
-    try:
-        return float(v) if v not in (None, "") else None
-    except (TypeError, ValueError):
-        return None
+def _fetch_page(report_name: str, flt: str, page: int) -> tuple[list[dict], int]:
+    """拉取一页，返回 (行列表, 总页数)；失败抛异常。"""
+    params = {
+        "sortColumns": "SECURITY_CODE", "sortTypes": "1",
+        "pageSize": PAGE_SIZE, "pageNumber": page,
+        "reportName": report_name, "columns": "ALL", "filter": flt,
+    }
+    r = requests.get(API_URL, params=params, timeout=30)
+    d = r.json()
+    result = d.get("result")
+    if not result or not result.get("data"):
+        raise RuntimeError(f"空响应: {d.get('message', 'no data')}")
+    return result["data"], int(result.get("pages", 1))
 
 
-def _d(v: str) -> date | None:
-    try:
-        return datetime.strptime(str(v).strip(), "%Y-%m-%d").date()
-    except (TypeError, ValueError):
-        return None
-
-
-def _import_bs():
-    import baostock  # noqa: PLC0415  # 未装时该源不可用
-    return baostock
-
-
-def _ensure_login() -> bool:
-    from stockfu.data.baostock_source import BaostockSource  # noqa: PLC0415
-    return BaostockSource._ensure_login()
-
-
-def _rotate_proxy() -> bool:
-    from stockfu.data.baostock_source import BaostockSource  # noqa: PLC0415
-    return BaostockSource.rotate_proxy("financial_backfill")
-
-
-# ---------- 每日配额（跨进程防呆） ----------
-
-def _read_daily_count() -> tuple[str, int]:
-    try:
-        data = json.loads(DAILY_COUNT_FILE.read_text())
-        if data.get("date") == date.today().isoformat():
-            return data["date"], int(data.get("count", 0))
-    except (FileNotFoundError, ValueError, KeyError):
-        pass
-    return date.today().isoformat(), 0
-
-
-def _bump_daily_count(n: int = 1) -> int:
-    today, count = _read_daily_count()
-    count += n
-    DAILY_COUNT_FILE.write_text(json.dumps({"date": today, "count": count}))
-    return count
-
-
-# ---------- 上市日期预取 ----------
-
-def prefetch_listing_dates(codes: list[str]) -> int:
-    """query_stock_basic → 回填 stock_basic.listing_date（幂等，已填的跳过）。"""
-    if not _ensure_login():
-        log.error("baostock 登录失败，跳过上市日期预取")
-        return 0
-    bs = _import_bs()
-    with session_scope() as s:
-        existing = {r.code for r in s.exec(
-            select(SecurityMaster).where(SecurityMaster.list_date.is_not(None))).all()}
-    todo = [c for c in codes if c not in existing]
-    done = 0
-    for i, code in enumerate(todo):
-        try:
-            rs = bs.query_stock_basic(code=_bs_code(code))
-            row = None
-            while (rs.error_code == "0") and rs.next():
-                row = dict(zip(rs.fields, rs.get_row_data()))
-            if row and row.get("ipoDate"):
-                with session_scope() as s:
-                    sm = s.exec(select(SecurityMaster).where(
-                        SecurityMaster.code == code)).first()
-                    if sm is None:
-                        sm = SecurityMaster(code=code, name=row.get("code_name", ""))
-                        s.add(sm)
-                    sm.list_date = _d(row["ipoDate"])
-                    sm.delist_date = _d(row["outDate"]) if row.get("outDate") else None
-                    sm.status = "1" if row.get("status") == "1" else "0"
-                    s.commit()
-                done += 1
-        except Exception:  # noqa: BLE001
-            log.warning("ipoDate 预取失败: %s", code)
-        time.sleep(random.uniform(0.15, 0.3))
-        if (i + 1) % 200 == 0:
-            log.info("ipoDate 预取 %d/%d", i + 1, len(todo))
-    log.info("ipoDate 预取完成: %d 只（新增 %d）", len(todo), done)
-    return done
-
-
-# ---------- 主回补 ----------
-
-def _stock_codes() -> list[str]:
-    """quote_snapshot 中的 A 股代码（0/3/6 开头），排序稳定。"""
-    with session_scope() as s:
-        codes = {r[0] for r in s.exec(
-            select(QuoteSnapshot.asset_code).distinct()).all()}
-    return sorted(c for c in codes if c and c[0] in ("0", "3", "6"))
-
-
-def _listing_year(code: str) -> int | None:
-    with session_scope() as s:
-        sm = s.exec(select(SecurityMaster).where(SecurityMaster.code == code)).first()
-    if sm and sm.list_date:
-        return sm.list_date.year
-    return None
-
-
-def _checkpointed(task_key: str, scope_key: str, item_key: str) -> bool:
+def _checkpointed(scope_key: str, item_key: str) -> bool:
     with session_scope() as s:
         return s.exec(select(BackfillCheckpoint).where(
-            BackfillCheckpoint.task_key == task_key,
+            BackfillCheckpoint.task_key == TASK_KEY,
             BackfillCheckpoint.scope_key == scope_key,
             BackfillCheckpoint.item_key == item_key)).first() is not None
 
 
-def _mark_done(task_key: str, scope_key: str, item_key: str) -> None:
+def _mark_done(scope_key: str, item_key: str) -> None:
     with session_scope() as s:
-        cp = BackfillCheckpoint(task_key=task_key, scope_key=scope_key,
-                                item_key=item_key, status="success", attempts=0)
-        s.add(cp)
+        s.add(BackfillCheckpoint(task_key=TASK_KEY, scope_key=scope_key,
+                                 item_key=item_key, status="success", attempts=0))
         s.commit()
 
 
-def _plan(codes: list[str], interfaces: list[str],
-          year_from: int, year_to: int) -> list[tuple[str, str, str, int, int]]:
-    """生成 (接口, code, scope_key, year, quarter) 计划；按接口优先、股票顺序排列。"""
-    plan: list[tuple[str, str, str, int, int]] = []
-    for iface in interfaces:
-        for code in codes:
-            ly = _listing_year(code) or year_from
-            start = max(year_from, ly)
-            for year in range(start, year_to + 1):
-                for quarter in range(1, 5):
-                    item = f"{code}:{year}:{quarter}"
-                    if not _checkpointed(TASK_KEY, iface, item):
-                        plan.append((iface, code, item, year, quarter))
-    return plan
+def _upsert_row(model, code: str, report_date: str, notice_date: str | None,
+                values: dict) -> None:
+    """按 (asset_code, year, quarter) 唯一约束 upsert 一行。"""
+    from datetime import date as date_cls  # noqa: PLC0415
+
+    year = int(report_date[:4])
+    quarter = {3: 1, 6: 2, 9: 3, 12: 4}[int(report_date[5:7])]
+    with session_scope() as s:
+        ex = s.exec(select(model).where(
+            model.asset_code == code, model.year == year,
+            model.quarter == quarter)).first()
+        if ex is None:
+            ex = model(asset_code=code, year=year, quarter=quarter)
+            s.add(ex)
+        for k, v in values.items():
+            setattr(ex, k, v)
+        ex.pub_date = date_cls.fromisoformat(notice_date) if notice_date else None
+        ex.stat_date = date_cls.fromisoformat(report_date)
+        s.commit()
 
 
-def backfill_financial(interfaces: list[str] | None = None, codes: list[str] | None = None,
-                       daily_budget: int = DEFAULT_BUDGET, year_from: int = DEFAULT_YEAR_FROM,
-                       sleep_range: tuple[float, float] = (0.15, 0.3)) -> dict:
-    """主回补。返回统计 dict：{接口: {done, empty, failed, skipped}}。"""
-    ifaces = interfaces or list(INTERFACES)
-    unknown = [i for i in ifaces if i not in INTERFACES]
+def backfill_financial(interfaces: list[str] | None = None,
+                       periods: list[str] | None = None) -> dict:
+    """主回补。返回统计 dict。"""
+    ifaces = interfaces or list(REPORT_INTERFACES)
+    unknown = [i for i in ifaces if i not in REPORT_INTERFACES]
     if unknown:
-        raise ValueError(f"未知接口: {unknown}；可选: {list(INTERFACES)}")
+        raise ValueError(f"未知接口: {unknown}；可选: {list(REPORT_INTERFACES)}")
+    periods = periods or report_periods()
+    log.info("计划 %d 个报告期 × %d 接口", len(periods), len(ifaces))
 
-    today, used = _read_daily_count()
-    if today == date.today().isoformat() and used >= daily_budget:
-        log.info("今日配额已用尽（%d/%d），退出。", used, daily_budget)
-        return {"quota_exhausted": True, "used": used}
+    stats: dict[str, dict[str, int]] = {
+        i: {"done": 0, "empty": 0, "failed": 0, "skipped": 0} for i in ifaces
+    }
 
-    bs = _import_bs()
-    if not _ensure_login():
-        raise RuntimeError("baostock 登录失败")
+    for iface in ifaces:
+        conf = REPORT_INTERFACES[iface]
+        for period in periods:
+            item = period
+            if _checkpointed(iface, item):
+                stats[iface]["skipped"] += 1
+                continue
+            flt = conf["filter"] % f"{period[:4]}-{period[4:6]}-{period[6:]}"
+            try:
+                page, pages = 1, 1
+                first = True
+                while page <= pages:
+                    data, pages = _fetch_page(conf["report_name"], flt, page)
+                    for row in data:
+                        code = str(row.get("SECURITY_CODE", ""))
+                        if not code or code[0] not in A_SHARE_PREFIXES:
+                            continue
+                        notice = row.get("NOTICE_DATE")
+                        if isinstance(notice, str):
+                            notice = notice[:10]
+                        for model, mapping in conf["targets"]:
+                            vals = {m: _f(row[s]) for s, m in mapping.items()
+                                    if row.get(s) not in (None, "")}
+                            _upsert_row(model, code, f"{period[:4]}-{period[4:6]}-{period[6:]}",
+                                        notice, vals)
+                        first = False
+                    if page < pages:
+                        time.sleep(PAGE_SLEEP[0])
+                    page += 1
+                if first:
+                    stats[iface]["empty"] += 1
+                else:
+                    stats[iface]["done"] += 1
+                _mark_done(iface, item)
+            except Exception:  # noqa: BLE001
+                stats[iface]["failed"] += 1
+                log.warning("报告期 %s 接口 %s 失败: %s", period, iface, _exc())
+            time.sleep(PAGE_SLEEP[0])
 
-    all_codes = codes or _stock_codes()
-    year_to = date.today().year
-    plan = _plan(all_codes, ifaces, year_from, year_to)
-    log.info("计划 %d 次调用（%d 只股票 × %d 接口 × 有效年份 × 4 季），今日已用 %d/%d",
-             len(plan), len(all_codes), len(ifaces), used, daily_budget)
+    log.info("回补结束: %s", {k: v["done"] for k, v in stats.items()})
+    return {"stats": stats}
 
-    stats = {i: {"done": 0, "empty": 0, "failed": 0, "skipped": 0} for i in ifaces}
-    consecutive_failures = 0
 
-    for idx, (iface, code, item, year, quarter) in enumerate(plan, 1):
-        _, used = _read_daily_count()
-        if used >= daily_budget:
-            log.info("到达每日配额 %d，提前停止（已完成 %d/%d）。", daily_budget, idx - 1, len(plan))
-            break
+def _exc() -> str:
+    import traceback
+    return traceback.format_exc(limit=1).strip().splitlines()[-1]
 
-        func_name, model, mapping = INTERFACES[iface]
-        func = getattr(bs, func_name)
-        try:
-            rs = func(code=_bs_code(code), year=year, quarter=quarter)
-        except Exception:  # noqa: BLE001
-            rs = None
 
-        _bump_daily_count()
-        if rs is None or rs.error_code != "0":
-            stats[iface]["failed"] += 1
-            consecutive_failures += 1
-            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                log.warning("连续 %d 次失败，换代理重登", consecutive_failures)
-                _rotate_proxy()
-                consecutive_failures = 0
-            continue
-
-        rows = []
-        while rs.next():
-            rows.append(dict(zip(rs.fields, rs.get_row_data())))
-        if not rows:
-            stats[iface]["empty"] += 1
-            _mark_done(TASK_KEY, iface, item)   # 无数据也标记完成，避免重复调用
-            consecutive_failures = 0
-            continue
-
-        with session_scope() as s:
-            for row in rows:
-                vals = {"asset_code": code, "year": year, "quarter": quarter}
-                for src_field, model_field in mapping.items():
-                    if src_field in row:
-                        raw = row[src_field]
-                        if model_field in ("pub_date", "stat_date"):
-                            vals[model_field] = _d(raw)
-                        else:
-                            vals[model_field] = _f(raw)
-                ex = s.exec(select(model).where(
-                    model.asset_code == code, model.year == year,
-                    model.quarter == quarter)).first()
-                if ex is None:
-                    s.add(model(**vals))
-            s.commit()
-        _mark_done(TASK_KEY, iface, item)
-        stats[iface]["done"] += 1
-        consecutive_failures = 0
-
-        if idx % 500 == 0:
-            log.info("进度 %d/%d | %s", idx, len(plan),
-                     {k: v["done"] for k, v in stats.items()})
-        time.sleep(random.uniform(*sleep_range))
-
-    _, used = _read_daily_count()
-    total_done = sum(v["done"] for v in stats.values())
-    log.info("回补结束: 今日累计调用 %d，新完成 %d | %s", used, total_done,
-             {k: v["done"] for k, v in stats.items()})
-    return {"used": used, "stats": stats}
+def _f(v) -> float | None:
+    try:
+        return float(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def financial_status() -> dict:
@@ -328,12 +240,10 @@ def financial_status() -> dict:
     with session_scope() as s:
         cps = s.exec(select(BackfillCheckpoint).where(
             BackfillCheckpoint.task_key == TASK_KEY)).all()
-        from sqlalchemy import func  # noqa: PLC0415
         rows = {m.__tablename__: s.exec(select(func.count()).select_from(m)).one()[0]
                 for m in (FinancialProfit, FinancialGrowth, FinancialBalance,
-                          FinancialOperation, FinancialCashflow, FinancialDupont)}
+                          FinancialCashflow)}
     by_scope: dict[str, int] = {}
     for cp in cps:
         by_scope[cp.scope_key] = by_scope.get(cp.scope_key, 0) + 1
-    _, used = _read_daily_count()
-    return {"checkpoint": by_scope, "table_rows": rows, "today_used": used}
+    return {"checkpoint": by_scope, "table_rows": rows}
