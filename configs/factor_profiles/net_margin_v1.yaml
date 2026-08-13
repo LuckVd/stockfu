@@ -1,0 +1,30 @@
+# 净利率（年报归母净利/营收，华证"定价能力"维度）。
+# 锚点依据 2026-08 成分股实测分布（p10≈-11.5 / p50≈5.4 / p90≈26.9 / p99≈53.5）。
+profile_id: net_margin_v1
+version: 1
+raw_metric:
+  id: net_margin
+  params: {}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-30, 0], [-10, 15], [0, 30], [5, 50], [10, 60], [15, 70], [20, 78], [30, 90], [50, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 5
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2016-01-01

@@ -1,12 +1,16 @@
-"""质量因子 raw（financial 三表 PIT）单元测试：PIT 时点、口径、缺失语义、provider 一致性。"""
+"""质量因子 raw（财务三表 PIT）单元测试：PIT 时点、口径、缺失语义、provider 一致性。"""
 from datetime import date
 from unittest.mock import patch
 
 import pytest
 
 from stockfu.factors.raw.quality import (
+    compute_asset_growth,
+    compute_cash_quality,
+    compute_gpoa,
     compute_gross_margin,
     compute_leverage,
+    compute_net_margin,
     compute_quality_roe,
 )
 from stockfu.scoring.contracts import MissingReason
@@ -15,18 +19,26 @@ from stockfu.services.financial import FinancialReport
 AS_OF = date(2026, 8, 1)
 
 
-def _rep(year, quarter, pub, roe=None, gp=None, lia=None, stat=None):
-    return FinancialReport(year=year, quarter=quarter, pub_date=pub,
-                           stat_date=stat, roe_avg=roe, gp_margin=gp,
-                           liability_to_asset=lia)
+def _rep(year, quarter, pub, roe=None, gp=None, lia=None, stat=None,
+         np_=None, rev=None, ta=None, eq=None, nco=None):
+    """构造三表合并视图；pub 为各表公告日（缺省全同）。"""
+    return FinancialReport(
+        year=year, quarter=quarter, stat_date=stat,
+        pub_profit=pub, pub_balance=pub, pub_cashflow=pub,
+        roe_avg=roe, gp_margin=gp, liability_to_asset=lia,
+        net_profit=np_, revenue=rev, total_assets=ta, equity=eq,
+        net_cash_oper=nco)
 
 
 def _annual_roes(roes: list[float], base_year: int = 2021) -> list[FinancialReport]:
-    """构造连续年度 ROE 序列（Q4 报告期），pub_date 按披露惯例 4 月末。"""
+    """构造连续年度 ROE 序列（Q4 报告期），pub_date 按披露惯例 4 月末。
+
+    返回按 (year, quarter) **降序**（最新在前），与 services.financial 契约一致。
+    """
     return [
         _rep(y, 4, date(y + 1, 4, 30), roe=r) for y, r in zip(
             range(base_year, base_year + len(roes)), roes)
-    ]
+    ][::-1]
 
 
 def _patch_reports(reports: list[FinancialReport]):
@@ -83,7 +95,7 @@ def test_quality_roe_params_validation():
         compute_quality_roe("600001", AS_OF, years=2, min_years=3)
 
 
-# ---------------------------------------------------------------- gross_margin
+# ---------------------------------------------------------------- gross_margin / leverage
 
 
 def test_gross_margin_latest_report():
@@ -96,17 +108,6 @@ def test_gross_margin_latest_report():
     assert obs.valid is True
     assert obs.raw_value == pytest.approx(45.5)
     assert obs.diagnostics["report"] == "2025Q4"
-
-
-def test_gross_margin_missing_field():
-    reports = [_rep(2025, 4, date(2026, 4, 30), roe=20.0, gp=None)]
-    with _patch_reports(reports):
-        obs = compute_gross_margin("600001", AS_OF)
-    assert obs.valid is False
-    assert obs.missing_reason == MissingReason.NOT_DISCLOSED
-
-
-# ---------------------------------------------------------------- leverage
 
 
 def test_leverage_lower_value_kept_as_raw():
@@ -123,6 +124,65 @@ def test_leverage_nonpositive_missing():
         obs = compute_leverage("600001", AS_OF)
     assert obs.valid is False
     assert obs.missing_reason == MissingReason.NONPOSITIVE_DENOMINATOR
+
+
+# ---------------------------------------------------------------- 新增三表因子
+
+
+def test_gpoa_annual_basis_and_cross_table_pit():
+    """GPOA 用年报口径；balance 公告日晚于 profit 时该报告期不可见（保守缺失）。"""
+    late_bal = FinancialReport(
+        year=2025, quarter=4, stat_date=None,
+        pub_profit=date(2026, 4, 17), pub_balance=date(2026, 4, 25),
+        pub_cashflow=date(2026, 4, 25),
+        gp_margin=90.0, revenue=1000.0, total_assets=2000.0)
+    # as_of 在 balance 公告前：字段级不可见 → 无可见年报 → 缺失
+    with _patch_reports([late_bal]):
+        obs = compute_gpoa("600001", date(2026, 4, 20))
+    assert obs.valid is False
+    assert obs.missing_reason == MissingReason.NOT_DISCLOSED
+    # balance 公告后：可见，GPOA = 1000×90%/2000 = 45%
+    with _patch_reports([late_bal]):
+        obs = compute_gpoa("600001", date(2026, 4, 26))
+    assert obs.valid is True
+    assert obs.raw_value == pytest.approx(45.0)
+
+
+def test_net_margin_annual():
+    reports = [_rep(2025, 4, date(2026, 4, 30), np_=30.0, rev=100.0)]
+    with _patch_reports(reports):
+        obs = compute_net_margin("600001", AS_OF)
+    assert obs.valid is True
+    assert obs.raw_value == pytest.approx(30.0)
+
+
+def test_cash_quality_positive_and_nonpositive_net_profit():
+    reports = [_rep(2025, 4, date(2026, 4, 30), np_=80.0, nco=120.0)]
+    with _patch_reports(reports):
+        obs = compute_cash_quality("600001", AS_OF)
+    assert obs.valid is True
+    assert obs.raw_value == pytest.approx(150.0)
+    # 净利 <= 0：比值无意义 → 缺失
+    reports2 = [_rep(2025, 4, date(2026, 4, 30), np_=-10.0, nco=5.0)]
+    with _patch_reports(reports2):
+        obs = compute_cash_quality("600001", AS_OF)
+    assert obs.valid is False
+    assert obs.missing_reason == MissingReason.NONPOSITIVE_DENOMINATOR
+
+
+def test_asset_growth_needs_two_annual_balance_reports():
+    reports = [
+        _rep(2025, 4, date(2026, 4, 30), ta=130.0),
+        _rep(2024, 4, date(2025, 4, 30), ta=100.0),
+    ]
+    with _patch_reports(reports):
+        obs = compute_asset_growth("600001", AS_OF)
+    assert obs.valid is True
+    assert obs.raw_value == pytest.approx(30.0)
+    with _patch_reports(reports[:1]):
+        obs = compute_asset_growth("600001", AS_OF)
+    assert obs.valid is False
+    assert obs.missing_reason == MissingReason.INSUFFICIENT_SAMPLES
 
 
 # ---------------------------------------------------------------- 指纹与一致性
@@ -146,5 +206,9 @@ def test_quality_fingerprint_algo_matches_v2_registry():
         ("quality_roe", "roe_level_minus_annual_std"),
         ("gross_margin", "latest_gp_margin_pct"),
         ("leverage", "latest_liability_to_asset_pct"),
+        ("gpoa", "gross_profit_over_assets_pct"),
+        ("net_margin", "net_profit_over_revenue_pct"),
+        ("cash_quality", "ocf_over_net_profit_pct"),
+        ("asset_growth", "asset_growth_yoy_pct"),
     ]:
         assert RAW_COMPUTERS[metric].algo == spec

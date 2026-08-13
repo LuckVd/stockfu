@@ -1,0 +1,31 @@
+# GPOA（毛利/总资产，Novy-Marx 2013 毛利溢价核心，年报口径）。
+# 锚点依据 2026-08 成分股实测分布（p10≈2.9 / p50≈10.5 / p90≈27.7 / p99≈51.6；
+# 银行/券商无毛利率 → 缺失收缩）。
+profile_id: gpoa_v1
+version: 1
+raw_metric:
+  id: gpoa
+  params: {}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-10, 0], [0, 10], [3, 25], [7, 40], [10, 50], [15, 65], [20, 75], [28, 88], [40, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 5
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2016-01-01

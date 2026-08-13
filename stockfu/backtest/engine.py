@@ -394,16 +394,16 @@ def _preload_dividend_events(codes: list[str], start: date, end: date) -> dict[s
 
 
 def _preload_financial_reports(codes: list[str], end: date) -> dict[str, list["FinancialReport"]]:
-    """一次 SQL 预载回测宇宙的财务三表（profit+balance，pub_date <= end）。
+    """一次 SQL 预载回测宇宙的财务三表（profit+balance+cashflow，pub_date <= end）。
 
-    供质量因子（quality_roe/gross_margin/leverage）按日 PIT 切片，零逐票查库。
-    不限制 start：ROE 稳定性需要多年历史年报，每 code 两表仅 ~130 行，全量可接受；
-    提供者侧再按 pub_date <= as_of 切片。code 无财务数据 → 空列表（区别于未预载）。
+    供质量因子（quality_roe/gpoa/net_margin/cash_quality/leverage/asset_growth）
+    按日字段级 PIT 过滤，零逐票查库。不限制 start：ROE 稳定性等需要多年历史年报，
+    每 code 三表约 200 行，全量可接受。code 无财务数据 → 空列表（区别于未预载）。
     """
     from sqlmodel import select
 
     from stockfu.services.financial import _rows_to_reports
-    from stockfu.models import FinancialBalance, FinancialProfit
+    from stockfu.models import FinancialBalance, FinancialCashflow, FinancialProfit
 
     out: dict[str, list] = {code: [] for code in codes}
     rows = []
@@ -414,6 +414,9 @@ def _preload_financial_reports(codes: list[str], end: date) -> dict[str, list["F
         rows += s.exec(select(FinancialBalance).where(
             FinancialBalance.asset_code.in_(codes),
             FinancialBalance.pub_date <= end)).all()
+        rows += s.exec(select(FinancialCashflow).where(
+            FinancialCashflow.asset_code.in_(codes),
+            FinancialCashflow.pub_date <= end)).all()
     by_code: dict[str, list] = {}
     for r in rows:
         by_code.setdefault(r.asset_code, []).append(r)
@@ -605,16 +608,13 @@ def _backtest_series_ctx(
         ]
 
     def provide_financial(code, ref_date):
-        """返回该股票截至 ref_date 已公告的财报序列（pub_date 升序切片）。
+        """返回该股票全部财报（(year, quarter) 降序，预载已按 pub_date<=end 过滤）。
 
-        财务预载按 code 全量拉取（每 code 数十行），切片用 bisect 定位
-        pub_date <= ref_date 的右边界；code 不在预载宇宙 → None 回落 DB。
+        字段级 PIT 由 services.financial.FinancialReport.visible 在因子层判定
+        （三表公告日可能不同，不能在此统一按最早公告日切片）；code 不在预载
+        宇宙 → None 回落 DB。
         """
-        rows = financial_index.get(code)
-        if rows is None:
-            return None
-        i = bisect_right([r.pub_date for r in rows], ref_date)
-        return rows[:i]
+        return financial_index.get(code)
 
     set_backtest_series_provider(provide)
     set_backtest_bars_provider(provide_bars)
