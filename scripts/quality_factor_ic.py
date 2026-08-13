@@ -30,8 +30,12 @@ from stockfu.backtest.factor_diag import (
 )
 from stockfu.factors.raw.earnings_yield import compute_earnings_yield
 from stockfu.factors.raw.quality import (
+    compute_asset_growth,
+    compute_cash_quality,
+    compute_gpoa,
     compute_gross_margin,
     compute_leverage,
+    compute_net_margin,
     compute_quality_roe,
 )
 
@@ -71,6 +75,10 @@ def build_panels(codes: list[str], signal_days: list[date], h: int, sctx):
         "quality_roe": lambda c, t: compute_quality_roe(c, t),
         "gross_margin": lambda c, t: compute_gross_margin(c, t),
         "leverage": lambda c, t: compute_leverage(c, t),
+        "gpoa": lambda c, t: compute_gpoa(c, t),
+        "net_margin": lambda c, t: compute_net_margin(c, t),
+        "cash_quality": lambda c, t: compute_cash_quality(c, t),
+        "asset_growth": lambda c, t: compute_asset_growth(c, t),
         "earnings_yield": lambda c, t: compute_earnings_yield(c, t),
     }
     panels: dict[str, dict[tuple[str, date], float]] = {k: {} for k in computers}

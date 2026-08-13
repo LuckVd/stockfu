@@ -1,0 +1,17 @@
+# 研究版：合成质量策略（QMJ + 华证新质量思路，六维合成）。
+#   ROE 质量（水平−稳定性）核心 + GPOA（资本效率）+ 净利率（定价能力）
+#   + 现金流质量（盈余质量）+ 资产增长（负向，QMJ 成长维度）+ 杠杆（负向，安全维度）。
+# 研究验证用，非正式保留配置；正式保留需三段门禁。
+alpha_id: quality_multi_v1
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: quality_roe_v1, weight: 0.25, critical: true}
+  - {profile_id: gpoa_v1, weight: 0.20, critical: false}
+  - {profile_id: net_margin_v1, weight: 0.20, critical: false}
+  - {profile_id: cash_quality_v1, weight: 0.15, critical: false}
+  - {profile_id: asset_growth_v1, weight: 0.10, critical: false}
+  - {profile_id: leverage_v1, weight: 0.10, critical: false}
+minimum_coverage: 0.50
+minimum_valid_factor_count: 3
+formal_maturity_policy: force_mature_after_observation

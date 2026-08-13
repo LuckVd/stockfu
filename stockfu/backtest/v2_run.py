@@ -26,8 +26,12 @@ from stockfu.factors.raw.earnings_yield import compute_earnings_yield
 from stockfu.factors.raw.fifty_two_week_high import compute_fifty_two_week_high
 from stockfu.factors.raw.momentum import compute_momentum
 from stockfu.factors.raw.quality import (
+    compute_asset_growth,
+    compute_cash_quality,
+    compute_gpoa,
     compute_gross_margin,
     compute_leverage,
+    compute_net_margin,
     compute_quality_roe,
 )
 from stockfu.factors.raw.rsi import compute_rsi
@@ -77,6 +81,10 @@ RAW_COMPUTERS = {
             compute_quality_roe, "roe_level_minus_annual_std"),
         "gross_margin": RawComputerSpec(compute_gross_margin, "latest_gp_margin_pct"),
         "leverage": RawComputerSpec(compute_leverage, "latest_liability_to_asset_pct"),
+        "gpoa": RawComputerSpec(compute_gpoa, "gross_profit_over_assets_pct"),
+        "net_margin": RawComputerSpec(compute_net_margin, "net_profit_over_revenue_pct"),
+        "cash_quality": RawComputerSpec(compute_cash_quality, "ocf_over_net_profit_pct"),
+        "asset_growth": RawComputerSpec(compute_asset_growth, "asset_growth_yoy_pct"),
     }
 
 # alpha 的默认 deployment。显式传入 --portfolio-v2/--risk-v2 仍可做对照实验；
