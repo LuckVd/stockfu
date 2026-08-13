@@ -30,6 +30,12 @@ DEPENDENCY_TABLES = (
     "stock_basic",           # 股票基础/存续信息（listing/delisting/industry/is_st）
     "index_constituent",     # 历史指数成分（universe membership）
     "security_master",       # 点时存续/行业（UniverseContext.load 实读）
+    # 财务三表 PIT（2026-08 质量因子 raw 依赖；快照整库备份天然含表，
+    # 此处加入依赖表摘要供审计追溯）
+    "financial_profit",      # 业绩报表（ROE/毛利率/净利/营收）
+    "financial_balance",     # 资产负债表（总资产/负债率/权益）
+    "financial_cashflow",    # 现金流量表（经营现金流）
+    "financial_growth",      # 成长能力（同比，预留）
 )
 
 SNAPSHOT_DIR = Path(__file__).resolve().parents[2] / "data" / "snapshots"
