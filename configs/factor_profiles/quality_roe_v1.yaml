@@ -1,0 +1,31 @@
+# ROE 质量 = 最新完整年度 ROE − pstdev(近 5 个年度 ROE)（招商 PB-ROE/华证新质量因子：
+# 简单 ROE 弱，稳定性改进版才显著）。锚点依据 2026-08 成分股实测分布
+# （p10≈-28 / p50≈1.9 / p90≈12.9，正常上限 ~45；周期/亏损股可低至 -80）。
+profile_id: quality_roe_v1
+version: 1
+raw_metric:
+  id: quality_roe
+  params: {years: 5, min_years: 3}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-40, 0], [-20, 15], [-10, 30], [0, 45], [5, 55], [10, 65], [15, 75], [20, 85], [30, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 5
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2016-01-01
