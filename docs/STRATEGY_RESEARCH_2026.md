@@ -4,7 +4,7 @@
 > [`docs/BACKTEST.md`](BACKTEST.md)，策略参数以 `stockfu/ai/strategies/*.yaml`
 > 和对应算子源码为准，避免同一结果在多份历史报告中漂移。
 >
-> 调研日期：2026-08-02；本页状态更新：2026-08-05。
+> 调研日期：2026-08-02；本页状态更新：2026-08-13。三策略调优的详细流程和最终数字以 [`v2-tuning-results.md`](SPECS/v2-tuning-results.md) 为准。
 
 ## 1. 调研方法
 
@@ -77,8 +77,9 @@
 - 10 个算子已注册，10 个 canonical YAML 可编译并已登记到 seed 目录。
 - `small_cap_low_turnover` 已完成真实数据端到端冒烟，覆盖市值/换手预载和市值代理路径。
 - 第一批 10 个 canonical full 已完成；统一结果表、口径和风险审计见 [`BACKTEST.md`](BACKTEST.md) §0.6.10。
-- canonical full 中 7/10 的总收益高于沪深300，但这不是样本外通过结论；修正风险配置后的 train/test 尚未全部重跑。
+- canonical full 中 7/10 的总收益高于沪深300，但这不是样本外通过结论；整体十策略的修正风险配置 train/test 尚未全部重跑，不能把该预筛选结论外推为十策略整体的样本外结论。
 - `smart_beta_multi_factor` 仅作风格暴露参照：历史持仓显示明显小盘倾斜，正式保留前仍需市值中性化和三跑验证；排查记录见 [`BACKTEST.md`](BACKTEST.md) §0.6.8。
+- 在上述预筛选基础上，价值、高股息、多因子三套已完成执行层、Alpha 层、风险覆盖层三阶段调优，并完成统一日调仓的三段 canonical 复核；最终结论见 [`v2-tuning-results.md`](SPECS/v2-tuning-results.md)。
 
 ### 第二批研究模板（非 canonical 结论）
 
@@ -104,7 +105,7 @@
 
 1. 在 `stockfu/data/baostock_source.py` 加入 `mktcap` 字段解析、DTO 和落库，完成历史回补后重新验证 `size`。
 2. 若接入财务三表，新增真正的质量/成长算子，并把当前价格代理降级为独立风格因子。
-3. 为第一批 canonical 策略重跑修正配置后的两段子样本；只有方向一致才进入正式保留集。
+3. 价值、高股息、多因子三套的修正配置三段复核已完成；其余第一批候选仍需在进入正式保留集前按当前协议重跑。
 4. 让 `low_beta` 的基准可配置，评估沪深500对中小盘策略的适配性。
 5. 考虑在 YAML 缺少风险段时发出显式告警，防止静默继承引擎默认止损。
 
