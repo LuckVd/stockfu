@@ -536,7 +536,7 @@ def run_update_backtests(
 
 
 def run_v2_signal_mail(as_of: str | None, no_send: bool, top_n: int) -> None:
-    """V2 十策略单日评分 → 出图 → 发信(默认最新交易日;可 --as-of 指定)。"""
+    """V2 三策略单日评分 → 出图 → 发信(默认最新交易日;可 --as-of 指定)。"""
     import json
     from datetime import date
 
@@ -1249,7 +1249,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--recommend", action="store_true",
                    help="空仓重建荐股(必填 --strategies;可选 --as-of/--cash)")
     p.add_argument("--v2-signal-mail", action="store_true",
-                   help="V2 十策略单日评分 → 出图 → 发信(默认最新交易日;可 --as-of 指定)")
+                   help="V2 三策略单日评分 → 出图 → 发信(默认最新交易日;可 --as-of 指定)")
     p.add_argument("--v2-watchlist-recommend", action="store_true",
                    help="V2 三策略在自选股票范围评分并落盘荐股报告")
     p.add_argument("--no-send", action="store_true",
