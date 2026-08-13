@@ -47,7 +47,7 @@ def compute_quality_roe(code: str, as_of: date, years: int = 5,
         raise ValueError("quality_roe 的 years/min_years 参数无效(0<min_years<=years)")
     fp = raw_fingerprint(
         METRIC_ID, "roe_level_minus_annual_std",
-        {"years": years, "min_years": min_years, "basis": "annual"},
+        {"years": years, "min_years": min_years},
     )
     from stockfu.services.financial import financial_reports_before
 
