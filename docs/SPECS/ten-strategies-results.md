@@ -68,5 +68,6 @@ python3 main.py --backtest-v2-segments <alpha_id> \
 - 本文件的主表是单窗口(2021–2026,偏熊市)历史结果；三段正式产物写入 `data/backtest/v2-segments/run-*/`，完整规则见 `docs/BACKTEST.md` §0.3.1/§0.6.6。
 - 当前行情库从 2013 年起；尚不能把三段结果称为 2007–2026 全样本门禁。
 - 多因子缺 Quality 维度(库内无 ROE/毛利等基本面数据);趋势用 signed_r²+动量代理(无 Donchian/MA 交叉算子),风险层忠实"截断亏损/追踪止盈/MA200 regime"。
+  > 注(2026-08-13)：该条基于当时数据状态；东财财务三表已入库（见 `docs/SPECS/financial-data-design.md`），Quality 维度已可构造，历史结论不改写。
 - 内存:`multi_factor_v2`(4 因子)峰值 RSS ~854MB,需单独运行(2 并发会与其它进程争内存触发 OOM);其余 9 个 2 并发可跑。
 - 全为 long-only(融券受限);因子收益是多头腿,不等同学术 long-short 因子溢价。

@@ -40,12 +40,14 @@
 | `limit_up_at` | 涨停/连板数据按天回补 | **2.0s** / 天，连续失败 10 次中止 | `stockfu/services/backfill.py:69,99` |
 | ETF qfq 日线 (via akshare) | 东财 ETF 前复权 | 重试退避 **0.8×(n+1)s**，最多 3 次 | `stockfu/data/akshare_source.py:251` |
 | `push2.eastmoney.com` / `push2his` | K线/资金流历史 | **已完全封死** | — |
+| `datacenter-web.eastmoney.com/api/data/v1/get` | 财务三表/业绩报表按报告期全市场（2026-08 实测可用） | **0.3-0.5s** / 页（pageSize 500） | `stockfu/services/backfill_financial.py` |
 
 ### 反爬机制
 
 - **TLS 指纹 (JA3) 封禁**：`push2`/`push2his` 基于 TLS 指纹拦截非浏览器请求，curl/requests/curl_cffi 全部无效。
 - 替代方案：实时数据用 `push2delay.eastmoney.com` 或 `/webguest/` 前缀；历史 K 线只能通过真实浏览器。
 - 显著比同花顺更激进，需更大间隔 + 重试 + 断点续传。
+- `datacenter-web`（数据中心 API）与 push2 走不同服务，未被封：按报告期一次返回全市场财务数据（~5,000 只/期），66 期 × 3 表 ≈ 2,400 次请求、约 35 分钟完成（2026-08-13 实测）。
 
 ### 频率特点
 
