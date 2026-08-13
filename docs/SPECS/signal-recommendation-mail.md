@@ -86,7 +86,7 @@ V2 回测引擎（`backtest.v2_engine`）只有 `run_v2_backtest` 循环入口�
 - `stockfu/services/signal_mail_v2.py`：`build_v2_signal_mail_html` 组装长表（图例=粒度①校准 + 10 策略列 + top N 股票），`render_v2_signal_images` 用 Playwright 进程内 `set_content` 截图（无 web 路由依赖，自包含），`run_v2_signal_mail_job` 串联评分→出图→复用 `services.mail.send_card_email`。
 - 默认展示当日「均值 top N」（默认 30）控制邮件体积；非全宇宙，暂无逐股订阅（V1 的订阅模型未移植）。
 - CLI：`main.py --v2-signal-mail`（`--no-send` 仅出图、`--top-n`、`--as-of`）。
-- V2 自选股荐股入口：`python main.py --v2-watchlist-recommend --as-of YYYY-MM-DD`。它只取 `Asset.is_watch=1` 且 `asset_type=stock`，先校验目标日行情覆盖，再用当前十策略评分；ETF/基金不混入股票池，完整 JSON 落在 `data/reports/recommend/`。
+- V2 自选股荐股入口：`python main.py --v2-watchlist-recommend --as-of YYYY-MM-DD`。它只取 `Asset.is_watch=1` 且 `asset_type=stock`，先校验目标日行情覆盖，再用调优后三套策略评分；ETF/基金不混入股票池，完整 JSON 落在 `data/reports/recommend/`。
 
 ### 持久化（待办）
 
