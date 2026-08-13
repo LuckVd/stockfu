@@ -102,10 +102,12 @@ class BackfillCheckpoint(SQLModel, table=True):
 # 研究模式直接用 dividend_event(baostock 落库),不自建多源仲裁账本(见 docs/BACKTEST.md §0)。
 
 
-# ---- 财务三表 PIT 快照（baostock 季频，2026-08 新增） ----
-# 每接口一表、每股票每季一行；pub_date 为公告日（PIT 时点过滤的唯一依据），
-# stat_date 为财报统计期。字段名与 baostock 文档一致（snake_case）。
-# 回补脚本：services/backfill_financial.py（分段+每日配额+断点续传）。
+# ---- 财务三表 PIT 快照（东财 datacenter-web，2026-08） ----
+# 按报告期一次拉全市场；每股票每报告期一行；pub_date=NOTICE_DATE 公告日（PIT
+# 时点过滤的唯一依据），stat_date=报告期。字段名与东财原始 JSON 对应（snake_case）。
+# 关联键 (asset_code, year, quarter)；asset_code 与 quote_snapshot 等全库统一（6 位无前缀）。
+# 设计文档：docs/SPECS/financial-data-design.md；回补脚本：services/backfill_financial.py。
+# financial_operation / financial_dupont 因东财无按报告期接口，已决定不预留（见设计文档 §5）。
 
 
 class FinancialBase(SQLModel):
@@ -114,92 +116,66 @@ class FinancialBase(SQLModel):
     asset_code: str = Field(index=True)
     year: int = Field(index=True)
     quarter: int = Field(index=True)          # 1-4（4=年报）
-    pub_date: date | None = Field(default=None, index=True)   # 公告日（PIT 关键）
-    stat_date: date | None = None             # 统计期（如 2023-09-30）
-    source: str = "baostock"
+    pub_date: date | None = Field(default=None, index=True)   # 公告日 NOTICE_DATE（PIT 关键）
+    stat_date: date | None = None             # 报告期（如 2024-03-31）
+    source: str = "eastmoney"
     updated_at: datetime = Field(default_factory=_now)
 
 
 class FinancialProfit(FinancialBase, table=True):
-    """盈利能力（query_profit_data）：ROE/净利率/毛利率/净利/TTM EPS/主营收入/股本。"""
+    """业绩报表（RPT_LICO_FN_CPD）：ROE/毛利率/归母净利/营收/同比/EPS。"""
     __tablename__ = "financial_profit"
-    roe_avg: float | None = None              # 净资产收益率平均
-    np_margin: float | None = None            # 销售净利率
-    gp_margin: float | None = None            # 销售毛利率
-    net_profit: float | None = None           # 净利润
-    eps_ttm: float | None = None              # 每股收益 TTM
-    mb_revenue: float | None = None           # 主营营业收入
-    total_share: float | None = None          # 总股本
-    liqa_share: float | None = None           # 流通股本
+    roe_avg: float | None = None              # 净资产收益率 WEIGHTAVG_ROE
+    gp_margin: float | None = None            # 销售毛利率 XSMLL
+    net_profit: float | None = None           # 归母净利润 PARENT_NETPROFIT
+    eps: float | None = None                  # 基本每股收益 BASIC_EPS
+    revenue: float | None = None              # 营业总收入 TOTAL_OPERATE_INCOME
+    revenue_yoy: float | None = None          # 营收同比(%) YSTZ
+    net_profit_yoy: float | None = None       # 净利同比(%) SJLTZ
+    bps: float | None = None                  # 每股净资产 BPS
+    cash_per_share: float | None = None       # 每股经营现金流 MGJYXJJE
     __table_args__ = (UniqueConstraint("asset_code", "year", "quarter",
                                        name="uq_financial_profit_code_yq"),)
 
 
 class FinancialGrowth(FinancialBase, table=True):
-    """成长能力（query_growth_data）：净资产/总资产/净利/每股收益同比增速。"""
+    """成长能力：净利同比/总资产同比/股东权益同比（部分字段暂留空，见设计文档 §5）。"""
     __tablename__ = "financial_growth"
-    yoy_equity: float | None = None           # 净资产同比增长率
-    yoy_asset: float | None = None            # 总资产同比增长率
-    yoy_ni: float | None = None               # 净利润同比增长率
-    yoy_eps_basic: float | None = None        # 基本每股收益同比增长率
-    yoy_pni: float | None = None              # 利润总额同比增长率
+    yoy_ni: float | None = None               # 净利同比(%) SJLTZ
+    yoy_asset: float | None = None            # 总资产同比(%) TOTAL_ASSETS_YOY
+    yoy_equity: float | None = None           # 股东权益同比(%)（自算，暂空）
+    yoy_eps_basic: float | None = None        # 每股收益同比(%)（暂无源，留空）
+    yoy_pni: float | None = None              # 利润总额同比(%)（暂无源，留空）
     __table_args__ = (UniqueConstraint("asset_code", "year", "quarter",
                                        name="uq_financial_growth_code_yq"),)
 
 
 class FinancialBalance(FinancialBase, table=True):
-    """偿债能力（query_balance_data）：流动/速动/现金比率、资产负债率。"""
+    """资产负债表（RPT_DMSK_FN_BALANCE）：总资产/总负债/资产负债率/股东权益/货币资金/应收/存货。"""
     __tablename__ = "financial_balance"
-    current_ratio: float | None = None        # 流动比率
-    quick_ratio: float | None = None          # 速动比率
-    cash_ratio: float | None = None           # 现金比率
-    yoy_liability: float | None = None        # 负债率同比变动
-    liability_to_asset: float | None = None   # 资产负债率
-    asset_to_equity: float | None = None      # 产权比率
+    total_assets: float | None = None         # 总资产 TOTAL_ASSETS
+    total_liabilities: float | None = None    # 总负债 TOTAL_LIABILITIES
+    liability_to_asset: float | None = None   # 资产负债率(%) LIABILITY_TO_ASSET
+    equity: float | None = None               # 股东权益合计 TOTAL_EQUITY
+    monetary_fund: float | None = None        # 货币资金 MONETARYFUNDS
+    receivables: float | None = None          # 应收账款 ACCOUNTS_RECE
+    inventory: float | None = None            # 存货 INVENTORY
+    payable: float | None = None              # 应付账款 ACCOUNTS_PAYABLE
+    current_ratio: float | None = None        # 流动比率 CURRENT_RATIO
+    total_assets_yoy: float | None = None     # 总资产同比(%)（东财无直接源，自算或留空）
     __table_args__ = (UniqueConstraint("asset_code", "year", "quarter",
                                        name="uq_financial_balance_code_yq"),)
 
 
-class FinancialOperation(FinancialBase, table=True):
-    """营运能力（query_operation_data）：应收/存货/资产周转率与天数。"""
-    __tablename__ = "financial_operation"
-    nr_turn_ratio: float | None = None        # 应收账款周转率
-    nr_turn_days: float | None = None         # 应收账款周转天数
-    inv_turn_ratio: float | None = None       # 存货周转率
-    inv_turn_days: float | None = None        # 存货周转天数
-    ca_turn_ratio: float | None = None        # 流动资产周转率
-    asset_turn_ratio: float | None = None     # 总资产周转率
-    __table_args__ = (UniqueConstraint("asset_code", "year", "quarter",
-                                       name="uq_financial_operation_code_yq"),)
-
-
 class FinancialCashflow(FinancialBase, table=True):
-    """现金流（query_cash_flow_data）：经营现金流对营收/净利比率、利息保障。"""
+    """现金流量表（RPT_DMSK_FN_CASHFLOW）：经营/投资/融资现金流净额。"""
     __tablename__ = "financial_cashflow"
-    ca_to_asset: float | None = None          # 流动资产对总资产比率
-    nca_to_asset: float | None = None         # 非流动资产对总资产比率
-    tangible_asset_to_asset: float | None = None  # 有形资产对总资产比率
-    ebit_to_interest: float | None = None     # 已获利息倍数
-    cfo_to_or: float | None = None            # 经营现金流净额/营业收入
-    cfo_to_np: float | None = None            # 经营现金流净额/净利润
-    cfo_to_gr: float | None = None            # 经营现金流净额/营业总收入
+    net_cash_oper: float | None = None        # 经营现金流净额 NETCASH_OPERATE
+    net_cash_inv: float | None = None         # 投资现金流净额 NETCASH_INVEST
+    net_cash_fin: float | None = None         # 融资现金流净额 NETCASH_FINANCE
+    net_cash_total: float | None = None       # 现金净增加额 NETCASH_TOTAL
     __table_args__ = (UniqueConstraint("asset_code", "year", "quarter",
                                        name="uq_financial_cashflow_code_yq"),)
-
-
-class FinancialDupont(FinancialBase, table=True):
-    """杜邦分析（query_dupont_data）：ROE 分解。"""
-    __tablename__ = "financial_dupont"
-    dupont_roe: float | None = None           # 净资产收益率
-    dupont_asset_sto_equity: float | None = None  # 权益乘数
-    dupont_asset_turn: float | None = None    # 总资产周转率
-    dupont_pnitoni: float | None = None       # 归母净利润/净利润
-    dupont_nitogr: float | None = None        # 净利润/营业总收入
-    dupont_tax_burden: float | None = None    # 所得税与利润总额比
-    dupont_intburden: float | None = None     # 利息负担
-    dupont_ebittogr: float | None = None      # 息税前利润/营业总收入
-    __table_args__ = (UniqueConstraint("asset_code", "year", "quarter",
-                                       name="uq_financial_dupont_code_yq"),)
 
 
 class QuoteSnapshot(SQLModel, table=True):
