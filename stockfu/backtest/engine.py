@@ -393,6 +393,35 @@ def _preload_dividend_events(codes: list[str], start: date, end: date) -> dict[s
     return out
 
 
+def _preload_financial_reports(codes: list[str], end: date) -> dict[str, list["FinancialReport"]]:
+    """一次 SQL 预载回测宇宙的财务三表（profit+balance，pub_date <= end）。
+
+    供质量因子（quality_roe/gross_margin/leverage）按日 PIT 切片，零逐票查库。
+    不限制 start：ROE 稳定性需要多年历史年报，每 code 两表仅 ~130 行，全量可接受；
+    提供者侧再按 pub_date <= as_of 切片。code 无财务数据 → 空列表（区别于未预载）。
+    """
+    from sqlmodel import select
+
+    from stockfu.services.financial import _rows_to_reports
+    from stockfu.models import FinancialBalance, FinancialProfit
+
+    out: dict[str, list] = {code: [] for code in codes}
+    rows = []
+    with session_scope() as s:
+        rows += s.exec(select(FinancialProfit).where(
+            FinancialProfit.asset_code.in_(codes),
+            FinancialProfit.pub_date <= end)).all()
+        rows += s.exec(select(FinancialBalance).where(
+            FinancialBalance.asset_code.in_(codes),
+            FinancialBalance.pub_date <= end)).all()
+    by_code: dict[str, list] = {}
+    for r in rows:
+        by_code.setdefault(r.asset_code, []).append(r)
+    for code, rws in by_code.items():
+        out[code] = _rows_to_reports(rws)
+    return out
+
+
 def _preload_cash_dividends(codes: list[str], start: date, end: date) -> dict[date, list[tuple[str, float, date | None]]]:
     """预载除息日现金流；与因子用 TTM 索引分开，避免改变其供给接口。"""
     out: dict[date, list[tuple[str, float, date | None]]] = {}
@@ -477,6 +506,7 @@ def _hfq_coverage(sctx: _SeriesCtx, start: date, end: date) -> tuple[float, int,
 def _backtest_series_ctx(
     sctx: _SeriesCtx | None,
     dividend_index: dict[str, list[tuple[date, float | None]]] | None = None,
+    financial_index: dict[str, list["FinancialReport"]] | None = None,
 ):
     """挂载 factors.quote_series 的内存供给器:从列式预载 sctx 切片,零 DB。
 
@@ -496,6 +526,10 @@ def _backtest_series_ctx(
         _ValWindow,
         clear_backtest_valuation_provider,
         set_backtest_valuation_provider,
+    )
+    from stockfu.services.financial import (
+        clear_backtest_financial_provider,
+        set_backtest_financial_provider,
     )
     if not sctx or not sctx.series:
         yield
@@ -570,10 +604,24 @@ def _backtest_series_ctx(
             if start <= ex_date <= ref_date
         ]
 
+    def provide_financial(code, ref_date):
+        """返回该股票截至 ref_date 已公告的财报序列（pub_date 升序切片）。
+
+        财务预载按 code 全量拉取（每 code 数十行），切片用 bisect 定位
+        pub_date <= ref_date 的右边界；code 不在预载宇宙 → None 回落 DB。
+        """
+        rows = financial_index.get(code)
+        if rows is None:
+            return None
+        i = bisect_right([r.pub_date for r in rows], ref_date)
+        return rows[:i]
+
     set_backtest_series_provider(provide)
     set_backtest_bars_provider(provide_bars)
     set_backtest_valuation_provider(provide_valuation)
     set_backtest_dividend_provider(provide_dividends)
+    if financial_index is not None:
+        set_backtest_financial_provider(provide_financial)
     try:
         yield
     finally:
@@ -581,6 +629,8 @@ def _backtest_series_ctx(
         clear_backtest_bars_provider()
         clear_backtest_valuation_provider()
         clear_backtest_dividend_provider()
+        if financial_index is not None:
+            clear_backtest_financial_provider()
 
 
 def _pack_bar_row(r) -> tuple:

@@ -41,6 +41,7 @@ from stockfu.backtest.engine import (
     _get_trade_price,
     _metrics,
     _preload_dividend_events,
+    _preload_financial_reports,
     _preload_market_range,
     _preload_cash_dividends,
     _preload_stock_dividends,
@@ -1021,6 +1022,7 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
     preload_codes = sorted({*codes, bench, risk_bench})
     sctx = _preload_market_range(preload_codes, pre_start, cfg.eval_end)
     div_index = _preload_dividend_events(codes, pre_start, cfg.eval_end)
+    fin_index = _preload_financial_reports(codes, cfg.eval_end)
 
     # 数据截断检测：交易日历可能预埋到未来，但行情只到库末日。
     # 请求终点超过库数据末日时截断到 data_end，不跑无行情日（否则会产生
@@ -1615,7 +1617,7 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
     # 循环结束后 finalize 用它（覆盖正常/截断/空续跑各路径）。
     actual_last_completed: date | None = resume_last_completed
 
-    with _backtest_series_ctx(sctx, div_index):
+    with _backtest_series_ctx(sctx, div_index, fin_index):
         for day_index, t in enumerate(dates_all):
             if resume_last_completed is not None and t <= resume_last_completed:
                 continue
