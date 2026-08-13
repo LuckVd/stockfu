@@ -10,9 +10,12 @@ from stockfu.strategy.rebalancer import Rebalancer
 D0 = date(2024, 1, 2)
 
 
-def policy(drift=0.0, cd=0, mhd=0, sl=None):
+def policy(drift=0.0, cd=0, mhd=0, sl=None, max_replace=0,
+           max_single_weight=1.0):
     return SimpleNamespace(rebalance_drift=drift, cooldown_days=cd,
-                           min_holding_days=mhd, stop_loss_pct=sl)
+                           min_holding_days=mhd, stop_loss_pct=sl,
+                           max_replace=max_replace,
+                           max_single_weight=max_single_weight)
 
 
 class TestRebalancer(unittest.TestCase):
@@ -141,6 +144,34 @@ class TestRebalancer(unittest.TestCase):
                      trading_day_index=30),
             {"A": 0.0},
         )
+
+    def test_max_replace_limits_entries_and_exits_by_rank(self):
+        r = Rebalancer(policy(max_replace=1))
+        out = r.decide(
+            {"A": 0.10, "D": 0.10, "E": 0.10},
+            {"A": 0.10, "B": 0.10, "C": 0.10},
+            {"A", "B", "C"}, D0,
+            ranked_codes=["A", "D", "E", "B", "C"],
+        )
+        # D 是排名最高的新票，C 是排名最差的旧票；一次只允许替换一组。
+        self.assertEqual(out, {"D": 0.10, "C": 0.0})
+
+    def test_hard_single_cap_overrides_drift_and_rank_lock(self):
+        r = Rebalancer(policy(drift=0.03, max_single_weight=0.08))
+        out = r.decide(
+            {"A": 0.10}, {"A": 0.10}, {"A"}, D0,
+            protected_codes={"A"},
+        )
+        self.assertEqual(out, {"A": 0.08})
+
+    def test_locked_lot_target_weight_is_preserved(self):
+        r = Rebalancer(policy(mhd=21))
+        out = r.decide(
+            {}, {"A": 0.20}, {"A"}, D0,
+            locked_target_weights={"A": 0.08},
+            trading_day_index=20,
+        )
+        self.assertEqual(out, {"A": 0.08})
 
 
 if __name__ == "__main__":

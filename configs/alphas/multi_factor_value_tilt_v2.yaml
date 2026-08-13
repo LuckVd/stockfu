@@ -1,0 +1,12 @@
+# 阶段二候选：多因子提高价值权重，降低动量/低波权重。
+alpha_id: multi_factor_value_tilt_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: earnings_yield_v2, weight: 0.35, critical: false}
+  - {profile_id: book_to_price_v2, weight: 0.25, critical: false}
+  - {profile_id: momentum_252d_skip21_v2, weight: 0.20, critical: true}
+  - {profile_id: low_volatility_20d_v2, weight: 0.20, critical: false}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 2
+formal_maturity_policy: force_mature_after_observation

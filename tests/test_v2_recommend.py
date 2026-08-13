@@ -63,3 +63,14 @@ class TestV2WatchlistAssembly(TestCase):
         self.assertEqual(rows[0]["mean_score"], 60.0)
         self.assertEqual(rows[0]["n_bullish"], 1)
         self.assertEqual(rows[0]["recommendation"], "优先关注")
+
+    def test_recommendation_alpha_ids_are_tuned_suite(self):
+        # 荐股链路必须用调优后三套（价值/高股息/多因子），不得回退到十策略全集
+        self.assertEqual(
+            v2_recommend.RECOMMENDATION_ALPHA_IDS,
+            (
+                "value_ep_bp_equal_v2",
+                "dividend_income_history45_v2",
+                "multi_factor_value_tilt_v2",
+            ),
+        )
