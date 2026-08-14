@@ -65,7 +65,8 @@ class TestV2WatchlistAssembly(TestCase):
         self.assertEqual(rows[0]["recommendation"], "优先关注")
 
     def test_recommendation_alpha_ids_are_tuned_suite(self):
-        # 荐股链路必须用调优后四套（价值/高股息/多因子/质量增强），不得回退到十策略全集
+        # 荐股链路必须用调优后五套（价值/高股息/多因子/质量增强/盈利动量进攻），
+        # 不得回退到十策略全集
         self.assertEqual(
             v2_recommend.RECOMMENDATION_ALPHA_IDS,
             (
@@ -73,5 +74,6 @@ class TestV2WatchlistAssembly(TestCase):
                 "dividend_income_history45_v2",
                 "multi_factor_value_tilt_v2",
                     "multi_factor_quality_v2",
+                "earnings_momentum_offense_v2",
             ),
         )
