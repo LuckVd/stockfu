@@ -21,12 +21,17 @@ from stockfu.services.v2_signal import V2SignalScorer
 ROOT = Path(__file__).resolve().parents[2]
 REPORT_DIR = ROOT / "data" / "reports" / "recommend"
 
-# 调优后固定三套（final canonical，见 docs/SPECS/v2-tuning-results.md）：
-# 价值、高股息、多因子。三套为独立策略，评分仍逐套独立展示，均分仅用于自选池排序。
+# 调优后固定四套（final canonical，见 docs/SPECS/v2-tuning-results.md 与
+# quality-factor-validation-2026.md）：
+# 价值、高股息、多因子 + 质量增强多因子（multi_factor_quality_v2）。
+# 第四套为 2026-08-14 用户决策转正（"2020+ 近期增强候选"，三段门禁早期段受
+# 预热数据限制未纳入正式保留集，但作为第四套荐股长期跟踪）。
+# 四套为独立策略，评分仍逐套独立展示，均分仅用于自选池排序。
 RECOMMENDATION_ALPHA_IDS: tuple[str, ...] = (
     "value_ep_bp_equal_v2",
     "dividend_income_history45_v2",
     "multi_factor_value_tilt_v2",
+    "multi_factor_quality_v2",
 )
 
 
@@ -84,6 +89,19 @@ def quote_coverage(codes: list[str], as_of: date) -> dict[str, Any]:
         "present": len(present),
         "missing": sorted(set(codes) - present),
     }
+
+
+_ALPHA_LABELS = {
+    "value_ep_bp_equal_v2": "value",
+    "dividend_income_history45_v2": "dividend",
+    "multi_factor_value_tilt_v2": "mf_tilt",
+    "multi_factor_quality_v2": "mf_quality",
+}
+
+
+def _short_alpha(alpha_id: str) -> str:
+    """打印用短列名：已知策略用固定标签（避免截断重名），未知回退移除后缀截断。"""
+    return _ALPHA_LABELS.get(alpha_id, alpha_id.removesuffix("_v2")[:8])
 
 
 def _rank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -195,7 +213,7 @@ def print_v2_watchlist_recommendation(result: dict[str, Any], *, top_n: int = 30
         f"股票池 {result.get('pool_size')} 只 · 评分 {result.get('scored_size')} 只"
     )
     print("排名  代码      名称        均分   多头/空头  结论  "
-          + " ".join(f"{aid.removesuffix('_v2')[:8]:>8}" for aid in alpha_ids))
+              + " ".join(f"{_short_alpha(aid):>8}" for aid in alpha_ids))
     for row in rows[:max(0, top_n)]:
         scores = row.get("scores") or {}
         cells = []

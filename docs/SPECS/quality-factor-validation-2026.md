@@ -156,6 +156,17 @@
    **维持不进正式保留集的结论**；multi_factor_quality_v2 记为"2020+ 近期增强候选"，
    若未来启用近期窗口配置可优先考虑。
 
+
+## 8. 转正决定（2026-08-14 用户决策）
+
+multi_factor_quality_v2 转正为**第四套正式荐股**（RECOMMENDATION_ALPHA_IDS 加入，
+长期跟踪）。说明：
+- 背景：三段门禁早期段受预热数据限制未纳入正式保留集，但 2020+ 增强有效（见 §6/§7）；
+  用户明确决策：作为第四套荐股长期跟踪（非门禁转正，属配置决策）。
+- 影响：荐股均分变为四套均分（排名可能微调）；signal_mail_v2 邮件含四套；
+  测试断言同步为四套。
+- 首份四套报告：`data/reports/recommend/2026-08-11_v2_watchlist.json`。
+
 ## 产物
 
 - `scripts/quality_factor_ic.py`（IC 研究脚本，复用 factor_diag 纯函数 + 财务 provider）
