@@ -1,0 +1,30 @@
+# 进攻策略调参版 7：market_regime_vol2_v2（无回撤刹车，加强波动率目标）。
+# 峰值锚定回撤刹车在 2015 股灾后死锁（权益 3.5 年低于峰值 25%+ → below 恒真 →
+# 永久压仓 → 超额 -31~-34%）。波动率目标与触发点无关：波动率飙升压仓、
+# 回落自动恢复（2016 年 vol 回落后 vscale→1.0 满仓），无死锁。
+#   - market regime：MA200 + enter 3% + 压 45%（慢变量，防牛市假信号）
+#   - volatility_target 0.20（原 0.25）：近 63 日实现波动率 >20% 等比压仓，
+#     floor 0.20（最多压到 20%×max_gross）；波动率回归均值自动恢复
+# 依赖 2026-08-14 引擎修复（风控压仓豁免执行层软锁，压仓真实落地）。
+risk_policy_id: market_regime_vol2_v2
+version: 1
+stop_loss: null
+take_profit: null
+take_profit_tiers: []
+take_profit_hard_pct: null
+drawdown_brake: null
+drawdown_brake_scale: 0.50
+drawdown_brake_mode: scale_all
+drawdown_brake_max_gross: null
+drawdown_brake_tiers: []
+drawdown_recover_dd: null
+drawdown_recover_high_days: 0
+market_regime_code: sh000300
+market_regime_ma_days: 200
+market_regime_enter_band: 0.03
+market_regime_exit_band: 0.03
+market_regime_max_gross: 0.45
+volatility_target: 0.20
+volatility_window: 63
+volatility_floor: 0.20
+max_gross: null
