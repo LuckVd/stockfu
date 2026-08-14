@@ -58,6 +58,7 @@
   作为趋势代理；风险层 `trend_trailing_v2` 忠实落地趋势系统精髓——个股 10% 止损、分段追踪止盈
   (浮盈后按高点回撤卖出，让赢家跑)、沪深300 MA200 regime(大盘破位时压缩敞口)。
 - **多因子 #10**:库内无 ROE/毛利等基本面数据（quote_snapshot 仅有 PE/PB），故 Quality 维度
+  > 注(2026-08-13)：东财财务三表已入库，该缺口已关闭，见 `financial-data-design.md`。
   未纳入，组合为 Value(E/P+B/P)+Momentum+LowVol 三主题，缺 AQR 的 Quality 一极。
 - **52 周 #9**:用 qfq 收盘价计算最高收盘（与研究「调整后最高收盘」一致，避免分红除权假跌破）。
 - **价值 #2**:用 TTM PE/PB 即时值，未做 Fama-French 的 6 月会计滞后与 NYSE 断点 2×3 构造

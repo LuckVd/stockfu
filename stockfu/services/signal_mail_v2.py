@@ -16,8 +16,28 @@ from typing import Iterable
 from stockfu.services.mail import send_card_email
 from stockfu.services.v2_signal import V2SignalReport
 
-# 10 个 V2 alpha 的表头简称 / 全称 / 一句话说明(粒度①图例 + 表头 title)
+# V2 alpha 的表头简称 / 全称 / 一句话说明(粒度①图例 + 表头 title)。
+# 调优后三套(邮件当前使用)在前,十策略研究 alpha 保留供对比复现。
 V2_ALPHA_BRIEFS: dict[str, tuple[str, str, str]] = {
+    # —— 调优后三套(邮件默认,与自选股荐股一致) ——
+    "value_ep_bp_equal_v2": (
+        "价值", "EP+BP 等权价值",
+        "盈利收益率与账面市值比等权(各 0.5),绝对估值越低越好。",
+    ),
+    "dividend_income_history45_v2": (
+        "高股息", "股息率历史分位",
+        "TTM 股息率近 45 期历史相对排名,红利现金流因子。",
+    ),
+    "multi_factor_value_tilt_v2": (
+        "多因子", "价值倾斜复合",
+        "价值(EP+BP 0.6)+动量+低波复合,价值倾斜。",
+    ),
+    "multi_factor_quality_v2": (
+        "质量增强", "多因子 + 质量极",
+        "价值/动量/低波/红利复合 + 质量极(Roe 水平与稳定/毛利率/资产负债率,财务三表 PIT),"
+        "2020+ 近期增强。",
+    ),
+    # —— 十策略研究 alpha(保留) ——
     "multi_factor_v2": (
         "多因子", "复合因子",
         "价值/动量/低波/红利/低β 的加权复合(长样本年化最高)。",
@@ -228,9 +248,10 @@ def run_v2_signal_mail_job(
     if not isinstance(as_of, date):
         as_of = date.fromisoformat(str(as_of))
 
+    from stockfu.services.v2_recommend import RECOMMENDATION_ALPHA_IDS
     from stockfu.services.v2_signal import V2SignalScorer
 
-    scorer = V2SignalScorer()
+    scorer = V2SignalScorer(alpha_ids=list(RECOMMENDATION_ALPHA_IDS))
     report = scorer.score(as_of)
     # scorer 可能把 as_of 截断到实际数据末日(交易日历预埋未来日);展示/主题一律用真实评分日。
     scored_date = report.as_of
