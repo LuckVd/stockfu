@@ -21,6 +21,7 @@ from stockfu.backtest.engine import (
     _backtest_series_ctx,
     _get_day_market,
     _preload_dividend_events,
+    _preload_financial_reports,
     _preload_market_range,
     _trade_calendar_days,
 )
@@ -195,6 +196,8 @@ class V2SignalScorer:
         # 行情列式预载(覆盖 raw 最大回看 + self 历史)
         sctx = _preload_market_range(preload_codes, pre_start, as_of)
         div_index = _preload_dividend_events(self.codes, pre_start, as_of)
+        # 财务三表一次预载 → 质量因子(quality_roe/gross_margin/leverage 等)零逐票查库
+        fin_index = _preload_financial_reports(self.codes, as_of)
         listing, industry = _load_listing_and_industry(self.codes)
         uni_ctx = UniverseContext.load(self.codes, self.universe_rules)
 
@@ -226,7 +229,7 @@ class V2SignalScorer:
 
         # ---- 回放预热 + 评分 as_of(挂内存供给器 → raw 算子零查库)----
         strategy_obs: dict[str, dict[str, StrategyScoreObservation]] = {}
-        with _backtest_series_ctx(sctx, div_index):
+        with _backtest_series_ctx(sctx, div_index, financial_index=fin_index):
             for t in trade_days:
                 is_sample = t in all_sample_dates
                 is_target = t == as_of
