@@ -43,6 +43,11 @@ class RiskPolicy:
     drawdown_brake_mode: str = "scale_all"
     drawdown_recover_dd: float | None = None
     drawdown_recover_high_days: int = 0
+    # 触发点锚定恢复（2026-08-14 新增）：True 时 brake 恢复条件改为
+    # equity >= 触发时点权益 × (1 - drawdown_recover_dd)。峰值锚定恢复在
+    # 2015 股灾后永久死锁（权益多年低于峰值 → 压仓 → 涨不动 → 永不恢复），
+    # 触发点锚定让每次触发都有可达的恢复线。默认 False 保持旧语义。
+    drawdown_recover_trigger_based: bool = False
     market_regime_code: str | None = None
     market_regime_ma_days: int | None = None
     market_regime_enter_band: float = 0.0
@@ -68,6 +73,7 @@ class RiskPolicy:
             "drawdown_brake_mode": self.drawdown_brake_mode,
             "drawdown_recover_dd": self.drawdown_recover_dd,
             "drawdown_recover_high_days": self.drawdown_recover_high_days,
+            "drawdown_recover_trigger_based": self.drawdown_recover_trigger_based,
             "market_regime_code": self.market_regime_code,
             "market_regime_ma_days": self.market_regime_ma_days,
             "market_regime_enter_band": self.market_regime_enter_band,
@@ -156,6 +162,10 @@ def risk_from_dict(d: dict[str, Any]) -> RiskPolicy:
         drawdown_brake_mode=mode,
         drawdown_recover_dd=recover_dd,
         drawdown_recover_high_days=max(int(recover_high or 0), 0),
+        drawdown_recover_trigger_based=bool(d.get(
+            "drawdown_recover_trigger_based",
+            d.get("portfolio_brake_recover_trigger_based", False),
+        )),
         market_regime_code=d.get("market_regime_code", regime.get("code")),
         market_regime_ma_days=d.get("market_regime_ma_days", regime.get("ma_days")),
         market_regime_enter_band=float(d.get("market_regime_enter_band", regime.get("enter_band", 0.0))),
@@ -176,6 +186,8 @@ class RiskOverlay:
         self.peak_equity: float = 0.0
         self.bear_latched: bool = False
         self.brake_latched: bool = False
+        # 回撤刹车首次触发时点的权益（触发点锚定恢复用）。
+        self.brake_trigger_equity: float | None = None
         self.equity_window: list[float] = []
         self.forced_exit_codes: set[str] = set()
         # 仅记录本次 apply 触发强制退出的原因；不参与风险决策。
@@ -188,6 +200,9 @@ class RiskOverlay:
         # 当前调用是否实际修改了理想目标。引擎用它区分“风险需要日级调仓”和
         # “普通组合目标只在 rebalance 日调整”。不要把 risk 输出再次作为下一日输入。
         self.last_adjusted: bool = False
+        # 本次 apply 生效的风险压仓后总目标敞口（None=未压仓）。引擎据此对
+        # rebalancer 开启 override_locks，让降仓豁免最小持仓软锁/限速（2026-08-14 修复）。
+        self.gross_cap_active: float | None = None
 
     def _cap(self, target_weights: dict[str, float], cap: float | None) -> dict[str, float]:
         if cap is None:
@@ -241,9 +256,20 @@ class RiskOverlay:
         trigger_threshold = threshold if threshold > 0 else (tier_threshold or 0.0)
         below = trigger_threshold > 0 and drawdown + 1e-12 >= trigger_threshold
         if below:
+            if not self.brake_latched:
+                # 首次触发：锚定触发时点权益，供触发点锚定恢复使用。
+                self.brake_trigger_equity = equity
             self.brake_latched = True
         elif self.brake_latched:
-            if p.drawdown_recover_high_days > 0:
+            if p.drawdown_recover_trigger_based:
+                # 触发点锚定恢复：权益回到触发时点 × (1-recover_dd) 即解除。
+                # 峰值锚定（recover_dd/滚动新高）在长熊后永久锁死；触发点锚定
+                # 每次触发都有可达恢复线（2026-08-14 修复）。
+                if p.drawdown_recover_dd is not None and self.brake_trigger_equity:
+                    if equity >= self.brake_trigger_equity * (
+                            1.0 - float(p.drawdown_recover_dd)):
+                        self.brake_latched = False
+            elif p.drawdown_recover_high_days > 0:
                 reference = max(self.equity_window) if self.equity_window else 0.0
                 if equity >= reference:
                     self.brake_latched = False
@@ -398,6 +424,16 @@ class RiskOverlay:
             out = self._cap(out, self._market_cap(benchmark_closes))
         else:
             out = self._cap(out, p.max_gross)
+        # 风险硬压仓判定（2026-08-14 引擎修复）：风控（回撤刹车/regime/波动率目标/
+        # 止损止盈）把总目标敞口显著压低（>2%）时记录 gross_cap_active，引擎据此
+        # 让 rebalancer 豁免最小持仓软锁/max_replace/drift——否则急跌中压仓被执行
+        # 层吞掉（2015 股灾实测 gross 全程 1.00、回撤 49% 压不下来）。
+        source_total = sum(float(w) for w in source_target.values() if w and w > 0)
+        out_total = sum(float(w) for w in out.values() if w and w > 0)
+        if source_total > 1e-9 and out_total < source_total * 0.98:
+            self.gross_cap_active = out_total
+        else:
+            self.gross_cap_active = None
         # 缩放、强制退出、止盈上限或 regime/vol cap 任一改变目标时，允许引擎
         # 在非组合调仓日执行风险调整；没有风险变化时不得每天重新平衡组合。
         keys = set(source_target) | set(out)
@@ -412,6 +448,7 @@ class RiskOverlay:
             "peak_equity": self.peak_equity,
             "bear_latched": self.bear_latched,
             "brake_latched": self.brake_latched,
+            "brake_trigger_equity": self.brake_trigger_equity,
             "equity_window": list(self.equity_window),
             "trigger_counts": dict(self.trigger_counts),
             "forced_exit_reasons": dict(self.forced_exit_reasons),
@@ -421,6 +458,8 @@ class RiskOverlay:
         self.peak_equity = float(data.get("peak_equity", 0.0))
         self.bear_latched = bool(data.get("bear_latched", False))
         self.brake_latched = bool(data.get("brake_latched", False))
+        te = data.get("brake_trigger_equity")
+        self.brake_trigger_equity = float(te) if te is not None else None
         self.equity_window = [float(v) for v in (data.get("equity_window") or [])]
         restored = {k: int(v) for k, v in (data.get("trigger_counts") or {}).items()}
         self.trigger_counts = {**self.trigger_counts, **restored}

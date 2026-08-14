@@ -49,6 +49,7 @@ def clear_backtest_financial_provider() -> None:
 _FIELD_PUB = {
     "roe_avg": "pub_profit", "gp_margin": "pub_profit", "net_profit": "pub_profit",
     "revenue": "pub_profit",
+    "revenue_yoy": "pub_profit", "net_profit_yoy": "pub_profit",
     "total_assets": "pub_balance", "liability_to_asset": "pub_balance",
     "equity": "pub_balance",
     "net_cash_oper": "pub_cashflow",
@@ -74,6 +75,8 @@ class FinancialReport:
     gp_margin: float | None = None    # 销售毛利率%（XSMLL）
     net_profit: float | None = None   # 归母净利润（元，PARENT_NETPROFIT）
     revenue: float | None = None      # 营业总收入（元，TOTAL_OPERATE_INCOME）
+    revenue_yoy: float | None = None  # 营收同比（%，YSTZ）
+    net_profit_yoy: float | None = None  # 净利同比（%，SJLTZ）
     total_assets: float | None = None # 总资产（元，TOTAL_ASSETS）
     liability_to_asset: float | None = None  # 资产负债率%（LIABILITY_TO_ASSET）
     equity: float | None = None       # 股东权益合计（元，TOTAL_EQUITY）
@@ -115,6 +118,7 @@ def _rows_to_reports(rows: list[Any]) -> list[FinancialReport]:
                 if src and slot.get(src) is None:
                     slot[src] = r.pub_date
         for f in ("roe_avg", "gp_margin", "net_profit", "revenue",
+                  "revenue_yoy", "net_profit_yoy",
                   "total_assets", "liability_to_asset", "equity",
                   "net_cash_oper"):
             v = getattr(r, f, None)
@@ -132,6 +136,8 @@ def _rows_to_reports(rows: list[Any]) -> list[FinancialReport]:
             pub_cashflow=slot.get("pub_cashflow"),
             roe_avg=slot.get("roe_avg"), gp_margin=slot.get("gp_margin"),
             net_profit=slot.get("net_profit"), revenue=slot.get("revenue"),
+            revenue_yoy=slot.get("revenue_yoy"),
+            net_profit_yoy=slot.get("net_profit_yoy"),
             total_assets=slot.get("total_assets"),
             liability_to_asset=slot.get("liability_to_asset"),
             equity=slot.get("equity"), net_cash_oper=slot.get("net_cash_oper"),

@@ -59,12 +59,18 @@ class Rebalancer:
                protected_codes: set[str] | None = None,
                trading_day_index: int | None = None,
                ranked_codes: list[str] | None = None,
-               locked_target_weights: dict[str, float] | None = None) -> dict[str, float]:
+               locked_target_weights: dict[str, float] | None = None,
+               override_locks: bool = False) -> dict[str, float]:
         """ideal target → actual pending_orders。
 
         protected_codes 只阻止普通减仓/清仓；risk_exit_codes 始终优先，确保止损和
         止盈不会被持仓锁或排名保护吞掉。locked_target_weights 是仍处于最小持有期
         的 FIFO 批次所对应的最低目标权重，防止新加仓批次被提前卖出。
+
+        ``override_locks``（风险硬压仓）：风控（回撤刹车/market regime/波动率目标）
+        主动压低总敞口时置 True，豁免降权/清仓路径上的最小持仓软锁、排名保护、
+        max_replace 限速与 drift 边沿——否则急跌中压仓会被执行层吞掉（2015 股灾
+        实测 gross 全程 1.00，回撤压不下来）。买入路径不受影响（压仓日无需新买）。
         """
         drift = self.policy.rebalance_drift
         cd = self.policy.cooldown_days
@@ -93,7 +99,9 @@ class Rebalancer:
         else:
             exit_codes.sort()
         allowed_exits = (
-            set(exit_codes[:max_replace]) if max_replace > 0 else set(exit_codes)
+            set(exit_codes[:max_replace])
+            if max_replace > 0 and not override_locks
+            else set(exit_codes)
         )
 
         for c, tw in ideal.items():
@@ -105,7 +113,7 @@ class Rebalancer:
                     actual[c] = target              # 新建仓不受冷却/最小持仓约束
                 continue
             cur_w = current_weights.get(c, 0.0)
-            if c not in risk_exits:
+            if c not in risk_exits and not override_locks:
                 target = max(target, float(locked_targets.get(c, 0.0) or 0.0))
                 if hard_cap > 0:
                     target = min(target, hard_cap)
@@ -113,16 +121,18 @@ class Rebalancer:
             if forced_cap and c not in risk_exits:
                 target = hard_cap
             diff = target - cur_w
-            if not forced_cap and abs(diff) <= drift:
+            # 风险硬压仓时跳过 drift 边沿（否则 0.05 的 drift 会吞掉降权单）。
+            if not forced_cap and abs(diff) <= drift and not (
+                    override_locks and diff < 0):
                 continue                            # 偏离不足(边沿触发),不调
             if diff > 0 and cd > 0:                 # 想加仓:过冷却
                 lb = self.last_buy_date.get(c)
                 if lb is not None and (as_of - lb).days < cd:
                     continue
             if diff < 0 and c not in risk_exits:
-                if c in rank_protected and not forced_cap:
+                if c in rank_protected and not forced_cap and not override_locks:
                     continue                        # 票池前 N%:继续持有
-                if not forced_cap and self._min_holding_locked(
+                if not forced_cap and not override_locks and self._min_holding_locked(
                         c, as_of, mhd, pnl, sl, trading_day_index):
                     continue                        # 想减仓:过最小持仓(软锁)
             actual[c] = target
@@ -132,7 +142,7 @@ class Rebalancer:
             forced_cap = hard_cap > 0 and cur_w > hard_cap + 1e-12
             if c not in allowed_exits and c not in risk_exits and not forced_cap:
                 continue
-            if c not in risk_exits:
+            if c not in risk_exits and not override_locks:
                 locked_target = float(locked_targets.get(c, 0.0) or 0.0)
                 if locked_target > 0 and not forced_cap:
                     actual[c] = locked_target
@@ -140,7 +150,7 @@ class Rebalancer:
                 if forced_cap:
                     actual[c] = hard_cap
                     continue
-            if c not in risk_exits:
+            if c not in risk_exits and not override_locks:
                 if c in rank_protected:
                     continue                        # 票池前 N%:继续持有
                 if self._min_holding_locked(

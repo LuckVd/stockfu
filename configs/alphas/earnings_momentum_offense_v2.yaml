@@ -1,0 +1,17 @@
+# 盈利动量进攻（earnings momentum offense）：盈利加速为主轴的进攻策略。
+# 定位：组合的"进攻腿"，风格区别于现有四套（价值/红利/多因子/质量静态）。
+#   - growth_accel（盈利加速）50%：主轴。捕捉"盈利在加速变好"的动态趋势，
+#     IC +1.70%/t=2.48 唯一显著进攻轴（诊断 2026-08）
+#   - momentum_252d_skip21（价格动量）20%：确认上涨趋势（弱但方向正面）
+#   - low_volatility_20d（低波）30%：垫底控回撤（低波才有溢价，A股防守面）
+# 预期：牛市/盈利改善期显著跑赢；熊市相比纯进攻策略回撤更可控（低波垫底）。
+alpha_id: earnings_momentum_offense_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: growth_accel_v2, weight: 0.50, critical: true}
+  - {profile_id: momentum_252d_skip21_v2, weight: 0.20, critical: true}
+  - {profile_id: low_volatility_20d_v2, weight: 0.30, critical: false}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 2
+formal_maturity_policy: force_mature_after_observation

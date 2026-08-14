@@ -21,17 +21,22 @@ from stockfu.services.v2_signal import V2SignalScorer
 ROOT = Path(__file__).resolve().parents[2]
 REPORT_DIR = ROOT / "data" / "reports" / "recommend"
 
-# 调优后固定四套（final canonical，见 docs/SPECS/v2-tuning-results.md 与
-# quality-factor-validation-2026.md）：
-# 价值、高股息、多因子 + 质量增强多因子（multi_factor_quality_v2）。
+# 调优后固定五套（final canonical，见 docs/SPECS/v2-tuning-results.md、
+# quality-factor-validation-2026.md 与 growth-offense-gate-results.md）：
+# 价值、高股息、多因子 + 质量增强多因子（multi_factor_quality_v2）+ 盈利动量进攻
+# （earnings_momentum_offense_v2，vol8 配置）。
 # 第四套为 2026-08-14 用户决策转正（"2020+ 近期增强候选"，三段门禁早期段受
 # 预热数据限制未纳入正式保留集，但作为第四套荐股长期跟踪）。
-# 四套为独立策略，评分仍逐套独立展示，均分仅用于自选池排序。
+# 第五套为 2026-08-15 用户决策纳入：vol8 全段总收益 +237.53% 距四套最差
+# （dividend +321.49%）差距 26.1% < 30% 门槛，纳入正式荐股集合长期跟踪；
+# 按三段门禁仍标"待验证"（2020-2026 Sharpe 微负），属配置决策非门禁转正。
+# 各套为独立策略，评分仍逐套独立展示，均分仅用于自选池排序。
 RECOMMENDATION_ALPHA_IDS: tuple[str, ...] = (
     "value_ep_bp_equal_v2",
     "dividend_income_history45_v2",
     "multi_factor_value_tilt_v2",
     "multi_factor_quality_v2",
+    "earnings_momentum_offense_v2",
 )
 
 

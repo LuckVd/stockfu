@@ -166,6 +166,8 @@ multi_factor_quality_v2 转正为**第四套正式荐股**（RECOMMENDATION_ALPH
 - 影响：荐股均分变为四套均分（排名可能微调）；signal_mail_v2 邮件含四套；
   测试断言同步为四套。
 - 首份四套报告：`data/reports/recommend/2026-08-11_v2_watchlist.json`。
+- 后续：2026-08-15 用户决策新增第五套 `earnings_momentum_offense_v2`（vol8 配置）为正式荐股，
+  荐股均分/邮件变为五套，见 `docs/SPECS/growth-offense-gate-results.md` §10。
 
 ## 产物
 

@@ -1,0 +1,29 @@
+# 进攻策略调参版 8：market_regime_vol3_v2（短窗波动率危机响应）。
+# vol 0.20/63日窗在 A 股常态波动（20-30%）下常年压仓（超额 -41%）；
+# 0.25/63日窗 2015 股灾中 63 日窗口反应太慢（7 月才触发，已跌 30%+）。
+# 折中：21 日短窗 + 0.30 阈值——2015-06 中旬 21 日波动率即飙升（提前 3 周
+# 压仓），常态 20-30% 波动率下 vscale≈0.86-1.0 几乎不压，波动率回落自动恢复。
+# regime 保持 MA200+enter3%+压 50%（温和）。
+# 依赖 2026-08-14 引擎修复（风控压仓豁免执行层软锁）。
+risk_policy_id: market_regime_vol3_v2
+version: 1
+stop_loss: null
+take_profit: null
+take_profit_tiers: []
+take_profit_hard_pct: null
+drawdown_brake: null
+drawdown_brake_scale: 0.50
+drawdown_brake_mode: scale_all
+drawdown_brake_max_gross: null
+drawdown_brake_tiers: []
+drawdown_recover_dd: null
+drawdown_recover_high_days: 0
+market_regime_code: sh000300
+market_regime_ma_days: 200
+market_regime_enter_band: 0.03
+market_regime_exit_band: 0.03
+market_regime_max_gross: 0.50
+volatility_target: 0.30
+volatility_window: 21
+volatility_floor: 0.30
+max_gross: null
