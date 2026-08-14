@@ -1,0 +1,28 @@
+# 进攻策略调参版 11：market_regime_vol6_v2（钝 regime + 短窗波动率）。
+# vol3（MA200+enter3%+vol21 日窗）2013-2019 极优（回撤 31.23%、超额 +4.91%、
+# Sharpe 0.75），但 2020-2026 超额 -2.85%（MA200 regime 触发 697 次、压仓过频）。
+# 调参版1（MA300 无 vol）2020-2026 超额 +20.23% 但 2013-2019 回撤 49%（2015 均线滞后）。
+# 组合：MA300 钝 regime（牛市少压）+ 21 日短窗 vol 0.30（2015-06 提前危机响应、
+# 波动率回落自动恢复）。2013-2019 回撤预期 ~31-35%、2020-2026 超额预期保正。
+risk_policy_id: market_regime_vol6_v2
+version: 1
+stop_loss: null
+take_profit: null
+take_profit_tiers: []
+take_profit_hard_pct: null
+drawdown_brake: null
+drawdown_brake_scale: 0.50
+drawdown_brake_mode: scale_all
+drawdown_brake_max_gross: null
+drawdown_brake_tiers: []
+drawdown_recover_dd: null
+drawdown_recover_high_days: 0
+market_regime_code: sh000300
+market_regime_ma_days: 300
+market_regime_enter_band: 0.03
+market_regime_exit_band: 0.03
+market_regime_max_gross: 0.50
+volatility_target: 0.30
+volatility_window: 5
+volatility_floor: 0.30
+max_gross: null
