@@ -1,0 +1,31 @@
+# 成长（净利同比）：latest_ni_yoy_pct。
+# 高增速 → 高分，进攻性（利润加速）。负增速留真实值。
+# 异常大绝对值（>±300%）在高位饱和，防少数极端股主导（换手率/题材虚增）。
+profile_id: growth_ni_v2
+version: 1
+raw_metric:
+  id: growth_ni
+  params: {}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-100, 0], [-30, 20], [0, 50], [20, 62], [50, 75], [100, 88], [300, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2010-01-01
