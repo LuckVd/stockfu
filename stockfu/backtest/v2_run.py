@@ -24,6 +24,7 @@ from stockfu.factors.raw.dividend import compute_dividend_yield_ttm
 from stockfu.factors.raw.downside_volatility import compute_downside_volatility
 from stockfu.factors.raw.earnings_yield import compute_earnings_yield
 from stockfu.factors.raw.fifty_two_week_high import compute_fifty_two_week_high
+from stockfu.factors.raw.growth import compute_growth_ni, compute_growth_rev
 from stockfu.factors.raw.momentum import compute_momentum
 from stockfu.factors.raw.quality import (
     compute_asset_growth,
@@ -85,6 +86,9 @@ RAW_COMPUTERS = {
         "net_margin": RawComputerSpec(compute_net_margin, "net_profit_over_revenue_pct"),
         "cash_quality": RawComputerSpec(compute_cash_quality, "ocf_over_net_profit_pct"),
         "asset_growth": RawComputerSpec(compute_asset_growth, "asset_growth_yoy_pct"),
+        # —— 成长因子 raw（2026-08，财务三表 PIT，见 docs/SPECS/style-factor-research-2026.md）——
+        "growth_ni": RawComputerSpec(compute_growth_ni, "latest_ni_yoy_pct"),
+        "growth_rev": RawComputerSpec(compute_growth_rev, "latest_rev_yoy_pct"),
     }
 
 # alpha 的默认 deployment。显式传入 --portfolio-v2/--risk-v2 仍可做对照实验；
@@ -110,6 +114,10 @@ DEFAULT_V2_DEPLOYMENTS = {
     "defensive_low_beta_v2":    {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
     "fifty_two_week_high_v2":   {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
     "multi_factor_v2":          {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    # —— 动量+成长进攻（2026-08）：独立纯进攻 alpha，趋势风控兜底 ——
+    "momentum_growth_offense_v2": {
+        "portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "trend_trailing_v2",
+    },
 }
 
 
