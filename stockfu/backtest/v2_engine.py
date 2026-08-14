@@ -41,6 +41,7 @@ from stockfu.backtest.engine import (
     _get_trade_price,
     _metrics,
     _preload_dividend_events,
+    _preload_financial_reports,
     _preload_market_range,
     _preload_cash_dividends,
     _preload_stock_dividends,
@@ -567,6 +568,40 @@ def _lot_closures(code: str, lots: list[tuple[int, date]], shares: int,
     return out
 
 
+def _locked_lot_target_weights(
+        account: VirtualAccount, prices: dict[str, float], as_of: date,
+        day_index: int, day_index_by_date: dict[date, int],
+        min_holding_days: int) -> dict[str, float]:
+    """返回最小持有期内 FIFO 批次对应的最低目标权重。
+
+    ``Rebalancer`` 只处理权重，不应直接依赖账户对象；这里把已有的 lots
+    账本转换为权重下限。这样同一代码先建仓后加仓时，较新的批次不会因为
+    代码级 holding_since 已经过期而被提前卖出。没有 lots 的旧 checkpoint
+    仍由 Rebalancer 的兼容性软锁负责。
+    """
+    if min_holding_days <= 0:
+        return {}
+    equity = account.equity(prices)
+    if equity <= 0:
+        return {}
+    out: dict[str, float] = {}
+    for code, pos in account.positions.items():
+        if pos.shares <= 0:
+            continue
+        locked_shares = 0
+        for shares, buy_date in pos.lots:
+            if shares <= 0:
+                continue
+            buy_index = day_index_by_date.get(buy_date)
+            if buy_index is not None and day_index - buy_index < min_holding_days:
+                locked_shares += int(shares)
+        locked_shares = min(locked_shares, int(pos.shares))
+        px = prices.get(code, 0.0)
+        if locked_shares > 0 and px > 0:
+            out[code] = locked_shares * px / equity
+    return out
+
+
 def _open_holding_periods(account: VirtualAccount, as_of: date,
                           day_index_by_date: dict[date, int]) -> list[dict]:
     """返回末日仍开放的 FIFO 批次，供最长持仓和未平仓分布统计使用。"""
@@ -987,6 +1022,7 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
     preload_codes = sorted({*codes, bench, risk_bench})
     sctx = _preload_market_range(preload_codes, pre_start, cfg.eval_end)
     div_index = _preload_dividend_events(codes, pre_start, cfg.eval_end)
+    fin_index = _preload_financial_reports(codes, cfg.eval_end)
 
     # 数据截断检测：交易日历可能预埋到未来，但行情只到库末日。
     # 请求终点超过库数据末日时截断到 data_end，不跑无行情日（否则会产生
@@ -1581,7 +1617,7 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
     # 循环结束后 finalize 用它（覆盖正常/截断/空续跑各路径）。
     actual_last_completed: date | None = resume_last_completed
 
-    with _backtest_series_ctx(sctx, div_index):
+    with _backtest_series_ctx(sctx, div_index, fin_index):
         for day_index, t in enumerate(dates_all):
             if resume_last_completed is not None and t <= resume_last_completed:
                 continue
@@ -1925,6 +1961,11 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
                             for c in held
                             if acct.positions[c].avg_cost > 0 and risk_prices.get(c, 0.0) > 0
                         }
+                        ranked_codes = portfolio.ranked_candidates(
+                            strategy_scores, ctx, t)
+                        locked_target_weights = _locked_lot_target_weights(
+                            acct, risk_prices, t, day_index, day_index_by_date,
+                            portfolio.policy.min_holding_days)
                         risk_exit_codes = getattr(risk, "forced_exit_codes", set())
                         cancelled_by_rank = _cancel_protected_sell_orders(
                             pending_orders, cur_w, rank_protected_codes, risk_exit_codes)
@@ -1935,6 +1976,8 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
                             risk_exit_codes=risk_exit_codes,
                             protected_codes=rank_protected_codes,
                             trading_day_index=day_index,
+                            ranked_codes=ranked_codes,
+                            locked_target_weights=locked_target_weights,
                         )
                         # 挂单必须与最新 risk-adjusted target 一致：目标已撤销
                         # (→0/消失)的买入挂单立即取消，否则停牌解除后会买入一个

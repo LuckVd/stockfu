@@ -1,0 +1,9 @@
+# 研究版：质量单因子（ROE 质量）。验证质量维度独立 alpha 用，非正式保留配置。
+alpha_id: quality_v1
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: quality_roe_v1, weight: 1.0, critical: true}
+minimum_coverage: 0.50
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

@@ -4,7 +4,9 @@
 > [`docs/BACKTEST.md`](BACKTEST.md)，策略参数以 `stockfu/ai/strategies/*.yaml`
 > 和对应算子源码为准，避免同一结果在多份历史报告中漂移。
 >
-> 调研日期：2026-08-02；本页状态更新：2026-08-05。
+> 调研日期：2026-08-02；本页状态更新：2026-08-13。三策略调优的详细流程和最终数字以 [`v2-tuning-results.md`](SPECS/v2-tuning-results.md) 为准。
+>
+> 2026-08-13 补充：风格因子最新实证调研（质量/成长/盈利、新异象、行业轮动）见 [`SPECS/style-factor-research-2026.md`](SPECS/style-factor-research-2026.md)，其中质量/盈利与价值因子负相关互补、隔夜-日内分解为日线可复现的新维度。
 
 ## 1. 调研方法
 
@@ -29,11 +31,11 @@
 | 相对市场 β | ✅ | 个股与 `sh000300` 同日期对齐 |
 | 历史指数成分 | ✅ | 沪深300、中证500时点成分并集 |
 | 情绪与资金流 | ✅（择时/展示） | `index_snapshot`、`factor_snapshot`、`sector_flow_snapshot` |
-| 质量（ROE、ROA、毛利率） | ❌ | 未接入财务三表 |
-| 成长（利润或营收增速） | ❌ | 未接入利润表时序 |
+| 质量（ROE、毛利率） | ✅ | 东财财务三表（2026-08 接入）：`financial_profit`（ROE/毛利率/净利/营收/同比）、`financial_balance`（资产负债率/流动比率）、`financial_cashflow`；2010Q1 起全市场，PIT 用 `pub_date` 公告日 |
+| 成长（利润或营收增速） | ✅ | `financial_profit.revenue_yoy / net_profit_yoy`、`financial_growth`；详见 [`SPECS/financial-data-design.md`](SPECS/financial-data-design.md) |
 | PS、EV/EBITDA、流通市值 | ❌ | 当前模型没有对应 PIT 字段 |
 
-因此本批的低波、低 β、低回撤和趋势平稳只能作为“质量”价格代理，不能宣传为真实质量因子。
+因此本批早期策略的低波、低 β、低回撤和趋势平稳曾是“质量”价格代理；2026-08 接入东财财务三表后，质量因子可直接用真实 ROE/毛利率/资产负债率构造（数据边界见上表）。
 `size` 的代理期也必须在报告中注明，直到补齐 `mktcap` 并重做历史回补。
 
 ## 3. canonical 策略集合
@@ -77,8 +79,9 @@
 - 10 个算子已注册，10 个 canonical YAML 可编译并已登记到 seed 目录。
 - `small_cap_low_turnover` 已完成真实数据端到端冒烟，覆盖市值/换手预载和市值代理路径。
 - 第一批 10 个 canonical full 已完成；统一结果表、口径和风险审计见 [`BACKTEST.md`](BACKTEST.md) §0.6.10。
-- canonical full 中 7/10 的总收益高于沪深300，但这不是样本外通过结论；修正风险配置后的 train/test 尚未全部重跑。
+- canonical full 中 7/10 的总收益高于沪深300，但这不是样本外通过结论；整体十策略的修正风险配置 train/test 尚未全部重跑，不能把该预筛选结论外推为十策略整体的样本外结论。
 - `smart_beta_multi_factor` 仅作风格暴露参照：历史持仓显示明显小盘倾斜，正式保留前仍需市值中性化和三跑验证；排查记录见 [`BACKTEST.md`](BACKTEST.md) §0.6.8。
+- 在上述预筛选基础上，价值、高股息、多因子三套已完成执行层、Alpha 层、风险覆盖层三阶段调优，并完成统一日调仓的三段 canonical 复核；最终结论见 [`v2-tuning-results.md`](SPECS/v2-tuning-results.md)。
 
 ### 第二批研究模板（非 canonical 结论）
 
@@ -103,8 +106,8 @@
 ## 6. 后续事项
 
 1. 在 `stockfu/data/baostock_source.py` 加入 `mktcap` 字段解析、DTO 和落库，完成历史回补后重新验证 `size`。
-2. 若接入财务三表，新增真正的质量/成长算子，并把当前价格代理降级为独立风格因子。
-3. 为第一批 canonical 策略重跑修正配置后的两段子样本；只有方向一致才进入正式保留集。
+2. ~~若接入财务三表，新增真正的质量/成长算子~~ — **已完成（2026-08-13）**：东财财务三表已入库（2010Q1 起、全市场、PIT 公告日），待实现质量/成长 raw 因子与三段门禁；原价格代理仅作独立风格因子保留。
+3. 价值、高股息、多因子三套的修正配置三段复核已完成；其余第一批候选仍需在进入正式保留集前按当前协议重跑。
 4. 让 `low_beta` 的基准可配置，评估沪深500对中小盘策略的适配性。
 5. 考虑在 YAML 缺少风险段时发出显式告警，防止静默继承引擎默认止损。
 

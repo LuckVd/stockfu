@@ -1,0 +1,32 @@
+# 现金流质量（年报经营现金流/归母净利×100，Sloan 应计异象逻辑：利润须有现金支撑）。
+# 分布右尾极长（净利小但现金流大的公司比值爆表）：p50≈160 / p90≈683 / p99≈4444，
+# knots 在 400+ 封顶高分，避免极端值主导；负值（利润无现金支撑）低分。
+# 亏损公司（净利<=0）缺失收缩——覆盖率 ~75%，组合内非 critical。
+profile_id: cash_quality_v1
+version: 1
+raw_metric:
+  id: cash_quality
+  params: {}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-100, 0], [-50, 10], [0, 25], [50, 40], [100, 55], [150, 70], [250, 85], [400, 95], [800, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 5
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2016-01-01

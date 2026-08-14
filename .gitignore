@@ -30,3 +30,6 @@ data/proxy_sources.json
 docs/baostock-api/
 # 聚宽 API 文档副本（同上,第三方参考,勿入库）
 docs/jq-api/
+
+# pi-subagents 运行时产物（debug artifacts，不入库）
+.pi-subagents/

@@ -1,6 +1,6 @@
 # StockFu A 股回测：当前研究模式
 
-> 文档状态：2026-08-10。旧的高可信 Raw 账户、独立公司行为账本和旧版 strict 账本方案已从主回测实现移除；仍有价值的风险提示保留在“研究经验”中。当前交易约束仍由宇宙与执行规则统一执行。**V2 修复前的回测数字已作废；修复后正式 canonical 验收见 §5。**
+> 文档状态：2026-08-13。旧的高可信 Raw 账户、独立公司行为账本和旧版 strict 账本方案已从主回测实现移除；仍有价值的风险提示保留在“研究经验”中。当前交易约束仍由宇宙与执行规则统一执行。**V2 修复前的回测数字已作废；修复后正式 canonical 验收和三策略调优总结见 §5。**
 
 ## 0. 当前口径
 
@@ -137,6 +137,16 @@ python3 main.py --update-backtests --strategies a,b --start 2007-01-04 --end 202
 
 7/10 的 full 总收益超过沪深300，但这只是本轮“完成 10 个全周期回测”的停止条件，不是 7 个策略已通过当前固定三段门禁。当前安全参考策略为 `graham_defensive_value`；`smart_beta_multi_factor` 仅作风格暴露参照。
 
+### 0.6.11 V2 十策略三段筛选（2026-08-12，研究性 / 非 canonical）
+
+基于 `run-...188679`（monthly/weekly，git-dirty 时执行，49/90 complete 后被 canonical 门禁拒）+ 新跑 canonical `value_ep_bp_v2 daily`（`run-20260812-112002-663595`）做的 V2 十策略筛选性三段分析。回测引擎代码在 188679 之后未改（后续提交 88e3083/01df060/d1cb934 仅涉及 scheduler/recommend），故结论用于「决定优化哪个策略」可信；**但 provenance 非 canonical（未绑 clean commit SHA），不得作为正式准入门禁结论**。坐实须 git clean 重跑三段。
+
+各策略取最优频率 full 段结果：多因子(monthly, Sharpe 0.99)、价值(daily, 0.81)、高股息(monthly, 0.65)三段超额全正且有实质超额(+174~+395)，为唯一值得继续投入的三条；低波动(monthly, 0.59)方向稳但超额仅 +9（弱 alpha）；低Beta防御(monthly, 0.54)full 超额 +1 且 2013-2019 牛市跑输 29%，属防御风格 beta 非 alpha；52周新高/动量/反转/趋势/RSI 三段方向混乱或 full 即跑输，淘汰（印证 A 股短期动量弱、反转接飞刀）。
+
+频率验证：value_ep_bp 随调仓频率单调改善（月 0.64→周 0.73→日 0.81，daily 换手 472% 反低于 weekly 814%）；multi_factor/dividend/low_vol 高频劣化、甜点为 monthly（low_vol weekly 已现门禁裂缝 --+）。multi_factor daily 子段因 OOM 缺失（4 因子 × 全量段 × 日度，3.6G 内存无 swap）。完整结果表见 `docs/SPECS/ten-strategies-results.md` 文末。
+
+该节是 2026-08-12 的研究性预筛选记录。随后已对价值、高股息、多因子三套日调仓候选完成三阶段调优和干净工作区下的三段 canonical 复核，正式流程与结果见 [`docs/SPECS/v2-tuning-results.md`](SPECS/v2-tuning-results.md) 和 §5.6。
+
 ## 4. 结果解释与复现要求
 
 回测结果必须保留 `data/backtest/run-tune-{strategy}-full.json.gz` 及 `.meta.json`，并记录运行时的 Git commit、参数、数据截止日和缓存命中情况。V2 正式三段结果必须遵守 §0.3.1 的 suite 目录契约；删除某策略缓存只会删除可再生工件，不代表删除了策略代码或验证结论。
@@ -226,3 +236,19 @@ V2 的 checkpoint schema 已升级为 3；记录层与评分审计分开保存�
 ### 5.5 V2 引擎可用性结论
 
 全量回归 `348 passed`，合成非空交易、月度调度、停牌延迟订单、风险缩放不累乘、raw 契约、终点采样、快照隔离、checkpoint/audit 恢复和 canonical fail-closed 均有覆盖。两组磁盘工件分别为 `data/backtest/v2-canonical-{no-overlay,v1-core}-98be076.json` 及同名 audit/log；独立报告 `data/backtest/v2-canonical-verification-98be076.json` 对 finalized、provenance、state/全部组件/output/run_id、1353 行 audit 链、快照 SHA/权限和 939 只候选池 fingerprint 共 14 类检查全部通过。**V2 在当前 vertical slice 内通过工程正确性验收，可用于可复现研究回测**；这不代表其余旧因子、行业点时比较、长周期策略研究门禁或实盘收益保证已经完成。
+
+### 5.6 V2 三策略三阶段调优结果（2026-08-13）
+
+本轮将价值、高股息、多因子统一改为日调仓，按“执行层 → Alpha 层 → 风险覆盖层 → 最终 canonical 复核”依次调优。执行层加入每日进出限制、最低持有期、漂移阈值、单票上限、排名替换和持仓批次锁定；Alpha 层分别比较价值权重、高股息历史窗口和多因子倾斜；风险层比较组合刹车、市场状态及组合方案。
+
+最终配置为：价值 `value_ep_bp_equal_v2 + pf_daily_top15_slow21_v2`，高股息 `dividend_income_history45_v2 + pf_daily_top10_slow21_v2`，多因子 `multi_factor_value_tilt_v2 + pf_daily_top15_r1_hold63_v2`；三套均为 `no_overlay_v1`。三套 suite 均 `complete`、`canonical=true`，各含 `full`、`2013-2019`、`2020-2026` 三段，统一初始资金 1,000,000、观察窗 271、HS300 历史成分和同一快照。
+
+结果格式为“年化 / Sharpe / 最大回撤 / 年化换手”：
+
+| 策略 | Full | 2013–2019 | 2020–2026 |
+|---|---|---|---|
+| 价值 | 15.18% / 0.82 / 31.33% / 456.81% | 25.75% / 1.11 / 31.33% / 663.70% | 10.50% / 0.73 / 14.92% / 344.41% |
+| 高股息 | 12.72% / 0.68 / 38.02% / 801.19% | 16.48% / 0.76 / 38.02% / 839.66% | 11.36% / 0.71 / 17.87% / 830.30% |
+| 多因子 | 14.38% / 0.77 / 38.25% / 68.82% | 20.47% / 0.91 / 38.25% / 129.52% | 14.65% / 0.98 / 12.47% / 125.77% |
+
+结论：多因子是本轮最成功、最均衡的配置；价值可用但换手仍需压降；高股息收益有效但交易层尚未达标。更强限频 policy 和风险覆盖虽能降低部分交易或回撤，却牺牲验证期收益/Sharpe，因此没有进入最终配置。完整流程、候选比较、suite 路径和后续计划见 [`docs/SPECS/v2-tuning-results.md`](SPECS/v2-tuning-results.md)。

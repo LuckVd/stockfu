@@ -1,4 +1,4 @@
-"""V2 十策略自选股荐股。
+"""V2 调优后三套策略自选股荐股（价值/高股息/多因子）。
 
 该入口只负责把 V2 单日评分器装配成“自选股荐股”语义：股票池取
 ``Asset.is_watch`` 且 ``asset_type=stock``，不把指数成分池或 ETF 混入。
@@ -21,20 +21,17 @@ from stockfu.services.v2_signal import V2SignalScorer
 ROOT = Path(__file__).resolve().parents[2]
 REPORT_DIR = ROOT / "data" / "reports" / "recommend"
 
-# 2026-08 最新十策略长样本对照中每个唯一 alpha 的当前代表顺序：
-# 多因子、价值、高股息、低波、52 周高、低 beta、动量、反转、趋势、RSI。
-# 这是研究排序，不是收益承诺；评分仍逐策略独立展示。
+# 调优后固定四套（final canonical，见 docs/SPECS/v2-tuning-results.md 与
+# quality-factor-validation-2026.md）：
+# 价值、高股息、多因子 + 质量增强多因子（multi_factor_quality_v2）。
+# 第四套为 2026-08-14 用户决策转正（"2020+ 近期增强候选"，三段门禁早期段受
+# 预热数据限制未纳入正式保留集，但作为第四套荐股长期跟踪）。
+# 四套为独立策略，评分仍逐套独立展示，均分仅用于自选池排序。
 RECOMMENDATION_ALPHA_IDS: tuple[str, ...] = (
-    "multi_factor_v2",
-    "value_ep_bp_v2",
-    "dividend_income_v2",
-    "low_volatility_pure_v2",
-    "fifty_two_week_high_v2",
-    "defensive_low_beta_v2",
-    "momentum_jt_v2",
-    "reversal_jl_v2",
-    "trend_following_v2",
-    "rsi_reversal_v2",
+    "value_ep_bp_equal_v2",
+    "dividend_income_history45_v2",
+    "multi_factor_value_tilt_v2",
+    "multi_factor_quality_v2",
 )
 
 
@@ -94,6 +91,19 @@ def quote_coverage(codes: list[str], as_of: date) -> dict[str, Any]:
     }
 
 
+_ALPHA_LABELS = {
+    "value_ep_bp_equal_v2": "value",
+    "dividend_income_history45_v2": "dividend",
+    "multi_factor_value_tilt_v2": "mf_tilt",
+    "multi_factor_quality_v2": "mf_quality",
+}
+
+
+def _short_alpha(alpha_id: str) -> str:
+    """打印用短列名：已知策略用固定标签（避免截断重名），未知回退移除后缀截断。"""
+    return _ALPHA_LABELS.get(alpha_id, alpha_id.removesuffix("_v2")[:8])
+
+
 def _rank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """增加荐股视图字段；保留每个策略原始 0–100 分。"""
     out: list[dict[str, Any]] = []
@@ -133,7 +143,7 @@ def run_v2_watchlist_recommendation(
     alpha_ids: list[str] | None = None,
     save: bool = True,
 ) -> dict[str, Any]:
-    """在自选股票范围运行 V2 十策略单日荐股并保存完整报告。"""
+    """在自选股票范围运行 V2 调优后三套策略单日荐股并保存完整报告。"""
     if isinstance(as_of, str):
         as_of = date.fromisoformat(as_of[:10])
     codes = watchlist_stock_codes(as_of)
@@ -171,8 +181,8 @@ def run_v2_watchlist_recommendation(
         "scored_size": report.n_scored,
         "quote_coverage": coverage,
         "strategy_selection": {
-            "source": "data/backtest/ten-strategies-long/comparison.md",
-            "method": "每个唯一 alpha 取长样本最佳调仓频率，按总收益排序",
+            "source": "docs/SPECS/v2-tuning-results.md",
+            "method": "调优后固定三套（价值/高股息/多因子），final canonical",
             "research_only": True,
         },
         "ranking_note": (
@@ -203,7 +213,7 @@ def print_v2_watchlist_recommendation(result: dict[str, Any], *, top_n: int = 30
         f"股票池 {result.get('pool_size')} 只 · 评分 {result.get('scored_size')} 只"
     )
     print("排名  代码      名称        均分   多头/空头  结论  "
-          + " ".join(f"{aid.removesuffix('_v2')[:8]:>8}" for aid in alpha_ids))
+              + " ".join(f"{_short_alpha(aid):>8}" for aid in alpha_ids))
     for row in rows[:max(0, top_n)]:
         scores = row.get("scores") or {}
         cells = []

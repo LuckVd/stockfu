@@ -1,0 +1,25 @@
+# 阶段三：只测试组合回撤刹车，不叠加个股止损/止盈或市场 regime。
+# 回撤达到 10% 后将目标总敞口缩为 50%；回撤恢复到 5% 以下才释放，
+# 用恢复带避免在阈值附近频繁开关。
+risk_policy_id: portfolio_brake_v2
+version: 1
+stop_loss: null
+take_profit: null
+take_profit_tiers: []
+take_profit_hard_pct: null
+drawdown_brake: 0.10
+drawdown_brake_scale: 0.50
+drawdown_brake_mode: scale_all
+drawdown_brake_max_gross: null
+drawdown_brake_tiers: []
+drawdown_recover_dd: 0.05
+drawdown_recover_high_days: 0
+market_regime_code: null
+market_regime_ma_days: null
+market_regime_enter_band: 0.0
+market_regime_exit_band: 0.03
+market_regime_max_gross: 0.50
+volatility_target: null
+volatility_window: 63
+volatility_floor: 0.30
+max_gross: null

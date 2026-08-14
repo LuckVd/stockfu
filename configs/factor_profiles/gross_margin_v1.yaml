@@ -1,0 +1,31 @@
+# 销售毛利率（最新已公告报告期 XSMLL%，定价能力代理，华证新质量因子成分之一）。
+# 锚点依据 2026-08 成分股实测分布（p50≈24%；银行/券商无此字段 → 缺失收缩）。
+# 可负（毛利为负是真实信息），负区间低分。
+profile_id: gross_margin_v1
+version: 1
+raw_metric:
+  id: gross_margin
+  params: {}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-20, 0], [0, 15], [10, 30], [20, 40], [30, 50], [40, 60], [50, 70], [65, 85], [80, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 5
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2016-01-01

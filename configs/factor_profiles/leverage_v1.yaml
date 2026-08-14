@@ -1,0 +1,31 @@
+# 资产负债率（最新已公告报告期 LIABILITY_TO_ASSET%，财务安全，越低越好）。
+# 锚点依据 2026-08 成分股实测分布（p50≈48%；金融股普遍 85-92%）。
+# direction=lower_is_better：knots 分数随 raw 升高而降低；>100（资不抵债）截断到 0 分。
+profile_id: leverage_v1
+version: 1
+raw_metric:
+  id: leverage
+  params: {}
+direction: lower_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[0, 100], [20, 90], [35, 78], [50, 60], [60, 45], [70, 30], [80, 15], [90, 5], [100, 0]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 5
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2016-01-01

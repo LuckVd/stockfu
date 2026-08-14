@@ -1,0 +1,31 @@
+# 总资产同比增速（QMJ 成长性维度，**负向**：高资产扩张通常伴随过度投资/商誉风险）。
+# 锚点依据 2026-08 成分股实测分布（p10≈-8.4 / p50≈3.4 / p90≈21.4 / p99≈65.2）。
+# direction=lower_is_better：knots 分数随增速升高而降低。
+profile_id: asset_growth_v1
+version: 1
+raw_metric:
+  id: asset_growth
+  params: {}
+direction: lower_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-30, 100], [-10, 85], [0, 70], [5, 60], [10, 50], [20, 35], [30, 25], [50, 15], [80, 5]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 10
+      sampling: month_end_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 5
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2016-01-01
