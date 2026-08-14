@@ -29,19 +29,27 @@ from stockfu.backtest.factor_diag import (
     _series_stats,
     _spearman,
 )
-from stockfu.factors.raw.growth import compute_growth_ni
+from stockfu.factors.raw.growth import compute_growth_accel, compute_growth_ni
 from stockfu.factors.raw.momentum import compute_momentum
 from stockfu.factors.raw.trend_linearity import compute_trend_linearity
 from stockfu.factors.raw.volatility import compute_low_volatility_20d
 
 INDEXES = ("000905", "000300")
 MIN_CROSS_SECTION = 200
-# 进攻轴（高弹性用低波取负 = 高波）
+# 进攻轴 raw 计算器。high_vol 用低波实际值（进攻方向=反向，需反号看）。
 COMPUTERS = {
     "momentum_12_1": lambda c, t: compute_momentum(c, t),
     "trend_linearity": lambda c, t: compute_trend_linearity(c, t),
     "growth_ni": lambda c, t: compute_growth_ni(c, t),
-    "high_vol(tmp)": lambda c, t: compute_low_volatility_20d(c, t),
+    "growth_accel": lambda c, t: compute_growth_accel(c, t),
+    "low_vol(实际)": lambda c, t: compute_low_volatility_20d(c, t),
+}
+
+# 活跃度进攻轴：直接从预载行情列式数组读取（turn=换手率%, amt=成交额元），
+# 无需 raw 计算器。断言：换手/成交额高 = 活跃，进攻候选，IC 为正才值得做。
+ACTIVITY_KEYS = {
+    "turnover(换手%)": "turn",
+    "amount(成交额)": "amt",
 }
 
 
@@ -74,7 +82,13 @@ def build_panels(codes: list[str], signal_days: list[date], h: int, sctx):
     panels: dict[str, dict[tuple[str, date], float]] = {k: {} for k in computers}
     missing: dict[str, int] = {k: 0 for k in computers}
     total = 0
+    series, dates, _date_idx, _valid = sctx
+    # 活跃度轴：按日从列式数组取 nonzero 真实值；成交额取对数(右偏压缩)
+    for ak, col_key in ACTIVITY_KEYS.items():
+        panels[ak] = {}
+        missing[ak] = 0
     for t in signal_days:
+        ti = _date_idx.get(t)
         for c in codes:
             total += 1
             for k, fn in computers.items():
@@ -83,7 +97,15 @@ def build_panels(codes: list[str], signal_days: list[date], h: int, sctx):
                     panels[k][(c, t)] = obs.raw_value
                 else:
                     missing[k] += 1
-    series, dates, _date_idx, _valid = sctx
+            cols = series.get(c)
+            if cols is None or ti is None:
+                continue
+            for ak, col_key in ACTIVITY_KEYS.items():
+                v = cols[col_key][ti]
+                if not math.isnan(v) and v > 0:
+                    panels[ak][(c, t)] = math.log(v) if col_key == "amt" else float(v)
+                else:
+                    missing[ak] += 1
     price_panel: dict[str, dict[date, float]] = {}
     for c in codes:
         cols = series.get(c)
@@ -129,14 +151,15 @@ def main() -> None:
             print(f"{k:<18}{st['mean_ic']*100:>8.2f}{st['ic_std']*100:>8.2f}"
                   f"{st['ic_ir']:>8.2f}{st['t_stat']:>8.2f}{st['pct_positive']:>7.1f}%"
                   f"{missing[k]:>7.1f}%")
-        print("\n== Q1-Q5 分位收益（%·月）与多空价差（高vol为实际值，非进攻方向） ==")
+        print("\n== Q1-Q5 分位收益（%·月）与多空价差（low_vol为实际值，进攻方向是反号） ==")
         print(f"{'因子':<18}{'Q1(低)':>8}{'Q2':>7}{'Q3':>7}{'Q4':>7}{'Q5(高)':>7}{'多空':>8}{'单调':>7}")
         for k, panel in panels.items():
             means, spread, mono, _m = _quantile_returns(panel, fwd, signal_days, 5)
             print(f"{k:<18}" + "".join(f"{x:>7.2f}" if x == x else f"{'nan':>7}" for x in means)
                   + f"{spread:>8.2f}{mono:>7.2f}")
-        print("\n== 各进攻轴与 momentum（主攻）横截面 Spearman 相关性 ==")
-        for k in COMPUTERS:
+        print("\n== 各轴与 momentum（主攻）横截面 Spearman 相关性 ==")
+        all_keys = list(COMPUTERS.keys()) + list(ACTIVITY_KEYS.keys())
+        for k in all_keys:
             if k == "momentum_12_1":
                 continue
             corrs = []
@@ -149,18 +172,6 @@ def main() -> None:
             if corrs:
                 print(f"  {k:<18} vs momentum: mean_rho={statistics.mean(corrs):+.3f}  "
                       f"n={len(corrs)}")
-        # 高弹性：报告低波与动量的相关性（进攻策略里用其反向）
-        corrs_lv = []
-        k = "high_vol(tmp)"
-        for t in signal_days:
-            pairs = [(panels[k].get((c, t)), panels["momentum_12_1"].get((c, t)))
-                     for c in codes]
-            pairs = [(x, y) for x, y in pairs if x is not None and y is not None]
-            if len(pairs) > MIN_CROSS_SECTION:
-                corrs_lv.append(_spearman([p[0] for p in pairs], [p[1] for p in pairs]))
-        if corrs_lv:
-            print(f"  low_vol(实际)      vs momentum: mean_rho={statistics.mean(corrs_lv):+.3f}  "
-                  f"n={len(corrs_lv)}  (进攻用高波=反向，需反号看)")
 
 
 if __name__ == "__main__":

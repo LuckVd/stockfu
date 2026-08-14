@@ -9,8 +9,10 @@ from unittest.mock import patch
 import pytest
 
 from stockfu.factors.raw.growth import (
+    METRIC_ACCEL,
     METRIC_NI,
     METRIC_REV,
+    compute_growth_accel,
     compute_growth_ni,
     compute_growth_rev,
 )
@@ -134,4 +136,67 @@ def test_growth_rev_fingerprint_matches_v2_registry():
     assert spec.algo == "latest_rev_yoy_pct"
     with _patch_reports([_rep(2025, 4, date(2026, 4, 20), rev_yoy=10.0)]):
         obs = compute_growth_rev("600001", AS_OF)
+    assert obs.raw_fingerprint == fp
+
+
+# ---------------------------------------------------------------- growth_accel
+
+
+def test_growth_accel_positive_acceleration():
+    """盈利加速 = 最新报告期净利同比 − 去年同期净利同比（正值=加速）。"""
+    reports = [
+        _rep(2026, 1, date(2026, 4, 25), ni_yoy=42.5),   # 今年Q1
+        _rep(2025, 1, date(2025, 4, 25), ni_yoy=12.0),   # 去年Q1
+        _rep(2025, 4, date(2026, 4, 20), ni_yoy=8.0),
+    ]
+    with _patch_reports(reports):
+        obs = compute_growth_accel("600001", AS_OF)
+    assert obs.valid is True
+    assert obs.raw_value == pytest.approx(42.5 - 12.0)   # 30.5，加速
+    assert obs.diagnostics["report"] == "2026Q1"
+    assert obs.diagnostics["accel_pct"] == pytest.approx(30.5, abs=1e-4)
+
+
+def test_growth_accel_matches_same_quarter_last_year():
+    """用同报告期对比消除季节性：只与去年同一季度比，不与上一季度比。"""
+    reports = [
+        _rep(2026, 1, date(2026, 4, 25), ni_yoy=20.0),   # 今年Q1
+        _rep(2025, 4, date(2026, 3, 15), ni_yoy=50.0),   # 去年Q4（不同季，不参与）
+        _rep(2025, 1, date(2025, 4, 20), ni_yoy=10.0),   # 去年Q1
+    ]
+    with _patch_reports(reports):
+        obs = compute_growth_accel("600001", AS_OF)
+    assert obs.valid is True
+    assert obs.raw_value == pytest.approx(20.0 - 10.0)   # 10.0
+
+
+def test_growth_accel_missing_prev_year():
+    """缺去年同期报告 → INSUFFICIENT_SAMPLES。"""
+    reports = [_rep(2026, 1, date(2026, 4, 25), ni_yoy=30.0)]
+    with _patch_reports(reports):
+        obs = compute_growth_accel("600001", AS_OF)
+    assert obs.valid is False
+    assert obs.missing_reason == MissingReason.INSUFFICIENT_SAMPLES
+
+
+def test_growth_accel_no_disclosed_missing():
+    """无已公告报告 → NOT_DISCLOSED。"""
+    with _patch_reports([]):
+        obs = compute_growth_accel("600001", AS_OF)
+    assert obs.valid is False
+    assert obs.missing_reason == MissingReason.NOT_DISCLOSED
+
+
+def test_growth_accel_fingerprint_matches_v2_registry():
+    """growth_accel 的 raw fingerprint 算法名必须与 RAW_COMPUTERS 注册一致。"""
+    from stockfu.backtest.v2_run import RAW_COMPUTERS
+    spec = RAW_COMPUTERS["growth_accel"]
+    fp = raw_fingerprint(METRIC_ACCEL, "ni_yoy_accel_latest_vs_yoy", {})
+    assert spec.algo == "ni_yoy_accel_latest_vs_yoy"
+    reports = [
+        _rep(2026, 1, date(2026, 4, 25), ni_yoy=30.0),
+        _rep(2025, 1, date(2025, 4, 20), ni_yoy=10.0),
+    ]
+    with _patch_reports(reports):
+        obs = compute_growth_accel("600001", AS_OF)
     assert obs.raw_fingerprint == fp

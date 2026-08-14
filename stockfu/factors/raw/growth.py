@@ -25,6 +25,9 @@ from stockfu.scoring.contracts import MissingReason, RawFactorObservation
 METRIC_NI = "growth_ni"
 # 营收同比（%），营业总收入同比增长 YSTZ——收入增长的进攻支撑
 METRIC_REV = "growth_rev"
+# 盈利加速（利润动量）%：最新已公告报告期净利同比 − 同报告期一年前的净利同比。
+# 正值 = 盈利在加速改善（动态进攻），区别于静态增速水平（growth_ni）。
+METRIC_ACCEL = "growth_accel"
 
 
 def _missing(code: str, as_of: date, metric: str, fp: str, reason: MissingReason,
@@ -73,3 +76,46 @@ def compute_growth_rev(code: str, as_of: date) -> RawFactorObservation:
     return _latest_growth(
         code, as_of, metric=METRIC_REV, algo="latest_rev_yoy_pct",
         field="revenue_yoy", fn_label="rev_yoy_pct")
+
+
+def compute_growth_accel(code: str, as_of: date) -> RawFactorObservation:
+    """盈利加速（利润动量，%）= 最新已公告报告期净利同比 − 同报告期一年前的净利同比。
+
+    accel = net_profit_yoy(q_now) − net_profit_yoy(q_same_last_year)
+    正值 = 盈利同比在加速改善（动态进攻），区别于静态增速水平（growth_ni）。
+    要求存在最新已公告报告期及其一年前同一报告期的净利同比；任一缺失 → NOT_DISCLOSED。
+    同报告期对比（同季度 yoy）消除季节性，是"利润在变好"的动量信号。
+    """
+    fp = raw_fingerprint(METRIC_ACCEL, "ni_yoy_accel_latest_vs_yoy", {})
+    from stockfu.services.financial import financial_reports
+
+    reported = financial_reports(code, as_of) or []
+    # 字段级可见性：只保留 net_profit_yoy 已在 as_of 前公告的报告期
+    visible = [r for r in reported if r.visible("net_profit_yoy", as_of)]
+    if not visible:
+        return _missing(code, as_of, METRIC_ACCEL, fp, MissingReason.NOT_DISCLOSED,
+                        {"pub_latest": None})
+    now = visible[0]  # 最新已公告报告期
+    now_q = (now.quarter, now.stat_date.month if now.stat_date else None)
+    if now.net_profit_yoy is None:
+        return _missing(code, as_of, METRIC_ACCEL, fp, MissingReason.NOT_DISCLOSED,
+                        {"report": f"{now.year}Q{now.quarter}"})
+    # 找去年同一报告期
+    prev = next((r for r in visible
+                 if r.year == now.year - 1 and r.quarter == now.quarter), None)
+    if prev is None or prev.net_profit_yoy is None:
+        return _missing(code, as_of, METRIC_ACCEL, fp, MissingReason.INSUFFICIENT_SAMPLES,
+                        {"report": f"{now.year}Q{now.quarter}",
+                         "prev_missing": True})
+    accel = now.net_profit_yoy - prev.net_profit_yoy
+    return RawFactorObservation(
+        asset_code=code, as_of=as_of, raw_metric_id=METRIC_ACCEL,
+        raw_value=float(accel), raw_unit="percent",
+        source_max_date=as_of, available_at=as_of, valid=True,
+        raw_fingerprint=fp,
+        diagnostics={"report": f"{now.year}Q{now.quarter}",
+                     "ni_yoy_now": round(now.net_profit_yoy, 4),
+                     "ni_yoy_prev": round(prev.net_profit_yoy, 4)
+                     if prev.net_profit_yoy is not None else None,
+                     "accel_pct": round(accel, 4),
+                     "pub_date": now.pub_date.isoformat() if now.pub_date else None})
