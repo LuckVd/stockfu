@@ -1329,9 +1329,27 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
         }
         # 恢复后同步挂单与 last_target（防旧版本 checkpoint 残留已撤销目标的
         # 买入挂单）；此后每次决策日还会再同步一次。
+        # 只清理真正的"残留买入/加仓挂单"：未持仓 code 的挂单，或已持仓但
+        # 挂单目标高于当前权重（加仓方向）且目标已撤销的挂单。仍持仓且挂单
+        # 目标不超过当前权重的（退出/持有方向，通常来自最小持仓软锁保护的
+        # exit_codes 路径）必须保留——否则续跑会丢失该订单的执行记录
+        # （2026-08-14 修复：resume 与连续运行 order_events 逐位一致）。
+        restore_prices = dict(last_close)
         for code in list(pending_orders):
             if abs(pending_orders[code]
-                   - float(last_target.get(code, 0.0))) > 1e-12:
+                   - float(last_target.get(code, 0.0))) <= 1e-12:
+                continue
+            pos = acct.positions.get(code)
+            cur_w = (
+                acct.weight(code, restore_prices)
+                if pos is not None and pos.shares > 0 and restore_prices
+                else 0.0
+            )
+            keep_exit_order = (
+                pos is not None and pos.shares > 0
+                and pending_orders[code] <= cur_w + 1e-12
+            )
+            if not keep_exit_order:
                 del pending_orders[code]
                 pending_order_meta.pop(code, None)
     elif audit_path:
@@ -1971,6 +1989,12 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
                             pending_orders, cur_w, rank_protected_codes, risk_exit_codes)
                         for code in cancelled_by_rank:
                             _cancel_pending_order(code, t, "rank_protection")
+                        # 风险硬压仓（gross_cap_active 非 None）时豁免执行层软锁，
+                        # 否则回撤刹车/regime 压仓被 min_holding/max_replace/drift
+                        # 吞掉，急跌中敞口无法下降（2026-08-14 引擎修复）。
+                        risk_overriding_locks = (
+                            getattr(risk, "gross_cap_active", None) is not None
+                        )
                         new_orders = rebalancer.decide(
                             last_target, cur_w, held, t, pnl_pct,
                             risk_exit_codes=risk_exit_codes,
@@ -1978,6 +2002,7 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
                             trading_day_index=day_index,
                             ranked_codes=ranked_codes,
                             locked_target_weights=locked_target_weights,
+                            override_locks=risk_overriding_locks,
                         )
                         # 挂单必须与最新 risk-adjusted target 一致：目标已撤销
                         # (→0/消失)的买入挂单立即取消，否则停牌解除后会买入一个

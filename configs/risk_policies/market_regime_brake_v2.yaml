@@ -1,0 +1,30 @@
+# 进攻策略调参版 4（最终）：market_regime_brake_v2（均线 + 波动率 + 回撤刹车三保险）。
+# 针对 2015 股灾（2015-06-08→2016-01-28 回撤 49%）的完整风控组合：
+#   - market regime：MA200 + enter 3% + 压 45%（防牛市假信号，慢变量）；
+#   - volatility target 0.25（近 63 日实现波动率 >25% 等比压仓，floor 30%）；
+#   - drawdown_brake 0.20 → scale 0.50：自身权益回撤 20% 即压半仓（不依赖均线，
+#     2015 年 6 月底即触发），回撤降到 10% 以下才恢复（滞回防 whipsaw）。
+# 依赖 2026-08-14 引擎修复：风险压仓时 rebalancer 豁免最小持仓软锁/max_replace/drift
+# （docs/SPECS/growth-offense-gate-results.md §8），否则压仓被执行层吞掉。
+risk_policy_id: market_regime_brake_v2
+version: 1
+stop_loss: null
+take_profit: null
+take_profit_tiers: []
+take_profit_hard_pct: null
+drawdown_brake: 0.20
+drawdown_brake_scale: 0.50
+drawdown_brake_mode: scale_all
+drawdown_brake_max_gross: null
+drawdown_brake_tiers: []
+drawdown_recover_dd: 0.10
+drawdown_recover_high_days: 0
+market_regime_code: sh000300
+market_regime_ma_days: 200
+market_regime_enter_band: 0.03
+market_regime_exit_band: 0.03
+market_regime_max_gross: 0.45
+volatility_target: 0.25
+volatility_window: 63
+volatility_floor: 0.30
+max_gross: null

@@ -1,0 +1,27 @@
+# 进攻策略调参版：market_regime_slow_v2（regime 迟钝化）。
+# 基于 market_regime_v2，仅把 MA 从 200 拉长到 300：
+#   - 原版 MA200 在 full 段 44% 交易日触发压敞口（2013-2019 牛市段也 35%），
+#     牛市被反复压敞口是进攻策略超额 −7.48% 的主因（docs/SPECS/growth-offense-gate-results.md §6）。
+#   - MA300 减少牛市假跌破；压敞口仍为 50%、站上 MA300+3% 才恢复，保留熊市保护。
+risk_policy_id: market_regime_slow_v2
+version: 1
+stop_loss: null
+take_profit: null
+take_profit_tiers: []
+take_profit_hard_pct: null
+drawdown_brake: null
+drawdown_brake_scale: 0.50
+drawdown_brake_mode: scale_all
+drawdown_brake_max_gross: null
+drawdown_brake_tiers: []
+drawdown_recover_dd: null
+drawdown_recover_high_days: 0
+market_regime_code: sh000300
+market_regime_ma_days: 300
+market_regime_enter_band: 0.0
+market_regime_exit_band: 0.03
+market_regime_max_gross: 0.50
+volatility_target: null
+volatility_window: 63
+volatility_floor: 0.30
+max_gross: null

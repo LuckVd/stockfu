@@ -1,0 +1,22 @@
+# 进攻策略调参组合：pf_daily_top15_hold42_g80_v2。
+# 基于 pf_daily_top15_r2_hold42_v2（hold42 + max_replace 2 + drift 0.05），
+# 仅把 max_gross 0.95 → 0.80（静态 8 成仓，留 20% cash sleeve）：
+#   - 2015 股灾（回撤 49%）时风控压仓被 min_holding 软锁吞掉、均线滞后，
+#     静态降仓是唯一不依赖风控执行层的回撤压缩手段；
+#   - 属于风险预算风格选择（进攻腿自带 20% 现金缓冲），不宣称收益增强。
+portfolio_policy_id: pf_daily_top15_hold42_g80_v2
+version: 1
+rebalance: daily
+selection: {method: top_n_above_score, n: 15, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.08
+max_gross: 0.80
+min_amount_20d: 20000000
+minimum_listing_days: 252
+max_industry_weight: null
+rebalance_drift: 0.05
+cooldown_days: 0
+min_holding_days: 42
+stop_loss_pct: null
+hold_top_percentile: 0.20
+max_replace: 2

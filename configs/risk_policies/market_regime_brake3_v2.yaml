@@ -1,0 +1,32 @@
+# 进攻策略调参版 6（最终候选）：market_regime_brake3_v2。
+# 基于 market_regime_brake_v2，恢复条件改为触发点锚定：
+#   - drawdown_recover_trigger_based: true + drawdown_recover_dd: 0.10：
+#     权益回到"触发时点权益 × 0.90"即解除压仓。峰值锚定恢复在 2015 股灾后
+#     永久锁死（权益 3.5 年低于峰值 → 压仓 → 涨不动 → 永不恢复，brake 触发
+#     1102/1702 天、2016-2019 长期 36-49% 低仓、超额 -31.77%）；触发点锚定
+#     让每次触发都有可达的恢复线（2016-01 熔断、2018 熊市均可及时解锁）。
+# 其余同 brake_v2：MA200+enter3%+压 45%、vol target 0.25、brake 0.20→scale 0.50。
+# 依赖 2026-08-14 引擎修复（风控压仓豁免执行层软锁）+ 触发点锚定恢复。
+risk_policy_id: market_regime_brake3_v2
+version: 1
+stop_loss: null
+take_profit: null
+take_profit_tiers: []
+take_profit_hard_pct: null
+drawdown_brake: 0.20
+drawdown_brake_scale: 0.50
+drawdown_brake_mode: scale_all
+drawdown_brake_max_gross: null
+drawdown_brake_tiers: []
+drawdown_recover_dd: 0.10
+drawdown_recover_high_days: 0
+drawdown_recover_trigger_based: true
+market_regime_code: sh000300
+market_regime_ma_days: 200
+market_regime_enter_band: 0.03
+market_regime_exit_band: 0.03
+market_regime_max_gross: 0.45
+volatility_target: 0.25
+volatility_window: 63
+volatility_floor: 0.30
+max_gross: null
