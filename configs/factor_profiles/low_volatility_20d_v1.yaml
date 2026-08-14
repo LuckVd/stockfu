@@ -1,0 +1,35 @@
+# 因子评分档案:20 日年化波动率(设计 §12)。低波 → 高分。
+profile_id: low_volatility_20d_v1
+version: 1
+raw_metric:
+  id: low_volatility_20d
+  params: {window: 20, price_basis: qfq, variance_ddof: 0}
+direction: lower_is_better
+raw_unit: annualized_vol_percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.40
+      knots: [[5, 90], [10, 75], [25, 50], [40, 25], [60, 0]]
+    market_history:
+      weight: 0.30
+      state: rolling
+      years: 5
+      sampling: weekend_cross_section
+      min_observations: 3000
+    industry_history:
+      weight: 0.10
+      state: rolling
+      years: 5
+      sampling: weekend_cross_section
+      min_observations: 300
+    self_history:
+      weight: 0.20
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

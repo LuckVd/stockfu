@@ -1,0 +1,11 @@
+# alpha:红利低波(dividend_yield 核心 + low_volatility 防御)。
+# 对应设计 §13.2 dividend_quality_value 家族的首版精简(暂不含 earnings/book_to_price)。
+# 只表达评分;仓位由 portfolio_policy 决定,风险由 risk_policy 决定。
+alpha_id: dividend_low_vol_v1
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: dividend_yield_ttm_v1, weight: 1.0, critical: true}
+  - {profile_id: low_volatility_20d_v1, weight: 0.8, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1

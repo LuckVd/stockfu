@@ -53,7 +53,9 @@ stockfu/
 ## 快速开始
 
 ```bash
-pip install -r requirements.txt
+# 依赖安装（生产/验证统一用锁文件；uv 未装时先 pip install uv）
+UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system -r requirements.lock
+playwright install chromium   # 邮件分享卡片渲染需要（依赖升级后需重装浏览器二进制）
 python3 main.py --init-db     # 初始化 + 种子自选 + 算子/策略注册
 python3 main.py               # 启动 Web（默认 127.0.0.1:8787）
 python3 main.py --serve       # 同上

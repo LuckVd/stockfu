@@ -1,0 +1,28 @@
+# V2 的 V1-inspired 风险政策。
+#
+# 这不是 V1 某一次回测的“标准答案”，而是把 V1 已使用且可解释的核心语义
+# 接入 V2：个股止损、分段追踪止盈、组合回撤刹车、沪深300趋势 regime。
+# V2 风险层只改目标敞口，不改 strategy_score；参数变更必须新建 policy/version。
+risk_policy_id: v1_core_v1
+version: 1
+stop_loss: 0.30
+take_profit: null
+take_profit_tiers:
+  - {profit: 0.20, drawdown: 0.05, sell_fraction: 0.3333333333333333}
+  - {profit: 0.30, drawdown: 0.03, sell_fraction: 0.3333333333333333}
+take_profit_hard_pct: null
+drawdown_brake: 0.08
+drawdown_brake_scale: 0.50
+drawdown_brake_mode: scale_all
+drawdown_brake_max_gross: null
+drawdown_recover_dd: null
+drawdown_recover_high_days: 0
+market_regime_code: sh000300
+market_regime_ma_days: 200
+market_regime_enter_band: 0.0
+market_regime_exit_band: 0.03
+market_regime_max_gross: 0.50
+volatility_target: null
+volatility_window: 63
+volatility_floor: 0.30
+max_gross: null

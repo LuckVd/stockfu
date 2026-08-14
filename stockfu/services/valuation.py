@@ -5,10 +5,12 @@ baostock 全字段 backfill 已把 peTTM/pbMRQ 落入 quote_snapshot.pe/pb。
 """
 from __future__ import annotations
 
+from array import array
 from bisect import bisect_left, bisect_right
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
+import numpy as np
 from sqlmodel import select
 
 from stockfu.db import session_scope
@@ -32,6 +34,23 @@ def clear_backtest_valuation_provider() -> None:
     """摘除回测估值供给器，恢复 live 路径的数据库读取。"""
     global _BT_VALUATION_PROVIDER
     _BT_VALUATION_PROVIDER = None
+
+
+class _ValWindow(NamedTuple):
+    """估值窗口原生结构(向量化路径):pe/pb/c 为窗口序列(缺失=nan),ref_idx 为当天索引。
+
+    回测 provider 与 DB 路径统一产出此结构;valuation_snapshot 用 numpy 一次性过滤+排序,
+    跳过逐行建 tuple 与两次 Python sorted。输出逐值等价旧 tuple 路径(test_valuation_equivalence 盯)。
+    """
+    pe: Any
+    pb: Any
+    c: Any
+    ref_idx: int
+
+
+def _to_np(a: Any) -> "np.ndarray":
+    """array('d') 零拷贝 view;其他序列(list)→ asarray。"""
+    return np.frombuffer(a, dtype=np.float64) if isinstance(a, array) else np.asarray(a, dtype=np.float64)
 
 
 def _quantile(sorted_vals: list[float], q: float) -> float | None:
@@ -109,31 +128,41 @@ def valuation_snapshot(
         "value_zone": "unknown", "value_band": None, "close": close,
     }
     start = as_of - timedelta(days=years * 365 + 15)
-    rows: list[tuple[date, float | None, float | None, float | None]] | None = None
+    win: _ValWindow | None = None
     if _BT_VALUATION_PROVIDER is not None:
-        rows = _BT_VALUATION_PROVIDER(code, start, as_of)
-    if rows is None:
+        win = _BT_VALUATION_PROVIDER(code, start, as_of)
+    if win is None:
         with session_scope() as s:
             db_rows = s.exec(select(QuoteSnapshot).where(
                 QuoteSnapshot.asset_code == code,
                 QuoteSnapshot.quote_date >= start,
                 QuoteSnapshot.quote_date <= as_of,
             ).order_by(QuoteSnapshot.quote_date)).all()
-        rows = [
-            (r.quote_date, r.close, r.pe, r.pb)
-            for r in db_rows
-        ]
-    if not rows:
+        if db_rows:
+            win = _ValWindow(
+                pe=array("d", (r.pe if r.pe is not None else float("nan") for r in db_rows)),
+                pb=array("d", (r.pb if r.pb is not None else float("nan") for r in db_rows)),
+                c=array("d", (r.close if r.close is not None else float("nan") for r in db_rows)),
+                ref_idx=len(db_rows) - 1,
+            )
+    if win is None or len(win.pe) == 0:
         return empty
 
-    _d, row_close, row_pe, row_pb = rows[-1]
-    pe = row_pe if row_pe and row_pe > 0 else None
-    pb = row_pb if row_pb and row_pb > 0 else None
-    if close is None:
-        close = row_close if row_close and row_close > 0 else None
+    pe_arr = _to_np(win.pe)
+    pb_arr = _to_np(win.pb)
+    c_arr = _to_np(win.c)
+    ri = win.ref_idx
 
-    pes = sorted(row_pe for _d, _close, row_pe, _pb in rows if row_pe and row_pe > 0)
-    pbs = sorted(row_pb for _d, _close, _pe, row_pb in rows if row_pb and row_pb > 0)
+    pe_v = pe_arr[ri]
+    pb_v = pb_arr[ri]
+    c_v = c_arr[ri]
+    pe = float(pe_v) if pe_v > 0 else None          # nan/0/负 → None;正数保留(等价旧 `row_pe and row_pe>0`)
+    pb = float(pb_v) if pb_v > 0 else None
+    if close is None:
+        close = float(c_v) if c_v > 0 else None
+
+    pes = np.sort(pe_arr[pe_arr > 0]).tolist()      # >0 自动排除 nan;np.sort→list 喂 bisect
+    pbs = np.sort(pb_arr[pb_arr > 0]).tolist()
 
     pe_pct = _percentile_sorted(pes, pe)
     pb_pct = _percentile_sorted(pbs, pb)
