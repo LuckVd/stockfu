@@ -1,0 +1,18 @@
+# 动量+成长双核进攻（研究配置，2026-08 新增）。
+# 定位：组合的"进攻腿"，与现有四套（价值/红利/多因子防守）风格正交。
+#   - 动量(12-1) 40%：追强势（Jegadeesh-Titman）
+#   - 趋势线性度 25%：确认上涨趋势持续性（signed r²）
+#   - 成长(净利同比) 20%：盈利加速一极（新 growth raw，财务三表 PIT）
+#   - 高弹性(高波动) 15%：向上 beta（与 low_vol 同 raw、方向反转）
+# 预期：牛市显著跑赢、熊市回撤偏大——作为进攻腿接受。
+alpha_id: momentum_growth_offense_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: momentum_252d_skip21_v2, weight: 0.40, critical: true}
+  - {profile_id: trend_linearity_60d_v2, weight: 0.25, critical: true}
+  - {profile_id: growth_ni_v2, weight: 0.20, critical: false}
+  - {profile_id: high_volatility_20d_v2, weight: 0.15, critical: false}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 2
+formal_maturity_policy: force_mature_after_observation

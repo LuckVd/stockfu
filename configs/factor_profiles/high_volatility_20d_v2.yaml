@@ -1,0 +1,31 @@
+# 高弹性（进攻）：高波动 → 高分。与 low_volatility_20d_v2 同一 raw metric，
+# direction 反转为 higher_is_better，作为进攻策略的向上 beta 暴露。
+# 年化波动率越高分越高，捕捉高弹性股票的进攻性。
+profile_id: high_volatility_20d_v2
+version: 1
+raw_metric:
+  id: low_volatility_20d
+  params: {window: 20, price_basis: qfq, variance_ddof: 0}
+direction: higher_is_better
+raw_unit: annualized_vol_percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.4444444444444444
+      knots: [[5, 0], [10, 25], [25, 50], [40, 75], [60, 100]]
+    market_history:
+      weight: 0.3333333333333333
+      state: rolling
+      years: 5
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2222222222222222
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2007-01-01

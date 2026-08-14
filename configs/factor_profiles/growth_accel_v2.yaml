@@ -1,0 +1,32 @@
+# 盈利加速（利润动量）：growth_accel %。
+# 最新报告期净利同比 − 去年同期净利同比；正值=盈利在加速改善（动态进攻）。
+# 与静态增速 growth_ni 不同：捕捉"盈利变好的趋势"而非"增速的水平"。
+# 诊断(2016-26 成分股)：IC +1.70%、t=2.48、分位单调 1.00、多空 +0.64%·月——唯一显著进攻轴。
+profile_id: growth_accel_v2
+version: 1
+raw_metric:
+  id: growth_accel
+  params: {}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-80, 0], [-30, 20], [-10, 40], [0, 50], [10, 62], [30, 78], [60, 90], [100, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2010-01-01
