@@ -182,4 +182,5 @@ git `6681bde`+`64ef985`，快照 bcf8e882afee，观察窗 271，HS300 历史成�
   MA300+3%/vol 窗口 10 阈值 0.35）加入 `RECOMMENDATION_ALPHA_IDS` 为**第五套正式荐股**
   （配置决策，非 §0.6.6 门禁转正；2020–2026 Sharpe −0.07 仍标"待验证"，长期跟踪复核）。
 - 影响：荐股均分变为五套均分（排名可能微调）；signal_mail_v2 邮件含五套；测试断言同步为五套。
-- 首份五套报告：`data/reports/recommend/2026-08-15_v2_watchlist.json`。
+- 首份五套报告：`data/reports/recommend/2026-08-14_v2_watchlist.json`（as_of 2026-08-14，
+  45 只自选，五套评分列含 `earnings_momentum_offense_v2`）。
