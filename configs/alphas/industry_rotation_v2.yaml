@@ -1,0 +1,14 @@
+# 行业轮动(申万一级,指数资产):中期动量 + 长期反转 + 低拥挤(低波代理)。
+# 参照中银量化行业轮动系列(九)"长期反转-中期动量-低拥挤"三极;
+# market_scope=sw_industry 与个股池(cn_equity)评分历史完全隔离。
+# 标的:31 个 sw801xxx 行业指数(分数仓执行);月度调仓(见 pf_monthly_top8_sw_v2)。
+alpha_id: industry_rotation_v2
+version: 1
+market_scope: sw_industry
+factors:
+  - {profile_id: momentum_60d_v2, weight: 0.4, critical: false}
+  - {profile_id: momentum_250d_rev_v2, weight: 0.3, critical: false}
+  - {profile_id: volatility_60d_low_v2, weight: 0.3, critical: false}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 2
+formal_maturity_policy: force_mature_after_observation

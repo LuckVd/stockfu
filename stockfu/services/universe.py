@@ -26,8 +26,10 @@ UNIVERSE_ID = "cn_large_pool_v1"
 
 
 def board_of_code(code: str) -> str:
-    """代码 → 板块(涨跌幅档)。688 科创 20%;300/301 创业板 20%;8/4 北交 30%;其余主板 10%。"""
+    """代码 → 板块(涨跌幅档)。688 科创 20%;300/301 创业板 20%;8/4 北交 30%;sw 行业指数无涨跌停;其余主板 10%。"""
     c = (code or "").strip()
+    if c.startswith("sw"):
+        return "index"
     if c.startswith("688"):
         return "star"
     if c.startswith(("300", "301")):
@@ -38,7 +40,9 @@ def board_of_code(code: str) -> str:
 
 
 def limit_pct_for(board: str, is_st: bool = False) -> float:
-    """涨跌停幅度 %。ST 统一按 5%(简化;实际 ST 主板 5%)。"""
+    """涨跌停幅度 %。ST 统一按 5%(简化;实际 ST 主板 5%);指数(index)无涨跌停限制。"""
+    if board == "index":
+        return 999.0
     if is_st:
         return 5.0
     return {"star": 20.0, "chinext": 20.0, "bse": 30.0}.get(board or "main", 10.0)
@@ -93,16 +97,20 @@ class UniverseContext:
             ).all():
                 master[row.code] = row
             # 首根 K:防无 list_date 时的次新污染;严格 <= 任意 as_of 的下界
+            # 按 quote_model_for 分表(sw/sh/sz 指数在 index_quote_daily,其余在 quote_snapshot)
             from sqlalchemy import func
-            rows = s.exec(
-                select(
-                    QuoteSnapshot.asset_code,
-                    func.min(QuoteSnapshot.quote_date),
-                ).where(QuoteSnapshot.asset_code.in_(codes)).group_by(QuoteSnapshot.asset_code)
-            ).all()
-            for code, d0 in rows:
-                if code and d0:
-                    first_quote[code] = d0 if isinstance(d0, date) else date.fromisoformat(str(d0)[:10])
+            from stockfu.services.factors import quote_model_for
+            by_table: dict[type, list[str]] = {}
+            for code in codes:
+                by_table.setdefault(quote_model_for(code), []).append(code)
+            for model, cs in by_table.items():
+                rows = s.exec(
+                    select(model.asset_code, func.min(model.quote_date)).where(
+                        model.asset_code.in_(cs)).group_by(model.asset_code)
+                ).all()
+                for code, d0 in rows:
+                    if code and d0:
+                        first_quote[code] = d0 if isinstance(d0, date) else date.fromisoformat(str(d0)[:10])
         memberships = {}
         if rules.index_codes:
             from stockfu.services.index_universe import memberships_for
