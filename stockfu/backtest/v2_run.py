@@ -40,6 +40,12 @@ from stockfu.factors.raw.quality import (
     compute_quality_roe,
 )
 from stockfu.factors.raw.rsi import compute_rsi
+from stockfu.factors.raw.sector_sentiment import (
+    compute_sector_fear,
+    compute_sector_greed,
+    compute_sector_heat,
+)
+from stockfu.factors.raw.bollinger_pctb import compute_bollinger_pctb
 from stockfu.factors.raw.trend_linearity import compute_trend_linearity
 from stockfu.factors.raw.value import compute_value
 from stockfu.factors.raw.volatility import compute_low_volatility_20d
@@ -97,6 +103,11 @@ RAW_COMPUTERS = {
         "growth_ni": RawComputerSpec(compute_growth_ni, "latest_ni_yoy_pct"),
         "growth_rev": RawComputerSpec(compute_growth_rev, "latest_rev_yoy_pct"),
         "growth_accel": RawComputerSpec(compute_growth_accel, "ni_yoy_accel_latest_vs_yoy"),
+        # —— 行业轮动·情绪+布林 raw（2026-08-15，probe 情绪路线移植，指数资产）——
+        "sector_fear": RawComputerSpec(compute_sector_fear, "percentile_self_rolling"),
+        "sector_greed": RawComputerSpec(compute_sector_greed, "percentile_self_rolling"),
+        "sector_heat": RawComputerSpec(compute_sector_heat, "percentile_self_rolling"),
+        "bollinger_pctb": RawComputerSpec(compute_bollinger_pctb, "weekly_bollinger_pctb"),
     }
 
 # alpha 的默认 deployment。显式传入 --portfolio-v2/--risk-v2 仍可做对照实验；
@@ -129,6 +140,10 @@ DEFAULT_V2_DEPLOYMENTS = {
     # —— 行业轮动（2026-08-15）：申万一级指数资产；月度 top8 等权、无风控 overlay ——
     "industry_rotation_v2": {
         "portfolio_id": "pf_monthly_top8_sw_v2", "risk_id": "no_overlay_v1",
+    },
+    # —— 行业轮动·情绪+布林版（2026-08-15）：probe 恐慌路线移植，周调仓 ——
+    "industry_rotation_emotion_v2": {
+        "portfolio_id": "pf_weekly_top8_sw_v2", "risk_id": "no_overlay_v1",
     },
     # —— 初版进攻草稿（高波方向错误，仅保留作对照，不推荐正式使用）——
     "momentum_growth_offense_v2": {
