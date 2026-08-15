@@ -1,8 +1,9 @@
-"""V2 调优后三套策略自选股荐股（价值/高股息/多因子）。
+"""V2 调优后五套策略自选股荐股（价值/高股息/多因子/质量增强/盈利动量进攻）。
 
 该入口只负责把 V2 单日评分器装配成“自选股荐股”语义：股票池取
 ``Asset.is_watch`` 且 ``asset_type=stock``，不把指数成分池或 ETF 混入。
 评分本身仍复用 ``services.v2_signal.V2SignalScorer``，不读取持仓、不执行交易。
+推荐榜单 = 综合均分前 top_n ∪ 每策略各自前 per_strategy_top，去重后按均分排序。
 """
 from __future__ import annotations
 
@@ -97,15 +98,16 @@ def quote_coverage(codes: list[str], as_of: date) -> dict[str, Any]:
 
 
 _ALPHA_LABELS = {
-    "value_ep_bp_equal_v2": "value",
-    "dividend_income_history45_v2": "dividend",
-    "multi_factor_value_tilt_v2": "mf_tilt",
-    "multi_factor_quality_v2": "mf_quality",
+    "value_ep_bp_equal_v2": "价值",
+    "dividend_income_history45_v2": "高股息",
+    "multi_factor_value_tilt_v2": "多因子",
+    "multi_factor_quality_v2": "质量增强",
+    "earnings_momentum_offense_v2": "盈利进攻",
 }
 
 
 def _short_alpha(alpha_id: str) -> str:
-    """打印用短列名：已知策略用固定标签（避免截断重名），未知回退移除后缀截断。"""
+    """打印用短列名：已知策略用中文固定标签，未知回退移除后缀截断。"""
     return _ALPHA_LABELS.get(alpha_id, alpha_id.removesuffix("_v2")[:8])
 
 
@@ -142,13 +144,61 @@ def _rank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _build_recommend_list(
+    rows: list[dict[str, Any]],
+    alpha_ids: list[str],
+    *,
+    top_n: int = 30,
+    per_strategy_top: int = 5,
+) -> list[dict[str, Any]]:
+    """综合推荐榜单 = 综合均分前 top_n ∪ 每策略各自前 per_strategy_top。
+
+    - 入选理由记录在 ``inclusion``（如 ["综合前30", "价值前5"]，中文策略名）；
+    - 去重（同一代码只出现一次，理由合并）后按综合均分降序重排、重编号 rank。
+    输入 rows 须为 ``_rank_rows`` 的输出（含 mean_score）。
+    """
+    by_code = {row["code"]: row for row in rows}
+    picked: dict[str, list[str]] = {}
+    for row in rows[: max(0, top_n)]:
+        picked.setdefault(row["code"], []).append(f"综合前{top_n}")
+    for aid in alpha_ids:
+        label = _ALPHA_LABELS.get(aid, _short_alpha(aid))
+        scored = []
+        for row in rows:
+            cell = (row.get("scores") or {}).get(aid) or {}
+            value = cell.get("score")
+            if value is not None:
+                scored.append((float(value), row["code"]))
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        for _, code in scored[: max(0, per_strategy_top)]:
+            picked.setdefault(code, []).append(f"{label}前{per_strategy_top}")
+    out = []
+    for code, reasons in picked.items():
+        row = dict(by_code[code])
+        row["inclusion"] = reasons
+        out.append(row)
+    out.sort(key=lambda row: (
+        -(row["mean_score"] if row["mean_score"] is not None else -1.0),
+        row["code"],
+    ))
+    for rank, row in enumerate(out, 1):
+        row["rank"] = rank
+    return out
+
+
 def run_v2_watchlist_recommendation(
     as_of: date | str,
     *,
     alpha_ids: list[str] | None = None,
+    top_n: int = 30,
+    per_strategy_top: int = 5,
     save: bool = True,
 ) -> dict[str, Any]:
-    """在自选股票范围运行 V2 调优后三套策略单日荐股并保存完整报告。"""
+    """在自选股票范围运行 V2 调优后五套策略单日荐股并保存完整报告。
+
+    报告含两部分：``rows``（自选池全量按均分排序，供核对）与 ``recommend_list``
+    （综合推荐榜单 = 均分前 top_n ∪ 每策略各自前 per_strategy_top，去重后按均分排序）。
+    """
     if isinstance(as_of, str):
         as_of = date.fromisoformat(as_of[:10])
     codes = watchlist_stock_codes(as_of)
@@ -178,6 +228,9 @@ def run_v2_watchlist_recommendation(
     )
     report = scorer.score(as_of)
     rows = _rank_rows(report.rows)
+    recommend_list = _build_recommend_list(
+        rows, selected, top_n=top_n, per_strategy_top=per_strategy_top
+    )
     result: dict[str, Any] = {
         "mode": "v2_watchlist_recommendation",
         "as_of": report.as_of.isoformat(),
@@ -186,13 +239,15 @@ def run_v2_watchlist_recommendation(
         "scored_size": report.n_scored,
         "quote_coverage": coverage,
         "strategy_selection": {
-            "source": "docs/SPECS/v2-tuning-results.md",
-            "method": "调优后固定三套（价值/高股息/多因子），final canonical",
+            "source": "docs/SPECS/v2-tuning-results.md + growth-offense-gate-results.md",
+            "method": "调优后固定五套（价值/高股息/多因子/质量增强/盈利动量进攻），final canonical",
             "research_only": True,
         },
         "ranking_note": (
-            "均分仅用于本次自选池排序；各策略分布不同，须结合逐策略分数和多空票数阅读。"
+            f"推荐榜单 = 综合均分前 {top_n} ∪ 每策略各自前 {per_strategy_top}，"
+            "去重后按综合均分降序；各策略分布不同，须结合逐策略分数和多空票数阅读。"
         ),
+        "recommend_list": recommend_list,
         "alpha_ids": selected,
         "alpha_names": report.alpha_names,
         "calibration": report.calibration,
@@ -210,28 +265,32 @@ def run_v2_watchlist_recommendation(
 
 
 def print_v2_watchlist_recommendation(result: dict[str, Any], *, top_n: int = 30) -> None:
-    """打印可读的自选股荐股表，同时完整结果已落盘。"""
-    rows = result.get("rows") or []
+    """打印推荐榜单（综合前 top_n ∪ 各策略前 5，按均分排序），完整结果已落盘。"""
+    rows = result.get("recommend_list") or result.get("rows") or []
     alpha_ids = result.get("alpha_ids") or []
+    note = result.get("ranking_note") or ""
     print(
-        f"\nV2 自选股荐股 · {result.get('as_of')} · "
-        f"股票池 {result.get('pool_size')} 只 · 评分 {result.get('scored_size')} 只"
+        f"\nV2 自选股荐股榜单 · {result.get('as_of')} · "
+        f"股票池 {result.get('pool_size')} 只 · 评分 {result.get('scored_size')} 只 · "
+        f"榜单 {len(rows)} 只"
     )
-    print("排名  代码      名称        均分   多头/空头  结论  "
-              + " ".join(f"{_short_alpha(aid):>8}" for aid in alpha_ids))
-    for row in rows[:max(0, top_n)]:
+    print(f"规则: {note}")
+    print("排名  代码      名称        均分   多头/空头  结论   入选理由  "
+          + " ".join(f"{_short_alpha(aid):>8}" for aid in alpha_ids))
+    for row in rows[:max(0, top_n * 4)]:
         scores = row.get("scores") or {}
         cells = []
         for aid in alpha_ids:
             cell = scores.get(aid) or {}
             value = cell.get("score")
             cells.append(f"{float(value):8.1f}" if value is not None else f"{'—':>8}")
+        inclusion = "/".join(row.get("inclusion") or [])
         print(
             f"{row.get('rank', 0):>4}  {row.get('code', ''):<8} "
             f"{(row.get('name') or '')[:8]:<8} "
             f"{(row.get('mean_score') if row.get('mean_score') is not None else 0):>6.1f} "
             f"{row.get('n_bullish', 0):>2}/{row.get('n_bearish', 0):<2}      "
-            f"{row.get('recommendation', ''):<4} " + " ".join(cells)
+            f"{row.get('recommendation', ''):<4} {inclusion:<16} " + " ".join(cells)
         )
     if result.get("report_path"):
         print(f"完整报告: {result['report_path']}")
