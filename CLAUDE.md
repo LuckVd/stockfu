@@ -26,6 +26,8 @@ python3 main.py --update-backtests   # 全周期;可 --strategies a,b
   #   setsid bash -c 'exec python3 -u main.py --update-backtests' > log 2>&1 < /dev/null &
 python3 main.py --list-strategies
 python3 main.py --recommend --strategies cross_section_factor --as-of 2026-07-17
+python3 main.py --v2-watchlist-recommend --as-of 2026-08-14   # 五套自选股荐股报告(榜单=综合前30∪各策略前5,按均分排序,中文策略名)
+python3 main.py --v2-signal-mail --as-of 2026-08-14           # 五套评分邮件(同榜单规则;--no-send 仅出图)
 nohup python3 main.py --schedule >> data/schedule.log 2>&1 &   # 常驻:工作日到点 fetch→算指数→出图→发信(内嵌 web 单进程)
 python3 main.py --test-mail            # 手动出图+发信(需 --serve 在跑;出图必加 BAOSTOCK_PROXY_MODE=direct 防 loadAll 挂死)
 ruff check stockfu/ main.py tests/        # 代码检查(基线 F 类,当前应全绿;详见 pyproject.toml)
@@ -48,5 +50,5 @@ ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 - **代码检查**:`pyproject.toml [tool.ruff]` 已配,基线只启用 `F`(未用 import/变量/未定义名/无占位符 f-string),专防 6219e10 那类「重构后名字作用域错位」的 NameError 回归;默认规则集另有 16 个 E 类遗留(E741 模糊变量名 `l` / E702 / E701 / E402,均非 bug),清理后再 `select=["E","F"]`。改完代码顺手 `ruff check`
 
 ## 状态
-🚧 MVP。代码:数据层(qfq 硬化)+回测四层+横截面策略族+全周期 CLI+荐股+三复权字段;**V2 评分/回测架构**(`stockfu/scoring` + `stockfu/strategy` + `--backtest-v2`,核心 + 红利低波 vertical slice 已落地,见 `docs/SPECS/factor-strategy-score-v2.md` 与 `docs/SPECS/v2-implementation-notes.md`)。
+🚧 MVP。代码:数据层(qfq 硬化)+回测四层+横截面策略族+全周期 CLI+荐股+三复权字段;**V2 评分/回测架构**(`stockfu/scoring` + `stockfu/strategy` + `--backtest-v2`,核心 + 红利低波 vertical slice 已落地,见 `docs/SPECS/factor-strategy-score-v2.md` 与 `docs/SPECS/v2-implementation-notes.md`);**五套正式荐股**(价值/高股息/多因子/质量增强/盈利动量进攻,`RECOMMENDATION_ALPHA_IDS`;榜单=综合前30∪各策略前5,按均分排序,入选理由中文标签,见 `docs/SPECS/signal-recommendation-mail.md`;质量增强与盈利进攻为配置决策转正,非门禁转正)。
 历史回测产物只作探索记录；在 `docs/BACKTEST.md` 的正式准入门禁通过前，不得据此判断策略优劣。
