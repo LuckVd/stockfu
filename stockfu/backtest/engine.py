@@ -25,12 +25,16 @@ from collections import deque, namedtuple
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from typing import TYPE_CHECKING
 
 import numpy as np
 from sqlmodel import select, and_
 
 from stockfu.db import session_scope
 from stockfu.backtest.cash_scaler import scale_buys_to_cash
+
+if TYPE_CHECKING:
+    from stockfu.models import FinancialReport
 
 logger = logging.getLogger(__name__)
 

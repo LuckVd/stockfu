@@ -96,7 +96,6 @@ def compute_growth_accel(code: str, as_of: date) -> RawFactorObservation:
         return _missing(code, as_of, METRIC_ACCEL, fp, MissingReason.NOT_DISCLOSED,
                         {"pub_latest": None})
     now = visible[0]  # 最新已公告报告期
-    now_q = (now.quarter, now.stat_date.month if now.stat_date else None)
     if now.net_profit_yoy is None:
         return _missing(code, as_of, METRIC_ACCEL, fp, MissingReason.NOT_DISCLOSED,
                         {"report": f"{now.year}Q{now.quarter}"})

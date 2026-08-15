@@ -552,7 +552,7 @@ def run_v2_signal_mail(as_of: str | None, no_send: bool, top_n: int) -> None:
 
 
 def run_v2_watchlist_recommend(as_of: str | None, top_n: int) -> None:
-    """V2 调优后三套策略在自选股票范围评分，保存完整荐股报告。"""
+    """V2 调优后五套策略在自选股票范围评分，保存完整荐股报告。"""
     from stockfu.db import init_db
     from stockfu.services.v2_recommend import (
         print_v2_watchlist_recommendation,
@@ -563,7 +563,7 @@ def run_v2_watchlist_recommend(as_of: str | None, top_n: int) -> None:
     init_db()
     d = as_of or latest_closed_trade_day().isoformat()
     try:
-        result = run_v2_watchlist_recommendation(d, save=True)
+        result = run_v2_watchlist_recommendation(d, save=True, top_n=top_n)
     except ValueError as exc:
         print(f"✗ {exc}")
         raise SystemExit(2) from exc

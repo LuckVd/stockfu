@@ -83,10 +83,11 @@ V2 回测引擎（`backtest.v2_engine`）只有 `run_v2_backtest` 循环入口�
 
 ### 渲染与发信
 
-- `stockfu/services/signal_mail_v2.py`：`build_v2_signal_mail_html` 组装长表（图例=粒度①校准 + 10 策略列 + top N 股票），`render_v2_signal_images` 用 Playwright 进程内 `set_content` 截图（无 web 路由依赖，自包含），`run_v2_signal_mail_job` 串联评分→出图→复用 `services.mail.send_card_email`。
-- 默认展示当日「均值 top N」（默认 30）控制邮件体积；非全宇宙，暂无逐股订阅（V1 的订阅模型未移植）。
+- `stockfu/services/signal_mail_v2.py`：`build_v2_signal_mail_html` 组装长表（图例=粒度①校准 + 策略列 + 榜单股票），`render_v2_signal_images` 用 Playwright 进程内 `set_content` 截图（无 web 路由依赖，自包含），`run_v2_signal_mail_job` 串联评分→出图→复用 `services.mail.send_card_email`。
+- **推荐榜单规则（邮件与自选股荐股共用，2026-08-15 起）**：榜单 = 综合均分前 N（默认 30）∪ 每策略各自前 5 的并集，去重后按综合均分降序；入选理由（"综合前30"/"价值前5"等中文标签）记录在每行 `inclusion`，邮件中展示在股票名下。榜单构建见 `v2_recommend._build_recommend_list`。
+- **策略名统一中文**：正式五套在报告/邮件/控制台均用中文（价值/高股息/多因子/质量增强/盈利动量进攻），映射见 `v2_signal.ALPHA_CN_NAMES` 与 `signal_mail_v2.V2_ALPHA_BRIEFS`。
 - CLI：`main.py --v2-signal-mail`（`--no-send` 仅出图、`--top-n`、`--as-of`）。
-- V2 自选股荐股入口：`python main.py --v2-watchlist-recommend --as-of YYYY-MM-DD`。它只取 `Asset.is_watch=1` 且 `asset_type=stock`，先校验目标日行情覆盖，再用调优后五套策略评分（价值/高股息/多因子/质量增强/盈利动量进攻，`RECOMMENDATION_ALPHA_IDS`）；ETF/基金不混入股票池，完整 JSON 落在 `data/reports/recommend/`。
+- V2 自选股荐股入口：`python main.py --v2-watchlist-recommend --as-of YYYY-MM-DD`。它只取 `Asset.is_watch=1` 且 `asset_type=stock`，先校验目标日行情覆盖，再用调优后五套策略评分（价值/高股息/多因子/质量增强/盈利动量进攻，`RECOMMENDATION_ALPHA_IDS`）；ETF/基金不混入股票池，完整 JSON 落在 `data/reports/recommend/`（含 `rows` 全量 + `recommend_list` 榜单）。
 
 ### 持久化（待办）
 

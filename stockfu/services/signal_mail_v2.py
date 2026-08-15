@@ -4,7 +4,8 @@
 再映射。跨策略分布差异通过图例里的校准元数据(P05/中位数/P95/饱和率/可交易占比)显式
 暴露,提醒读者「各列分布不同,按列读、勿横向比绝对值」。
 
-为控制邮件体积,默认只展示当日「均值 top N」股票(多策略共识偏多),非全宇宙;N 可配。
+为控制邮件体积,默认展示「推荐榜单」:综合均分前 N(默认 30)∪ 每策略各自前 5 的并集,
+去重后按均分排序;入选理由以中文标签标注在股票名下。N 可配。
 """
 from __future__ import annotations
 
@@ -17,9 +18,9 @@ from stockfu.services.mail import send_card_email
 from stockfu.services.v2_signal import V2SignalReport
 
 # V2 alpha 的表头简称 / 全称 / 一句话说明(粒度①图例 + 表头 title)。
-# 调优后三套(邮件当前使用)在前,十策略研究 alpha 保留供对比复现。
+# 调优后五套(邮件当前使用)在前,十策略研究 alpha 保留供对比复现。
 V2_ALPHA_BRIEFS: dict[str, tuple[str, str, str]] = {
-    # —— 调优后三套(邮件默认,与自选股荐股一致) ——
+    # —— 调优后五套(邮件默认,与自选股荐股一致) ——
     "value_ep_bp_equal_v2": (
         "价值", "EP+BP 等权价值",
         "盈利收益率与账面市值比等权(各 0.5),绝对估值越低越好。",
@@ -36,6 +37,11 @@ V2_ALPHA_BRIEFS: dict[str, tuple[str, str, str]] = {
         "质量增强", "多因子 + 质量极",
         "价值/动量/低波/红利复合 + 质量极(Roe 水平与稳定/毛利率/资产负债率,财务三表 PIT),"
         "2020+ 近期增强。",
+    ),
+    "earnings_momentum_offense_v2": (
+        "盈利进攻", "盈利动量进攻",
+        "盈利加速(Growth Accel)50%+价格动量 20%+低波 30% 复合,进攻腿;"
+        "2026-08 纳入第五套正式荐股(vol8 配置)。",
     ),
     # —— 十策略研究 alpha(保留) ——
     "multi_factor_v2": (
@@ -157,8 +163,12 @@ def _table_html(rows: list[dict], alpha_ids: list[str]) -> str:
     body = []
     for row in rows:
         scores = row.get("scores") or {}
+        incl = row.get("inclusion") or []
+        incl_line = (
+            f"<small class='incl'>{_esc(' · '.join(incl))}</small>" if incl else ""
+        )
         stock = f"<td class='stock-cell'><b>{_esc(row.get('name') or row.get('code') or '—')}</b>" \
-                f"<small>{_esc(row.get('code') or '')}</small></td>"
+                f"<small>{_esc(row.get('code') or '')}</small>{incl_line}</td>"
         cells = [stock]
         for a in alpha_ids:
             cell = scores.get(a) or {}
@@ -175,24 +185,37 @@ def _table_html(rows: list[dict], alpha_ids: list[str]) -> str:
     )
 
 
-def build_v2_signal_mail_html(report: V2SignalReport, *, top_n: int = 30) -> str:
-    rows = report.rows[:top_n]
+def build_v2_signal_mail_html(
+    report: V2SignalReport, *, top_n: int = 30, list_rows: list[dict] | None = None
+) -> str:
+    """组装邮件 HTML。
+
+    ``list_rows`` 为推荐榜单（综合前 top_n ∪ 各策略前 5，按均分排序）时用之，
+    否则回退 ``report.rows[:top_n]``（均值 top N）。
+    """
+    rows = list_rows if list_rows is not None else report.rows[:top_n]
     pages = list(_chunks(rows, _ROWS_PER_PAGE)) or [[]]
     page_html = []
     for page_no, page_rows in enumerate(pages, 1):
         legend = _legend_html(report) if page_no == 1 else ""
         table = _table_html(page_rows, report.alpha_ids)
+        desc = (
+            f"推荐榜单 {len(rows)} 只（综合前 {top_n} ∪ 各策略前 5，按均分排序）"
+            if list_rows is not None
+            else f"展示 top {len(rows)} / 全宇宙 {report.universe_size} 只"
+        )
         page_html.append(
             "<main class='signal-page'>"
             "<div class='page-head'>"
             "<div><h1>StockFu V2 策略评分</h1>"
             f"<p>{_esc(report.as_of.isoformat() if hasattr(report.as_of, 'isoformat') else report.as_of)} · "
-            f"展示 top {len(rows)} / 全宇宙 {report.universe_size} 只 · "
+            f"{_esc(desc)} · "
             "各策略独立 0–100 分，50 为中性</p></div>"
             f"<div class='page-no'>{page_no}/{len(pages)}</div></div>"
             f"{legend}{table}"
             "<footer>研究回测产物，不构成投资建议；评分不读取持仓、不承诺收益。"
-            "各策略映射基不同（绝对锚点 vs 历史分位），列间分布有差异，请按列读。</footer>"
+            "各策略映射基不同（绝对锚点 vs 历史分位），列间分布有差异，请按列读。"
+            "榜单=综合均分前 30 ∪ 每策略各自前 5，去重后按均分排序。</footer>"
             "</main>"
         )
     return f"""<!doctype html>
@@ -203,18 +226,20 @@ def build_v2_signal_mail_html(report: V2SignalReport, *, top_n: int = 30) -> str
 body{{padding:24px}}.signal-page{{width:1280px;min-height:900px;margin:0 auto 24px;padding:28px 30px;background:#fffdf7;border:1px solid #dccfae;border-radius:18px;box-shadow:0 8px 28px #584a2920}}
 .page-head{{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #b88735;padding-bottom:15px;margin-bottom:16px}}h1{{font-size:28px;margin:0 0 6px}}.page-head p{{margin:0;color:#7a6f5c;font-size:14px}}.page-no{{color:#a1742c;font-weight:700}}
 .strategy-legend{{margin:0 0 16px;padding:12px 14px;background:#f8f2e5;border:1px solid #e5dcc8;border-radius:10px}}.strategy-legend h2{{font-size:14px;margin:0 0 8px;color:#785b29}}.legend-row{{display:grid;grid-template-columns:78px minmax(0,1fr);gap:9px;align-items:start;padding:5px 0;border-bottom:1px dashed #ece3cf;font-size:11.5px;line-height:1.45}}.legend-row:last-child{{border-bottom:0}}.legend-row>b{{color:#785b29;font-weight:700}}.cal{{color:#8a806e}}.cal2{{color:#a89a7e;font-size:10.5px;margin-left:6px}}
-.score-table{{width:100%;border-collapse:collapse;table-layout:fixed;background:#fff;border:1px solid #e5dcc8;border-radius:10px;overflow:hidden}}.score-table th,.score-table td{{border:1px solid #e8e0d1;padding:8px 4px;text-align:center}}.score-table th{{background:#f1eadc;color:#69552f;font-size:12px;font-weight:700;white-space:nowrap}}.score-table th.stock-col,.score-table td.stock-cell{{width:190px;text-align:left}}.score-table th.strategy-col{{width:auto}}.stock-cell b{{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.stock-cell small{{display:block;margin-top:2px;color:#8a806e;font-size:10px}}
+.score-table{{width:100%;border-collapse:collapse;table-layout:fixed;background:#fff;border:1px solid #e5dcc8;border-radius:10px;overflow:hidden}}.score-table th,.score-table td{{border:1px solid #e8e0d1;padding:8px 4px;text-align:center}}.score-table th{{background:#f1eadc;color:#69552f;font-size:12px;font-weight:700;white-space:nowrap}}.score-table th.stock-col,.score-table td.stock-cell{{width:190px;text-align:left}}.score-table th.strategy-col{{width:auto}}.stock-cell b{{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.stock-cell small{{display:block;margin-top:2px;color:#8a806e;font-size:10px}}.stock-cell small.incl{{color:#a1742c;font-weight:600}}
 .score-cell{{font:700 18px/1 ui-monospace,SFMono-Regular,monospace}}.score-cell.high{{color:#18734c;background:#edf7f0}}.score-cell.low{{color:#b52922;background:#fff0ee}}.score-cell.neutral{{color:#8a672b;background:#fffaf0}}.score-cell.muted{{opacity:.42;font-size:14px}}.table-empty{{padding:32px!important;color:#8a806e}}
 footer{{margin-top:18px;padding-top:12px;border-top:1px solid #e5dcc8;color:#9a907f;font-size:11px;text-align:center;line-height:1.5}}
 </style></head><body>{''.join(page_html)}</body></html>"""
 
 
-def render_v2_signal_images(report: V2SignalReport, *, top_n: int = 30) -> list[bytes]:
+def render_v2_signal_images(
+    report: V2SignalReport, *, top_n: int = 30, list_rows: list[dict] | None = None
+) -> list[bytes]:
     """Playwright 进程内渲染 HTML → 逐页截图(无需 web 路由,自包含)。"""
     from playwright.sync_api import sync_playwright
 
     exe = os.environ.get("STOCKFU_CHROMIUM_PATH")
-    html_doc = build_v2_signal_mail_html(report, top_n=top_n)
+    html_doc = build_v2_signal_mail_html(report, top_n=top_n, list_rows=list_rows)
     images: list[bytes] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=exe)
@@ -248,7 +273,11 @@ def run_v2_signal_mail_job(
     if not isinstance(as_of, date):
         as_of = date.fromisoformat(str(as_of))
 
-    from stockfu.services.v2_recommend import RECOMMENDATION_ALPHA_IDS
+    from stockfu.services.v2_recommend import (
+        RECOMMENDATION_ALPHA_IDS,
+        _build_recommend_list,
+        _rank_rows,
+    )
     from stockfu.services.v2_signal import V2SignalScorer
 
     scorer = V2SignalScorer(alpha_ids=list(RECOMMENDATION_ALPHA_IDS))
@@ -258,8 +287,11 @@ def run_v2_signal_mail_job(
     if report.n_scored == 0:
         return {"ok": False, "detail": "无可评分股票", "as_of": str(scored_date), "pages": 0}
 
+    # 推荐榜单 = 综合均分前 top_n ∪ 每策略各自前 5，去重后按均分排序（与自选股荐股同规则）。
+    ranked = _rank_rows(report.rows)
+    list_rows = _build_recommend_list(ranked, report.alpha_ids, top_n=top_n)
     try:
-        images = render_v2_signal_images(report, top_n=top_n)
+        images = render_v2_signal_images(report, top_n=top_n, list_rows=list_rows)
     except Exception as exc:  # noqa: BLE001
         return {
             "ok": False, "detail": f"出图失败: {type(exc).__name__}: {exc}",
@@ -274,6 +306,8 @@ def run_v2_signal_mail_job(
         "n_scored": report.n_scored,
         "pages": len(images),
         "top_n": top_n,
+        "list_size": len(list_rows),
+        "rule": "综合均分前 top_n ∪ 每策略各自前 5，去重后按均分排序",
     }
 
     if not send:
@@ -292,8 +326,8 @@ def run_v2_signal_mail_job(
         subject=f"StockFu V2 策略评分 · {scored_date.isoformat()}",
         title=f"StockFu V2 策略评分 · {scored_date.isoformat()}",
         description=(
-            f"top {min(top_n, report.n_scored)} / {report.universe_size} 只 · "
-            "各策略独立 0–100 分 · 50 为中性"
+            f"推荐榜单 {len(list_rows)} 只（综合前 {top_n} ∪ 各策略前 5） · "
+            f"全宇宙 {report.universe_size} 只 · 各策略独立 0–100 分 · 50 为中性"
         ),
         filename_prefix="stockfu-v2-signal",
         include_attachments=False,
