@@ -82,7 +82,8 @@ python3 main.py --schedule                                           # 市场日
 **回测研究现状**（`docs/BACKTEST.md` §0.6/§5.6，raw 信号 + qfq 收益口径，基准沪深300；正式 V2 使用 full/2013–2019/2020–2026 三段）：
 - 自家红利横截面系（`dividend_cross_section` base/融合）仍是现有基线；具体数字以同口径回测产物为准
 - 2026-08 已完成 10 个调研策略 canonical full，并从中完成价值、高股息、多因子三套 V2 日调仓策略的三阶段调优与三段 canonical 复核；`smart_beta_multi_factor` 仍因小盘 beta 暴露只作风格参照
-- 最终调优结果和后续前向验证计划见 [`docs/SPECS/v2-tuning-results.md`](docs/SPECS/v2-tuning-results.md)；第二批量价研究模板仍属于候选，不与三套最终配置混用
+- **五套正式荐股（2026-08-15 定稿）**：价值 / 高股息 / 多因子 / 质量增强 / 盈利动量进攻（`RECOMMENDATION_ALPHA_IDS`）。其中质量增强（2026-08-14）与盈利动量进攻（2026-08-15）为配置决策转正、非门禁转正；荐股榜单 = 综合均分前 30 ∪ 每策略各自前 5，去重后按综合均分排序，策略名统一中文，规则见 [`docs/SPECS/signal-recommendation-mail.md`](docs/SPECS/signal-recommendation-mail.md)，进攻策略三段结果见 [`docs/SPECS/growth-offense-gate-results.md`](docs/SPECS/growth-offense-gate-results.md)
+- 最终调优结果和后续前向验证计划见 [`docs/SPECS/v2-tuning-results.md`](docs/SPECS/v2-tuning-results.md)；第二批量价研究模板仍属于候选，不与五套最终配置混用
 - 纪律：**任何新策略/改参数后的结论必须过三段门禁**（full + 2013–2019 + 2020–2026）；长窗回测结果均为研究模式定位——趋势/方向可信，绝对数字允许误差
 
 TUI 终端看板已移除，交互统一走 Web。回测的准确性缺口、目标架构、实施顺序和验收门禁统一见 [`docs/BACKTEST.md`](docs/BACKTEST.md)。
