@@ -60,6 +60,11 @@ class UniverseRules:
     min_amount_ma20: float | None = None
     # 非空时另要求当日属于指定历史指数成分；为空保持旧大盘候选池行为。
     index_codes: tuple[str, ...] = ()
+    # 龙虎榜排雷(2026-08-15,lhb-precheck-2026.md):近 N 日有大额净卖事件
+    # (单日 net_ratio < lhb_net_sell_threshold)的票不进截面。0=关闭。
+    # PIT:榜单盘后披露,lhb_date<=as_of 可见、T+1 才下单,天然防未来。
+    exclude_lhb_net_sell_days: int = 0
+    lhb_net_sell_threshold: float = -2.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -82,6 +87,8 @@ class UniverseContext:
     master: dict[str, SecurityMaster] = field(default_factory=dict)
     first_quote: dict[str, date] = field(default_factory=dict)
     memberships: dict[str, list[tuple[date, date | None]]] = field(default_factory=dict)
+    # 龙虎榜排雷索引:code → 大额净卖日期列表(升序);规则关闭时为空 dict。
+    lhb_net_sell: dict[str, list[date]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, codes: list[str], rules: UniverseRules | None = None) -> "UniverseContext":
@@ -115,8 +122,21 @@ class UniverseContext:
         if rules.index_codes:
             from stockfu.services.index_universe import memberships_for
             memberships = memberships_for(codes, rules.index_codes)
+        lhb_net_sell: dict[str, list[date]] = {}
+        if rules.exclude_lhb_net_sell_days > 0:
+            from stockfu.models import LhbEvent
+            lhb_net_sell = {}
+            with session_scope() as s:
+                for code, d in s.exec(
+                    select(LhbEvent.asset_code, LhbEvent.lhb_date).where(
+                        LhbEvent.asset_code.in_(codes),
+                        LhbEvent.net_ratio < rules.lhb_net_sell_threshold,
+                    ).order_by(LhbEvent.asset_code, LhbEvent.lhb_date)
+                ).all():
+                    lhb_net_sell.setdefault(code, []).append(
+                        d if isinstance(d, date) else date.fromisoformat(str(d)[:10]))
         return cls(codes=codes, rules=rules, master=master, first_quote=first_quote,
-                   memberships=memberships)
+                   memberships=memberships, lhb_net_sell=lhb_net_sell)
 
     def list_anchor(self, code: str) -> date | None:
         """可交易起点锚点:优先 list_date,否则 first_quote。"""
@@ -174,6 +194,14 @@ class UniverseContext:
             if (rules.min_amount_ma20 is not None and fl is not None
                     and fl.amount is not None and fl.amount < rules.min_amount_ma20):
                 continue
+            # 龙虎榜排雷:近 N 日(按自然日近似,覆盖 N*1.5 交易日)有大额净卖 → 剔除。
+            if rules.exclude_lhb_net_sell_days > 0:
+                ev_dates = self.lhb_net_sell.get(code)
+                if ev_dates:
+                    from bisect import bisect_right
+                    i = bisect_right(ev_dates, as_of)
+                    if i > 0 and (as_of - ev_dates[i - 1]).days <= rules.exclude_lhb_net_sell_days:
+                        continue
             out.add(code)
         return out
 
