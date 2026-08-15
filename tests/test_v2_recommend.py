@@ -77,3 +77,59 @@ class TestV2WatchlistAssembly(TestCase):
                 "earnings_momentum_offense_v2",
             ),
         )
+
+    def _row(self, code, scores):
+        return {
+            "code": code,
+            "name": code,
+            "scores": {
+                aid: {"score": sc, "status": "tradable"}
+                for aid, sc in scores.items()
+            },
+        }
+
+    def test_build_recommend_list_union_dedupe_sort(self):
+        alphas = ["value_ep_bp_equal_v2", "dividend_income_history45_v2"]
+        rows = v2_recommend._rank_rows([
+            self._row("A", {"value_ep_bp_equal_v2": 90.0, "dividend_income_history45_v2": 10.0}),
+            self._row("B", {"value_ep_bp_equal_v2": 20.0, "dividend_income_history45_v2": 95.0}),
+            self._row("C", {"value_ep_bp_equal_v2": 30.0, "dividend_income_history45_v2": 30.0}),
+            self._row("D", {"value_ep_bp_equal_v2": 40.0, "dividend_income_history45_v2": 40.0}),
+        ])
+        # 均分: B 57.5 > A 50 > D 40 > C 30。top_n=2 → B、A；
+        # 价值前 2 → A、D；高股息前 2 → B、D → 并集 B、A、D 按均分排序
+        lst = v2_recommend._build_recommend_list(rows, alphas, top_n=2, per_strategy_top=2)
+        self.assertEqual([r["code"] for r in lst], ["B", "A", "D"])
+        self.assertEqual(lst[0]["inclusion"], ["综合前2", "高股息前2"])
+        self.assertEqual(sorted(lst[1]["inclusion"]), ["价值前2", "综合前2"])
+        self.assertEqual(sorted(lst[2]["inclusion"]), ["价值前2", "高股息前2"])
+
+    def test_build_recommend_list_adds_strategy_picks(self):
+        alphas = ["value_ep_bp_equal_v2", "dividend_income_history45_v2"]
+        rows = v2_recommend._rank_rows([
+            self._row("A", {"value_ep_bp_equal_v2": 90.0, "dividend_income_history45_v2": 10.0}),
+            self._row("B", {"value_ep_bp_equal_v2": 20.0, "dividend_income_history45_v2": 95.0}),
+            self._row("C", {"value_ep_bp_equal_v2": 80.0, "dividend_income_history45_v2": 20.0}),
+            self._row("D", {"value_ep_bp_equal_v2": 70.0, "dividend_income_history45_v2": 30.0}),
+        ])
+        # 均分: B 57.5 > A/C/D 50(按 code)。top_n=1 → B；价值前 2 → A、C；
+        # 高股息前 2 → B、D → 并集 B、A、C、D 按均分排序
+        lst = v2_recommend._build_recommend_list(rows, alphas, top_n=1, per_strategy_top=2)
+        self.assertEqual([r["code"] for r in lst], ["B", "A", "C", "D"])
+        self.assertEqual(lst[0]["inclusion"], ["综合前1", "高股息前2"])
+        self.assertEqual(lst[1]["inclusion"], ["价值前2"])
+        self.assertEqual(lst[2]["inclusion"], ["价值前2"])
+        self.assertEqual(lst[3]["inclusion"], ["高股息前2"])
+        self.assertEqual([r["rank"] for r in lst], [1, 2, 3, 4])
+
+    def test_alpha_display_names_are_chinese(self):
+        from stockfu.services.v2_signal import ALPHA_CN_NAMES, _alpha_display_name
+        from stockfu.strategy.alpha import alpha_from_dict
+        from stockfu.backtest.v2_run import _load
+
+        for aid in v2_recommend.RECOMMENDATION_ALPHA_IDS:
+            self.assertIn(aid, ALPHA_CN_NAMES)
+            alpha = alpha_from_dict(_load(f"alphas/{aid}.yaml"))
+            self.assertEqual(_alpha_display_name(alpha), ALPHA_CN_NAMES[aid])
+        # 中文名互不相同
+        self.assertEqual(len(set(ALPHA_CN_NAMES.values())), len(ALPHA_CN_NAMES))
