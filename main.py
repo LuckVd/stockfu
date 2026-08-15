@@ -151,6 +151,16 @@ def run_backfill_sw(*, refresh: bool = False) -> None:
     print(f"✓ {_run(refresh=refresh)}")
 
 
+def run_backfill_lhb(start: str | None, end: str | None,
+                     refresh: bool = False) -> None:
+    from stockfu.db import init_db
+    init_db()  # 幂等建表(含新表 lhb_event)
+    from stockfu.scheduler.jobs import backfill_lhb as _run
+
+    print("回补龙虎榜事件（akshare stock_lhb_detail_em，逐日，2013 起默认）…")
+    print(f"✓ {_run(start=start, end=end, refresh=refresh)}")
+
+
 def run_backfill_sector_pulse() -> None:
     from stockfu.services.backfill import backfill_sector_pulse_history
 
@@ -1124,6 +1134,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补 31 个申万一级行业指数历史日线(akshare index_hist_sw;行业情绪/轮动前置)")
     p.add_argument("--backfill-sw-refresh", action="store_true",
                    help="强制重跑已成功的申万行业指数项")
+    p.add_argument("--backfill-lhb", action="store_true",
+                   help="回补龙虎榜事件(akshare 东财,逐日;默认 2013 起断点续传)")
+    p.add_argument("--backfill-lhb-start", default=None,
+                   help="--backfill-lhb 起始日 YYYY-MM-DD")
+    p.add_argument("--backfill-lhb-end", default=None,
+                   help="--backfill-lhb 截止日 YYYY-MM-DD")
+    p.add_argument("--backfill-lhb-refresh", action="store_true",
+                   help="--backfill-lhb 强制全量重抓(默认断点续传)")
     p.add_argument("--backfill-sector-pulse", action="store_true",
                    help="串行回补同花顺90行业历史日线(2020至今；资金流从每日快照开始积累)")
     p.add_argument("--backfill-etf-industry", action="store_true",
@@ -1359,6 +1377,9 @@ def main() -> None:
         run_backfill_benchmark()
     elif args.backfill_sw:
         run_backfill_sw(refresh=args.backfill_sw_refresh)
+    elif args.backfill_lhb:
+        run_backfill_lhb(args.backfill_lhb_start, args.backfill_lhb_end,
+                         refresh=args.backfill_lhb_refresh)
     elif args.backfill_sector_pulse:
         run_backfill_sector_pulse()
     elif args.backfill_etf_industry:
