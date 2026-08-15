@@ -75,10 +75,10 @@ def percentile(series: Iterable[float], value: float | None) -> tuple[float | No
 def quote_model_for(code: str):
     """按 code 路由行情表(行情已拆表:个股/ETF/指数三表分离)。
 
-    指数(sh/sz 前缀)→ IndexQuoteDaily;ETF(15/50/51/52/56/58 开头)→ EtfQuoteDaily;
-    其余(个股 00/30/60/68、北交所、港美股等)→ QuoteSnapshot。调用方零改动。
+    指数(sh/sz 前缀 + sw 申万行业指数)→ IndexQuoteDaily;ETF(15/50/51/52/56/58 开头)→
+    EtfQuoteDaily;其余(个股 00/30/60/68、北交所、港美股等)→ QuoteSnapshot。调用方零改动。
     """
-    if code.startswith(("sh", "sz")):
+    if code.startswith(("sh", "sz", "sw")):
         return IndexQuoteDaily
     if code[:2] in {"15", "50", "51", "52", "56", "58"}:
         return EtfQuoteDaily

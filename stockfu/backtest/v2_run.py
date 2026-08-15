@@ -73,6 +73,9 @@ RAW_COMPUTERS = {
     "value": RawComputerSpec(compute_value, "pe_percentile"),
     # —— 10 策略研究新增 raw metric(2026-08)——
     "momentum": RawComputerSpec(compute_momentum, "pct_return_qfq"),
+    # 行业轮动(2026-08-15):同函数不同窗口拆 metric_id(配置校验要求同 id 单参数组)
+    "momentum_60d": RawComputerSpec(compute_momentum, "pct_return_qfq"),
+    "momentum_250d": RawComputerSpec(compute_momentum, "pct_return_qfq"),
     "rsi": RawComputerSpec(compute_rsi, "wilder_rsi"),
     "fifty_two_week_high": RawComputerSpec(
         compute_fifty_two_week_high, "close_over_max_close"),
@@ -122,6 +125,10 @@ DEFAULT_V2_DEPLOYMENTS = {
     # —— 进攻策略（2026-08）：盈利动量进攻为正式候选；market_regime 控回撤 ——
     "earnings_momentum_offense_v2": {
         "portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "market_regime_v2",
+    },
+    # —— 行业轮动（2026-08-15）：申万一级指数资产；月度 top8 等权、无风控 overlay ——
+    "industry_rotation_v2": {
+        "portfolio_id": "pf_monthly_top8_sw_v2", "risk_id": "no_overlay_v1",
     },
     # —— 初版进攻草稿（高波方向错误，仅保留作对照，不推荐正式使用）——
     "momentum_growth_offense_v2": {

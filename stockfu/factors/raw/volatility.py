@@ -29,8 +29,10 @@ def compute_low_volatility_20d(code: str, as_of: date, window: int = _WINDOW,
     )
     from stockfu.services.factors import quote_series
 
-    # window+12 留 lookback 余量(quote_series 按历史日截窗口)
-    closes = quote_series(code, "close", window + 12, as_of=as_of, adj="qfq")
+    # 日历日缓冲按交易日/日历日≈252/365 放大 1.5 倍 + 余量;旧 window+12 对小窗口
+    # 20 日恰好够,大窗口(如行业轮动 window=60)取不满 window+1 根 → 2026-08 统一改。
+    span = int(window * 1.5) + 30
+    closes = quote_series(code, "close", span, as_of=as_of, adj="qfq")
     if len(closes) < window + 1:
         return RawFactorObservation(
             asset_code=code, as_of=as_of, raw_metric_id=METRIC_ID,

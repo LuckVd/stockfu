@@ -4,6 +4,10 @@
 (避免短期反转污染)→ window=252、skip=21。高收益 → 高分由 profile
 (direction=higher_is_better)决定;本层只产 raw=百分比收益。
 skip=0 即普通 N 日动量(供反转/多因子复用同一 raw_metric)。
+
+同参数族复用:同一函数可按 metric_id 注册为多个 raw metric(如 momentum_60d /
+momentum_250d),V2 配置校验要求同一 metric_id 只能绑定一组参数,不同窗口必须
+拆 metric_id——见 docs/SPECS/factor-strategy-score-v2.md。
 """
 from __future__ import annotations
 
@@ -16,7 +20,8 @@ METRIC_ID = "momentum"
 
 
 def compute_momentum(code: str, as_of: date, window: int = 252, skip: int = 21,
-                     price_basis: str = "qfq") -> RawFactorObservation:
+                     price_basis: str = "qfq",
+                     metric_id: str = METRIC_ID) -> RawFactorObservation:
     window = int(window)
     skip = int(skip)
     if window <= 0 or skip < 0 or window <= skip:
@@ -24,8 +29,9 @@ def compute_momentum(code: str, as_of: date, window: int = 252, skip: int = 21,
     if price_basis != "qfq":
         raise ValueError("当前 momentum 只支持 price_basis=qfq")
     fp = raw_fingerprint(
-        METRIC_ID, "pct_return_qfq",
-        {"window": window, "skip": skip, "price_basis": price_basis},
+        metric_id, "pct_return_qfq",
+        {"window": window, "skip": skip, "price_basis": price_basis,
+         "metric_id": metric_id},
     )
     from stockfu.services.factors import quote_series
 
@@ -35,7 +41,7 @@ def compute_momentum(code: str, as_of: date, window: int = 252, skip: int = 21,
     need = window + skip + 1
     if len(closes) < need:
         return RawFactorObservation(
-            asset_code=code, as_of=as_of, raw_metric_id=METRIC_ID,
+            asset_code=code, as_of=as_of, raw_metric_id=metric_id,
             raw_value=None, raw_unit="percent", source_max_date=as_of,
             available_at=as_of, valid=False,
             missing_reason=MissingReason.INSUFFICIENT_SAMPLES, raw_fingerprint=fp,
@@ -44,14 +50,14 @@ def compute_momentum(code: str, as_of: date, window: int = 252, skip: int = 21,
     p_old = closes[-(1 + skip + window)]  # window+skip 日前收盘
     if p_old <= 0 or p_now <= 0:
         return RawFactorObservation(
-            asset_code=code, as_of=as_of, raw_metric_id=METRIC_ID,
+            asset_code=code, as_of=as_of, raw_metric_id=metric_id,
             raw_value=None, raw_unit="percent", source_max_date=as_of,
             available_at=as_of, valid=False,
             missing_reason=MissingReason.NONTRADING, raw_fingerprint=fp,
             diagnostics={"n_closes": len(closes)})
     ret = (p_now / p_old - 1.0) * 100.0
     return RawFactorObservation(
-        asset_code=code, as_of=as_of, raw_metric_id=METRIC_ID,
+        asset_code=code, as_of=as_of, raw_metric_id=metric_id,
         raw_value=float(ret), raw_unit="percent",
         source_max_date=as_of, available_at=as_of, valid=True, raw_fingerprint=fp,
         lookback_observations=window,
