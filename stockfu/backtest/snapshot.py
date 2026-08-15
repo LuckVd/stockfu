@@ -36,6 +36,7 @@ DEPENDENCY_TABLES = (
     "financial_balance",     # 资产负债表（总资产/负债率/权益）
     "financial_cashflow",    # 现金流量表（经营现金流）
     "financial_growth",      # 成长能力（同比，预留）
+    "lhb_event",             # 龙虎榜事件（2026-08 universe 排雷过滤依赖）
 )
 
 SNAPSHOT_DIR = Path(__file__).resolve().parents[2] / "data" / "snapshots"

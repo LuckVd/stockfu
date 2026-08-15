@@ -46,6 +46,7 @@ from stockfu.factors.raw.sector_sentiment import (
     compute_sector_heat,
 )
 from stockfu.factors.raw.bollinger_pctb import compute_bollinger_pctb
+from stockfu.factors.raw.lhb import compute_lhb_inst_net, compute_lhb_net_buy
 from stockfu.factors.raw.trend_linearity import compute_trend_linearity
 from stockfu.factors.raw.value import compute_value
 from stockfu.factors.raw.volatility import compute_low_volatility_20d
@@ -108,6 +109,9 @@ RAW_COMPUTERS = {
         "sector_greed": RawComputerSpec(compute_sector_greed, "percentile_self_rolling"),
         "sector_heat": RawComputerSpec(compute_sector_heat, "percentile_self_rolling"),
         "bollinger_pctb": RawComputerSpec(compute_bollinger_pctb, "weekly_bollinger_pctb"),
+        # —— 龙虎榜事件因子 raw（2026-08-15，过滤器/排雷信号，见 lhb-precheck-2026.md）——
+        "lhb_net_buy": RawComputerSpec(compute_lhb_net_buy, "sum_last_n_days"),
+        "lhb_inst_net": RawComputerSpec(compute_lhb_inst_net, "sum_last_n_days"),
     }
 
 # alpha 的默认 deployment。显式传入 --portfolio-v2/--risk-v2 仍可做对照实验；
