@@ -1,0 +1,18 @@
+# 行业轮动组合策略(情绪版):周度调仓、31 个申万一级行业指数中取 top8 等权。
+# 对齐 probe 的周调仓频率;minimum_score=60 近似 probe 的 fear>=60/greed<=40/%b<=0.3
+# 阈值筛选(分数低=情绪门槛不满足,不入榜)。指数资产:min_amount/min_listing 无语义。
+portfolio_policy_id: pf_weekly_top8_sw_v2
+version: 1
+rebalance: weekly
+selection: {method: top_n_above_score, n: 8, minimum_score: 60}
+weighting: equal
+max_single_weight: 0.125
+max_gross: 0.95
+min_amount_20d: 0
+minimum_listing_days: 0
+max_industry_weight: null
+rebalance_drift: 0.0
+cooldown_days: 0
+min_holding_days: 0
+stop_loss_pct: null
+hold_top_percentile: 0.0

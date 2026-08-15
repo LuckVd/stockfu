@@ -1,0 +1,31 @@
+# 行业轮动·低贪婪(0-100 自身滚动分位):greed 低 → 高分。
+# 口径同 probes/sector_rotation.compute_sentiment(5 日涨幅分位);
+# direction=lower_is_better 翻转历史分量,absolute knots 编码"低贪高分"。
+profile_id: sector_greed_low_v2
+version: 1
+raw_metric:
+  id: sector_greed
+  params: {chg_window: 5}
+direction: lower_is_better
+raw_unit: percentile_0_100
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[0, 100], [25, 80], [50, 50], [75, 20], [100, 0]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2013-01-01

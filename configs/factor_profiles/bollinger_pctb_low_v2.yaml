@@ -1,0 +1,30 @@
+# 行业轮动·布林下轨(周布林 %b):贴下轨(低 %b) → 高分。
+# 口径同 probes/sector_rotation(周线 window=20、k=2);direction=lower_is_better。
+profile_id: bollinger_pctb_low_v2
+version: 1
+raw_metric:
+  id: bollinger_pctb
+  params: {window: 20, k: 2.0}
+direction: lower_is_better
+raw_unit: pct_b_0_1
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[0, 100], [0.2, 80], [0.5, 50], [0.8, 20], [1, 0]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2013-01-01

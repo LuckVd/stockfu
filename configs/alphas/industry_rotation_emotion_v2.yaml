@@ -1,0 +1,14 @@
+# 行业轮动·情绪+布林版(申万一级,指数资产):恐慌 + 低贪婪 + 贴下轨。
+# 移植自 probes/sector_rotation.py 的 panic=high 路线(2021-01→2026-07 probe 对照
+# +24.09%/Sharpe 0.5 vs 三因子首版 -8.76%/-0.19);probe 的"排除情绪 top3 + 阈值
+# 筛选"由 portfolio minimum_score + 分数排序近似。
+alpha_id: industry_rotation_emotion_v2
+version: 1
+market_scope: sw_industry
+factors:
+  - {profile_id: sector_fear_v2, weight: 0.4, critical: false}
+  - {profile_id: sector_greed_low_v2, weight: 0.3, critical: false}
+  - {profile_id: bollinger_pctb_low_v2, weight: 0.3, critical: false}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 2
+formal_maturity_policy: force_mature_after_observation

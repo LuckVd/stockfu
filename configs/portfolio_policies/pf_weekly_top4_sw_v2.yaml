@@ -1,0 +1,18 @@
+# 行业轮动组合策略(情绪版·收紧):周度调仓、top4 等权、minimum_score=75。
+# 对照实验:probe 实际均仓仅 1.66 只(min_score 60 + top8 仍买 8 只),收紧到
+# top4 + min 75 近似 probe 的挑剔度,验证 T+1 口径下是否还有 edge。
+portfolio_policy_id: pf_weekly_top4_sw_v2
+version: 1
+rebalance: weekly
+selection: {method: top_n_above_score, n: 4, minimum_score: 75}
+weighting: equal
+max_single_weight: 0.25
+max_gross: 0.95
+min_amount_20d: 0
+minimum_listing_days: 0
+max_industry_weight: null
+rebalance_drift: 0.0
+cooldown_days: 0
+min_holding_days: 0
+stop_loss_pct: null
+hold_top_percentile: 0.0
