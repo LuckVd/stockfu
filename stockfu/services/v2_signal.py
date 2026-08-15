@@ -70,9 +70,22 @@ _COMP_SHORT = {
 }
 
 
+# 正式五套荐股策略的中文名（荐股报告/邮件/控制台统一展示）。
+# 其余研究 alpha 仍走英文可读名回退（_alpha_display_name 内处理）。
+ALPHA_CN_NAMES: dict[str, str] = {
+    "value_ep_bp_equal_v2": "价值",
+    "dividend_income_history45_v2": "高股息",
+    "multi_factor_value_tilt_v2": "多因子",
+    "multi_factor_quality_v2": "质量增强",
+    "earnings_momentum_offense_v2": "盈利动量进攻",
+}
+
+
 def _alpha_display_name(alpha: AlphaDefinition) -> str:
-    """alpha_id → 可读名(去 _v2 后缀 + 空格);邮件表头简称。"""
+    """alpha_id → 可读名；正式五套用中文名，其余去 _v2 后缀 + 空格。"""
     aid = alpha.alpha_id
+    if aid in ALPHA_CN_NAMES:
+        return ALPHA_CN_NAMES[aid]
     for suffix in ("_v2", "_v1"):
         if aid.endswith(suffix):
             aid = aid[: -len(suffix)]
