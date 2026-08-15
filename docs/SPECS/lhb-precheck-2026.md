@@ -59,9 +59,28 @@
 
 ## 5. 下一步
 
-- [ ] 长样本确认跨环境单调性（job bash-54）
-- [ ] 若稳定：建 `lhb_event` 表 + 全历史回补（checkpoint + canonical writer，
-      硬保证 lhb_date <= cap_date）+ raw（`lhb_net_sell_20d/60d` 等，无事件日=有效零值，
-      PIT：榜单盘后披露，T+1 可执行）
-- [ ] 组合级验证：五套 ± 过滤器对照（同口径同窗口）
-- [ ] 若过滤器有效：进正式链路（荐股报告加过滤标注）+ 三段门禁
+- [x] 长样本确认跨环境单调性（2024-01→2026-08，54386 事件，单调成立）
+- [x] 建 `lhb_event` 表 + 全历史回补（2013-01→2026-08-14，217622 条/年覆盖齐全，
+      checkpoint 断点续传 + canonical writer；⚠ 曾因 sqlalchemy.select 返回 Row
+      导致 3184 天 failed，改用 sqlmodel.select 修复）
+- [x] raw 注册（`lhb_net_buy`/`lhb_inst_net`）+ `UniverseRules.exclude_lhb_net_sell_days`
+      （近 N 日大额净卖剔除，PIT 天然满足）+ snapshot 依赖表加 lhb_event
+- [x] 组合级验证（dividend 套 ± 排雷过滤，2021-01→2026-07，快照 30017a165740）
+
+## 6. 组合级验证（2026-08-15）
+
+`scripts/lhb_filter_compare.py`：同 alpha ± 排雷过滤（近 20 日 net_ratio<-2% 剔除，
+csi300+csi500 历史成分宇宙，2021-01-04 → 2026-07-16）。
+
+**dividend_income_history45_v2**：
+
+| 指标 | 基线 | 排雷过滤 | 差异 |
+|---|---|---|---|
+| 总收益 | +2.58% | +6.24% | **+3.66pct** |
+| 年化 | +0.60% | +1.43% | +0.83pct |
+| 最大回撤 | 26.75% | 26.11% | **-0.64pct** |
+| Sharpe | 0.13 | 0.17 | **+0.04** |
+| 超额(vs sh000300 +2.14%) | +0.44% | +4.10% | +3.66pct |
+
+四方向全部改善（收益↑、回撤↓、Sharpe↑），幅度温和。其余四套对照进行中——
+普适性确认后决定进正式链路（荐股过滤标注 + 三段门禁）。
