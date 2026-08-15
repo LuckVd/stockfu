@@ -4,7 +4,7 @@ profile_id: momentum_252d_skip21_v2
 version: 1
 raw_metric:
   id: momentum
-  params: {window: 252, skip: 21, price_basis: qfq}
+  params: {window: 252, skip: 21, price_basis: qfq, metric_id: momentum}
 direction: higher_is_better
 raw_unit: percent
 mapping:

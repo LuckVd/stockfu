@@ -4,7 +4,7 @@ profile_id: reversal_20d_v2
 version: 1
 raw_metric:
   id: momentum
-  params: {window: 20, skip: 0, price_basis: qfq}
+  params: {window: 20, skip: 0, price_basis: qfq, metric_id: momentum}
 direction: lower_is_better
 raw_unit: percent
 mapping:
