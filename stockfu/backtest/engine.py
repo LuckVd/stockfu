@@ -86,7 +86,8 @@ class Position:
 class VirtualAccount:
     """虚拟账户:现金 + 持仓。借鉴 trading.recompute_holding 的移动加权平均(纯内存)。"""
 
-    def __init__(self, initial_cash: float = INITIAL_CASH):
+    def __init__(self, initial_cash: float = INITIAL_CASH,
+                 fractional_codes: set[str] | None = None):
         self.cash: float = float(initial_cash)
         # 已除息但尚未支付的现金。应收属于权益，不属于可用于买入的现金。
         self.cash_receivable: float = 0.0
@@ -95,6 +96,11 @@ class VirtualAccount:
         self.fee_paid: float = 0.0
         self.dividend_received: float = 0.0
         self.dividend_tax_paid: float = 0.0
+        # 分数仓标的(行业指数等按权重交易,无整百股约束);空集=全市场整百股。
+        self.fractional_codes: set[str] = fractional_codes or set()
+
+    def _fractional(self, code: str) -> bool:
+        return code in self.fractional_codes
 
     def equity(self, prices: dict[str, float]) -> float:
         return self.cash + self.cash_receivable + sum(
@@ -135,6 +141,27 @@ class VirtualAccount:
 
         if delta > 0:  # 买入
             buy_value = min(delta, self.cash)
+            if self._fractional(code):
+                # 分数仓(指数):按权重直接买,无整百股约束;费用后扣,与 probe NotionalAccount 一致。
+                shares = buy_value / price
+                if shares <= 0:
+                    return None
+                cost = shares * price
+                fee = (max(cost * COMMISSION_RATE, MIN_COMMISSION)
+                       + cost * TRANSFER_FEE_RATE)
+                new_total = pos.shares + shares
+                pos.avg_cost = (pos.avg_cost * pos.shares + cost) / new_total
+                pos.shares = new_total
+                if pos.shares == shares:
+                    pos.peak_close = price
+                if not pos.take_profit_fired:
+                    pos.take_profit_anchor_shares = new_total
+                    pos.take_profit_cap_shares = None
+                pos.lots.append((shares, as_of or date.today()))
+                self.cash -= (cost + fee)
+                self.fee_paid += fee
+                return {"kind": action, "code": code, "shares": round(shares, 4),
+                        "price": price, "fee": round(fee, 2), "pnl": None}
             shares = int(buy_value / price / 100) * 100   # A 股整百股
             if shares <= 0:
                 # 建仓特例:目标增量不足 100 股但现金够 1 手(+费用)时建最小仓。
@@ -163,6 +190,39 @@ class VirtualAccount:
                     "fee": round(fee, 2), "pnl": None}
         else:          # 卖出
             sell_value = -delta
+            if self._fractional(code):
+                # 分数仓(指数):按目标权重清/减,无整百股约束。
+                shares = min(sell_value / price, pos.shares)
+                if shares <= 0:
+                    return None
+                proceeds = shares * price
+                fee = (max(proceeds * COMMISSION_RATE, MIN_COMMISSION)
+                       + proceeds * (stamp_duty_rate(as_of) + TRANSFER_FEE_RATE))
+                realized = (price - pos.avg_cost) * shares - fee
+                pos.shares -= shares
+                remaining = shares
+                kept: list[tuple[int, date]] = []
+                for lot_shares, lot_date in pos.lots:
+                    sold = min(remaining, lot_shares)
+                    remaining -= sold
+                    if lot_shares > sold:
+                        kept.append((lot_shares - sold, lot_date))
+                    elif remaining < 0:  # 防御性分支，正常不会触发
+                        kept.append((-remaining, lot_date))
+                        remaining = 0
+                pos.lots = kept
+                self.cash += (proceeds - fee)
+                self.fee_paid += fee
+                if pos.shares <= 1e-9:
+                    pos.shares = 0
+                    pos.avg_cost = 0.0
+                    pos.receivable_shares = 0
+                    pos.take_profit_fired = set()
+                    pos.take_profit_anchor_shares = 0
+                    pos.take_profit_cap_shares = None
+                    pos.peak_close = 0.0
+                return {"kind": action, "code": code, "shares": -round(shares, 4),
+                        "price": price, "fee": round(fee, 2), "pnl": round(realized, 2)}
             shares = int(sell_value / price / 100) * 100
             shares = min(shares, pos.shares)
             if shares <= 0:
@@ -787,7 +847,7 @@ def _preload_market_range(codes: list[str], start: date, end: date) -> _SeriesCt
         ),
         "index_quote_daily": (
             "asset_code, quote_date, open, high, low, close, pct_chg, "
-            "NULL as is_st, 1 as trade_status, NULL as amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb, "
+            "NULL as is_st, 1 as trade_status, amount, NULL as open_raw, NULL as high_raw, NULL as low_raw, NULL as close_raw, NULL as pe, NULL as pb, "
             "NULL as close_hfq, NULL as open_hfq, NULL as market_cap, NULL as turnover"
         ),
     }

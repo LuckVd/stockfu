@@ -77,6 +77,34 @@ class DividendEvent(SQLModel, table=True):
     source: str = ""
 
 
+class LhbEvent(SQLModel, table=True):
+    """龙虎榜上榜事件(东财每日明细,2026-08 接入判别后落库)。
+
+    PIT 约定:榜单盘后披露,``lhb_date`` 当日收盘后可见、T+1 可交易(引擎天然满足)。
+    唯一键 (asset_code, lhb_date, reason)——同一票同一日可因多个原因各记一条。
+    ``inst_buy_count/inst_sell_count`` 从东财"解读"文本解析的机构家数(买入/卖出),
+    0=无机构参与;``success_rate`` 为东财给出的机构历史成功率(部分事件缺失)。
+    """
+
+    __tablename__ = "lhb_event"
+    id: int | None = Field(default=None, primary_key=True)
+    asset_code: str = Field(index=True)
+    lhb_date: date = Field(index=True)
+    reason: str = ""
+    buy_amount: float | None = None        # 龙虎榜买入额(元)
+    sell_amount: float | None = None       # 龙虎榜卖出额(元)
+    net_amount: float | None = None        # 龙虎榜净买额(元)
+    net_ratio: float | None = None         # 净买额占总成交比(%)
+    close: float | None = None             # 上榜日收盘价
+    pct_chg: float | None = None           # 上榜日涨跌幅(%)
+    turnover: float | None = None          # 上榜日换手率(%)
+    float_mktcap: float | None = None      # 流通市值(元)
+    inst_buy_count: int = 0
+    inst_sell_count: int = 0
+    success_rate: float | None = None      # 解读中机构历史成功率(%)
+    source: str = "akshare"
+
+
 class BackfillCheckpoint(SQLModel, table=True):
     """逐项网络回补的持久化进度。
 

@@ -7,6 +7,7 @@ daily_stock_analysis/data_provider/fundamental_adapter.py (MIT)。
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime, date, timedelta
 from typing import Optional
@@ -976,3 +977,60 @@ class AkshareSource(DataSource):
                 row[k] = safe_float(r[c]) if c else None
             out.append(row)
         return out
+
+
+def get_lhb_daily(d: date) -> list[dict]:
+    """龙虎榜单日明细(akshare stock_lhb_detail_em,东财直连免代理)。
+
+    失败/空 → 返回 [](非交易日/接口异常);逐行容错。
+    返回 list[dict],键对齐 LhbEvent;``inst_buy_count/inst_sell_count`` 从东财
+    "解读"文本解析(如"3家机构买入，成功率33.96%")。PIT:榜单盘后披露,T+1 可交易。
+    """
+    with direct_connection():
+        try:
+            import akshare as ak
+        except Exception:
+            return []
+        try:
+            df = ak.stock_lhb_detail_em(
+                start_date=d.strftime("%Y%m%d"), end_date=d.strftime("%Y%m%d"))
+        except Exception:
+            return []
+    if df is None or df.empty:
+        return []
+    out: list[dict] = []
+    for _, r in df.iterrows():
+        try:
+            code = str(r["代码"]).zfill(6)
+        except (KeyError, ValueError, TypeError):
+            continue
+        interp = str(r.get("解读") or "")
+        buys = sells = 0
+        for m in re.finditer(r"(\d+)家机构(买入|卖出)", interp):
+            if m.group(2) == "买入":
+                buys += int(m.group(1))
+            else:
+                sells += int(m.group(1))
+        try:
+            sr = re.search(r"成功率([\d.]+)%", interp)
+            success_rate = float(sr.group(1)) if sr else None
+        except (ValueError, AttributeError):
+            success_rate = None
+        out.append({
+            "asset_code": code,
+            "lhb_date": d,
+            "reason": str(r.get("上榜原因") or ""),
+            "buy_amount": safe_float(r.get("龙虎榜买入额")),
+            "sell_amount": safe_float(r.get("龙虎榜卖出额")),
+            "net_amount": safe_float(r.get("龙虎榜净买额")),
+            "net_ratio": safe_float(r.get("净买额占总成交比")),
+            "close": safe_float(r.get("收盘价")),
+            "pct_chg": safe_float(r.get("涨跌幅")),
+            "turnover": safe_float(r.get("换手率")),
+            "float_mktcap": safe_float(r.get("流通市值")),
+            "inst_buy_count": buys,
+            "inst_sell_count": sells,
+            "success_rate": success_rate,
+            "source": "akshare",
+        })
+    return out

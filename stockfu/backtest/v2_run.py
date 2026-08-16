@@ -40,6 +40,13 @@ from stockfu.factors.raw.quality import (
     compute_quality_roe,
 )
 from stockfu.factors.raw.rsi import compute_rsi
+from stockfu.factors.raw.sector_sentiment import (
+    compute_sector_fear,
+    compute_sector_greed,
+    compute_sector_heat,
+)
+from stockfu.factors.raw.bollinger_pctb import compute_bollinger_pctb
+from stockfu.factors.raw.lhb import compute_lhb_inst_net, compute_lhb_net_buy
 from stockfu.factors.raw.trend_linearity import compute_trend_linearity
 from stockfu.factors.raw.value import compute_value
 from stockfu.factors.raw.volatility import compute_low_volatility_20d
@@ -73,6 +80,9 @@ RAW_COMPUTERS = {
     "value": RawComputerSpec(compute_value, "pe_percentile"),
     # —— 10 策略研究新增 raw metric(2026-08)——
     "momentum": RawComputerSpec(compute_momentum, "pct_return_qfq"),
+    # 行业轮动(2026-08-15):同函数不同窗口拆 metric_id(配置校验要求同 id 单参数组)
+    "momentum_60d": RawComputerSpec(compute_momentum, "pct_return_qfq"),
+    "momentum_250d": RawComputerSpec(compute_momentum, "pct_return_qfq"),
     "rsi": RawComputerSpec(compute_rsi, "wilder_rsi"),
     "fifty_two_week_high": RawComputerSpec(
         compute_fifty_two_week_high, "close_over_max_close"),
@@ -94,6 +104,14 @@ RAW_COMPUTERS = {
         "growth_ni": RawComputerSpec(compute_growth_ni, "latest_ni_yoy_pct"),
         "growth_rev": RawComputerSpec(compute_growth_rev, "latest_rev_yoy_pct"),
         "growth_accel": RawComputerSpec(compute_growth_accel, "ni_yoy_accel_latest_vs_yoy"),
+        # —— 行业轮动·情绪+布林 raw（2026-08-15，probe 情绪路线移植，指数资产）——
+        "sector_fear": RawComputerSpec(compute_sector_fear, "percentile_self_rolling"),
+        "sector_greed": RawComputerSpec(compute_sector_greed, "percentile_self_rolling"),
+        "sector_heat": RawComputerSpec(compute_sector_heat, "percentile_self_rolling"),
+        "bollinger_pctb": RawComputerSpec(compute_bollinger_pctb, "weekly_bollinger_pctb"),
+        # —— 龙虎榜事件因子 raw（2026-08-15，过滤器/排雷信号，见 lhb-precheck-2026.md）——
+        "lhb_net_buy": RawComputerSpec(compute_lhb_net_buy, "sum_last_n_days"),
+        "lhb_inst_net": RawComputerSpec(compute_lhb_inst_net, "sum_last_n_days"),
     }
 
 # alpha 的默认 deployment。显式传入 --portfolio-v2/--risk-v2 仍可做对照实验；
@@ -122,6 +140,14 @@ DEFAULT_V2_DEPLOYMENTS = {
     # —— 进攻策略（2026-08）：盈利动量进攻为正式候选；market_regime 控回撤 ——
     "earnings_momentum_offense_v2": {
         "portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "market_regime_v2",
+    },
+    # —— 行业轮动（2026-08-15）：申万一级指数资产；月度 top8 等权、无风控 overlay ——
+    "industry_rotation_v2": {
+        "portfolio_id": "pf_monthly_top8_sw_v2", "risk_id": "no_overlay_v1",
+    },
+    # —— 行业轮动·情绪+布林版（2026-08-15）：probe 恐慌路线移植，周调仓 ——
+    "industry_rotation_emotion_v2": {
+        "portfolio_id": "pf_weekly_top8_sw_v2", "risk_id": "no_overlay_v1",
     },
     # —— 初版进攻草稿（高波方向错误，仅保留作对照，不推荐正式使用）——
     "momentum_growth_offense_v2": {

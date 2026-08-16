@@ -1083,7 +1083,10 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
     scorers = {pid: FactorScorer(profiles[pid]) for pid in alpha_profile_ids}
     aggregator = AlphaAggregator(alpha)
 
-    acct = VirtualAccount(cfg.initial_cash)
+    acct = VirtualAccount(
+        cfg.initial_cash,
+        fractional_codes={c for c in cfg.codes if c.startswith("sw")},
+    )
     equity_curve: list[dict] = []
     trades: list[dict] = []
     order_events: list[dict] = []
