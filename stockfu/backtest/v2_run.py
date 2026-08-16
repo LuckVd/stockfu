@@ -48,6 +48,7 @@ from stockfu.factors.raw.sector_sentiment import (
 from stockfu.factors.raw.bollinger_pctb import compute_bollinger_pctb
 from stockfu.factors.raw.lhb import compute_lhb_inst_net, compute_lhb_net_buy
 from stockfu.factors.raw.trend_linearity import compute_trend_linearity
+from stockfu.factors.raw.turnover import compute_turnover_20d
 from stockfu.factors.raw.value import compute_value
 from stockfu.factors.raw.volatility import compute_low_volatility_20d
 from stockfu.scoring.profiles import profile_from_dict
@@ -112,6 +113,8 @@ RAW_COMPUTERS = {
         # —— 龙虎榜事件因子 raw（2026-08-15，过滤器/排雷信号，见 lhb-precheck-2026.md）——
         "lhb_net_buy": RawComputerSpec(compute_lhb_net_buy, "sum_last_n_days"),
         "lhb_inst_net": RawComputerSpec(compute_lhb_inst_net, "sum_last_n_days"),
+        # —— 换手/注意力因子 raw（2026-08-16，见 turnover-attention-ic.md）——
+        "turnover_20d": RawComputerSpec(compute_turnover_20d, "mean_turnover_pct"),
     }
 
 # alpha 的默认 deployment。显式传入 --portfolio-v2/--risk-v2 仍可做对照实验；
@@ -152,6 +155,11 @@ DEFAULT_V2_DEPLOYMENTS = {
     # —— 初版进攻草稿（高波方向错误，仅保留作对照，不推荐正式使用）——
     "momentum_growth_offense_v2": {
         "portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "trend_trailing_v2",
+    },
+    # —— 注意力动量进攻（2026-08-16，turnover-attention-ic.md 判别通过）——
+    # 高换手×动量×低/中波动；min_hold=21 固化月度持有（高换手 fwd5 跑输 → 不短持）
+    "attention_momentum_v2": {
+        "portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1",
     },
 }
 
