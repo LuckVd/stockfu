@@ -1,0 +1,36 @@
+# 高换手（进攻）：近 20 交易日换手率均值高 → 高分。
+# 判别依据 docs/SPECS/turnover-attention-ic.md（2026-08-16 IC 快验）：
+#   - turn20 是独立因子维度（控制动量/波动后仍显著）
+#   - 对 20 日视界强正预测（关注度-流动性溢价），低换手组 fwd20 系统性跑输
+#   - 约束：正效应只在低/中波动组内成立（高波组反转）→ 本 profile 须与
+#     low_volatility_20d_v2 搭配使用（alpha 层软约束）
+# absolute knots 按 A 股大盘池换手分布（turn20：p25≈0.6 / p50≈1.2 / p75≈2.3 /
+# p95≈7.0）设计；market/self 分位对截面滚动计算。
+profile_id: turnover_20d_high_v2
+version: 1
+raw_metric:
+  id: turnover_20d
+  params: {window: 20, min_valid: 15, metric_id: turnover_20d}
+direction: higher_is_better
+raw_unit: turnover_percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[0.3, 0], [0.8, 15], [1.5, 35], [2.5, 55], [4, 75], [6, 88], [10, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2013-01-01
