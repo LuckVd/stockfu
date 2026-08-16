@@ -1317,3 +1317,51 @@ def run_schedule() -> None:
 
     print("调度已启动，Ctrl-C 退出。")
     sched.start()
+
+
+def backfill_lhb(*, start: str | None = None, end: str | None = None,
+                 refresh: bool = False) -> dict:
+    """回补龙虎榜事件(akshare stock_lhb_detail_em,逐日)→ lhb_event。
+
+    PIT:榜单盘后披露,lhb_date 当日可见、T+1 可交易;upsert_lhb_event 硬保证
+    cap_date(当日 max)。checkpoint item_key=交易日字符串,断点续传;非交易日
+    (空榜)也标成功,避免重复请求。默认 2013-01-01 → 今日;东财直连免代理。
+    返回 {"days": 处理天数, "events": 新增事件数, "skipped": 断点跳过天数,
+           "failed": 失败天数, "errors": {date: err}}。
+    """
+    from stockfu.data.akshare_source import get_lhb_daily
+    from stockfu.services.backfill_checkpoint import mark_item, pending_items
+    from stockfu.services.lhb_writer import upsert_lhb_event
+
+    start_d = date.fromisoformat(start) if start else date(2013, 1, 1)
+    end_d = date.fromisoformat(end) if end else date.today()
+    days: list[str] = []
+    d = start_d
+    while d <= end_d:
+        days.append(d.isoformat())
+        d += timedelta(days=1)
+    pending, skipped = pending_items("lhb_event", "v1:daily", days, refresh=refresh)
+    print(f"lhb_event checkpoint 跳过:{skipped};待补:{len(pending)};refresh={refresh}",
+          flush=True)
+    summary = {"days": len(pending), "events": 0, "skipped": skipped,
+               "failed": 0, "errors": {}}
+    for day_s in pending:
+        day = date.fromisoformat(day_s)
+        try:
+            rows = get_lhb_daily(day)
+            if rows:
+                cap = max(r["lhb_date"] for r in rows)
+                with session_scope() as s:
+                    n = upsert_lhb_event(s, rows, cap_date=cap, overwrite=False)
+                    s.commit()
+                summary["events"] += n
+            mark_item("lhb_event", "v1:daily", day_s, success=True)
+        except Exception as exc:  # noqa: BLE001
+            mark_item("lhb_event", "v1:daily", day_s, success=False,
+                      error=f"{type(exc).__name__}: {exc}")
+            summary["failed"] += 1
+            summary["errors"][day_s] = f"{type(exc).__name__}: {exc}"
+        if summary["days"] and len(pending) % 200 == 0:
+            print(f"  lhb 进度 {len(pending)}/{summary['days']} 日 "
+                  f"(事件 {summary['events']})", flush=True)
+    return summary

@@ -1,0 +1,18 @@
+# 行业轮动组合策略:月度调仓、31 个申万一级行业指数中取 top8 等权。
+# 指数资产:min_amount/min_listing 对指数无语义(amount 单位为指数口径),置 0/不启用;
+# max_industry_weight 对行业资产无语义(资产即行业),不启用。
+portfolio_policy_id: pf_monthly_top8_sw_v2
+version: 1
+rebalance: monthly
+selection: {method: top_n_above_score, n: 8, minimum_score: 0}
+weighting: equal
+max_single_weight: 0.125
+max_gross: 0.95
+min_amount_20d: 0
+minimum_listing_days: 0
+max_industry_weight: null
+rebalance_drift: 0.0
+cooldown_days: 0
+min_holding_days: 0
+stop_loss_pct: null
+hold_top_percentile: 0.0

@@ -33,3 +33,5 @@ docs/jq-api/
 
 # pi-subagents 运行时产物（debug artifacts，不入库）
 .pi-subagents/
+# 龙虎榜 IC 快验缓存(可再生成)
+data/lhb_events.json
