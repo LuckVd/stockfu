@@ -1,0 +1,18 @@
+# 注意力动量进攻（attention momentum）：高换手 × 动量 × 低/中波动。
+# 判别依据 docs/SPECS/turnover-attention-ic.md（2026-08-16 IC 快验，两窗口两子段
+# 方向一致）：「高换手×高动量」月频（fwd20）中性化多空 +1.86%（2018-26 全段）/
+# +1.06%（2021-24 熊市）/ +4.92%（2025-26 反弹）；约束：换手正效应只在低/中
+# 波动组内成立（高波组反转 -6.8%），且高换手 fwd5 跑输 → 不适合短持。
+# 形态：turn20 高（主轴，独立增量）+ momentum_60d 中高（确认趋势）+
+# low_volatility_20d（软约束：低波才有溢价，A 股防守面，排除最高波动层）。
+# 持有：pf_daily_top15_slow21_v2（min_hold=21 固化月度持有）。
+alpha_id: attention_momentum_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: turnover_20d_high_v2, weight: 0.50, critical: true}
+  - {profile_id: momentum_60d_v2, weight: 0.30, critical: true}
+  - {profile_id: low_volatility_20d_v2, weight: 0.20, critical: false}
+minimum_coverage: 0.60
+minimum_valid_factor_count: 2
+formal_maturity_policy: force_mature_after_observation
