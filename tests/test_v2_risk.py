@@ -118,6 +118,38 @@ def test_market_regime_cap_and_policy_config():
     assert cfg.risk.policy.market_regime_ma_days == 200
 
 
+def test_short_window_volatility_target_now_triggers():
+    """审查 #6(2026-08-17):window=5 的 vol6/vol10 在旧公式 max(10, n//2)=10 下
+    恒不可达 → volatility_target 静默失效。短窗(<10)改为满窗即可触发。"""
+    closes = [100.0, 103.0, 97.0, 104.0, 96.0, 105.0]   # 5 日高波动(日 ±5%)
+    # 短窗 n=5:6 个收盘 → 5 个收益,满窗即评估
+    risk = RiskOverlay(RiskPolicy(
+        risk_policy_id="vol5", version=1,
+        volatility_target=0.10, volatility_window=5,
+    ))
+    account = _account()
+    out = risk.apply(
+        {"A": 0.8}, account, {"A": 100.0}, date(2024, 1, 2),
+        execution_prices={"A": 100.0}, benchmark_closes=closes,
+    )
+    assert risk.metrics()["risk_volatility_target_count"] == 1
+    assert out["A"] < 0.8          # 已实现波动远超 10% 目标 → 降杠杆
+
+    # 长窗语义不变:n=20 时门槛仍是 max(10, n//2)=10,样本不足不评估
+    risk20 = RiskOverlay(RiskPolicy(
+        risk_policy_id="vol20", version=1,
+        volatility_target=0.10, volatility_window=20,
+    ))
+    account = _account()
+    out20 = risk20.apply(
+        {"A": 0.8}, account, {"A": 100.0}, date(2024, 1, 2),
+        execution_prices={"A": 100.0},
+        benchmark_closes=[100.0, 97.0, 103.0] * 3,       # 8 收盘 → 7 收益 < 10
+    )
+    assert risk20.metrics()["risk_volatility_target_count"] == 0
+    assert out20["A"] == pytest.approx(0.8)
+
+
 def test_factor_profiles_keep_independent_raw_units_and_bounds():
     def profile(pid, metric, unit, knots):
         return profile_from_dict({
