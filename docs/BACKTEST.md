@@ -12,6 +12,7 @@ StockFu 是日频、A 股多头研究系统，目标是比较策略方向和因�
 |---|---|---|
 | 绝对值信号 | raw close + 税前分红 | 股息率、PE/PB 等不能用 qfq 分母，避免前视 |
 | 收益与净值 | qfq 前复权 | 资金收益率含分红再投，接受供应商复权基准漂移 |
+| 指标基准(excess) | 沪深300**全收益**(H00300,内部码 `sh000300_tr`) | 与 qfq 总收益同口径；TR 数据缺失/不覆盖 formal 起点自动回退价格指数并在 manifest 记 `benchmark_basis=price`（回退时 excess 系统性高估约基准股息率 ~2%/年）。**2026-08-17 起**；此前所有结果的 excess 均按价格基准计算，解读需打折 |
 | 红利税 | baostock `dividCashPsAfterTax` | 研究近似，不重建持有期 FIFO 扣税账本 |
 | 送转/拆股 | qfq 已调整 | 不在账户层重复处理 |
 | 退市 | `outDate` + `exit_only` | 退市日清仓，不伪造终值 |
@@ -19,11 +20,13 @@ StockFu 是日频、A 股多头研究系统，目标是比较策略方向和因�
 
 公司行为唯一正式来源是 `dividend_event`（baostock 回补并经过已知冲突裁决）；项目不再维护多源仲裁账本。引擎仍支持 `valuation_basis=raw/qfq/hfq`，默认 `qfq`。
 
+指标基准说明：TR 数据由 `python3 main.py --backfill-benchmark-tr` 维护（中证官网 csindex，增量、cap=已收盘交易日）。**只影响绩效对比曲线，不影响交易行为**——风险 overlay 的 `market_regime_code` 与 `benchmark_code` 始终为价格指数。显式指定可用 `V2RunConfig.metrics_benchmark_code`（进入 checkpoint identity）。
+
 ### 0.2 时间、宇宙和执行
 
 - 所有因子读取必须有 `as_of` 上界；历史宇宙使用沪深300/中证500时点成分，而不是今天的成分倒灌历史。
 - T 日收盘生成信号，T+1 开盘执行；执行时检查上市状态、停牌、涨跌停、整手、滑点和费用。
-- 默认基准是沪深300；策略结果只能与同窗口、同口径的基准比较。
+- 默认基准是沪深300（净值曲线对照用全收益孪生 `sh000300_tr`，见 §0.1）；策略结果只能与同窗口、同口径的基准比较。
 - `cap_and_rank` 负责从横截面分数生成目标权重，rebalancer 负责组合层，engine 负责成交和账户。
 
 ### 0.3 数据与代码边界

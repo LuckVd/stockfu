@@ -18,6 +18,7 @@ python3 main.py --backfill-dividend
 python3 main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20
   # baostock 串行三复权;默认 --proxy-mode free（免费代理池+Clash种子，失败自动切换）
   # 默认断点续传(跳过 raw/hfq 已完成的 code);--full 强制全量重抓
+python3 main.py --backfill-benchmark-tr   # 沪深300全收益 H00300→sh000300_tr(V2 指标基准同口径;增量)
 python3 main.py --clear-dividend-cache
 python3 main.py --backtest bollinger_monthly --start 2025-06-01 --end 2026-01-01 --codes 600519,000858 --save
 python3 main.py --backtest-v2 dividend_low_vol_v2 --start 2021-01-01 --end 2026-08-05 --history-origin 2018-01-01 --observation-count 271 --codes hs300  # V2 0-100 评分回测;正式运行另加 --canonical --snapshot;详见 V2 spec
@@ -40,7 +41,7 @@ ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 - **baostock** 是裸 TCP(不认 HTTP_PROXY);三复权回补默认免费代理池(`--proxy-mode free`，HTTP CONNECT/SOCKS，需 `PySocks`)，失败剔除换 IP;**查询超时也强制换 IP**(`BAOSTOCK_FETCH_TIMEOUT` 默认 60s，防 login 通过却卡在内部接收循环的坏代理);池自愈(耗尽重拉 `BAOSTOCK_REBOOTSTRAP_*`、死IP TTL `BAOSTOCK_DEAD_TTL`、常驻刷新 `BAOSTOCK_MAX_AGE`/`BAOSTOCK_MIN_ALIVE`);**代理池+rebootstrap 耗尽→直连兜底**(`BAOSTOCK_DIRECT_FALLBACK` 默认 on,IP 解封可用;`_MAX`/`_COOLDOWN` 限流,长通道 `maybe_refresh` 池回血后切回);源经 clash 拉、可外置 `data/proxy_sources.json`(`BAOSTOCK_SOURCE_PROXY`)
 - **数据**在 `data/stockfu.db`(WAL);回测产物 `data/backtest/`(gitignore)
 - **回测防未来函数**:取数 `<= as_of`
-- **回测价格口径(研究模式,2026-07-27 反转,2026-07-28 落地)**(`docs/BACKTEST.md` §0):收益/净值走 **qfq**(涨跌幅复权法,已含分红再投,接受基准漂移);**绝对值逻辑**(股息率分母/PE/PB)坚持 **raw** + 税前分红;红利税用 baostock `dividCashPsAfterTax` 近似;直接用 `dividend_event` 表,**不自建多源仲裁账本**(旧公司行为证据表已删除);hfq 只作数据对账。引擎 `valuation_basis` 三态 `raw`/`qfq`/`hfq`、默认 **qfq**。
+- **回测价格口径(研究模式,2026-07-27 反转,2026-07-28 落地)**(`docs/BACKTEST.md` §0):收益/净值走 **qfq**(涨跌幅复权法,已含分红再投,接受基准漂移);**绝对值逻辑**(股息率分母/PE/PB)坚持 **raw** + 税前分红;红利税用 baostock `dividCashPsAfterTax` 近似;直接用 `dividend_event` 表,**不自建多源仲裁账本**(旧公司行为证据表已删除);hfq 只作数据对账。引擎 `valuation_basis` 三态 `raw`/`qfq`/`hfq`、默认 **qfq**。**指标基准(excess)同口径**(2026-08-17):默认自动用沪深300全收益 H00300(`sh000300_tr`,数据由 `--backfill-benchmark-tr` 维护),缺失/不覆盖 formal 起点回退价格指数并记 `manifest.benchmark_basis`;只影响绩效对比,不影响交易(风控 regime 恒为价格指数)。
 - **新策略验证 · 三跑门禁(防过拟合)**:新增/调参/改算子后、认定结论前**必须** ①全样本 2007–2026 一跑 ②再从 07–26 任取两段、较短段 ≥5 年、且覆盖不同行情的子区间各跑;两轮(三跑)方向一致才认定,否则按 §0.6.4 判过拟合。详见 `docs/BACKTEST.md` §0.6.6
 - **量化四层**:算子(math 连续 score)+策略 yaml+rebalancer+engine;算子缓存 fingerprint 含源码 hash
 - **行情拆表**:QuoteSnapshot / EtfQuoteDaily / IndexQuoteDaily;`quote_model_for` 路由

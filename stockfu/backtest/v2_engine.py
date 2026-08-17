@@ -96,6 +96,13 @@ class V2RunConfig:
     initial_cash: float = INITIAL_CASH
     market_scope: str = "cn_equity"
     benchmark_code: str = BENCHMARK
+    # 指标基准(excess/benchmark_return 的对照曲线):默认自动解析为全收益孪生
+    # ({benchmark_code}_tr,如 sh000300_tr=H00300,与 qfq 总收益口径同基);TR 数据
+    # 缺失/不覆盖 formal 起点时回退价格指数并在 manifest 标注 benchmark_basis。
+    # **只影响绩效对比,不影响交易行为**——风险 overlay 的 market_regime_code 与
+    # benchmark_code 保持价格指数(2026-08-17 审查 #5:旧口径 excess 系统性高估
+    # ~股息率/年)。显式设置才进 manifest(默认 None 不改变 checkpoint identity)。
+    metrics_benchmark_code: str | None = None
     valuation_basis: str = "qfq"
     credit_dividends: bool = False                # qfq 已含分红再投
     observation_count: int | None = None          # None→ceil(0.2·eval);固定则 prefix invariant(§9.4)
@@ -163,6 +170,10 @@ class V2RunConfig:
             "initial_cash": self.initial_cash,
             "market_scope": self.market_scope,
             "benchmark_code": self.benchmark_code,
+            # 仅显式覆盖时进入身份(默认自动解析不改变旧 checkpoint identity);
+            # 解析后的实际口径由 build_manifest 闭包注入 metrics_benchmark_resolved
+            **({"metrics_benchmark_code": self.metrics_benchmark_code}
+               if self.metrics_benchmark_code is not None else {}),
             "valuation_basis": self.valuation_basis,
             "credit_dividends": self.credit_dividends,
             "observation_count": self.observation_count,
@@ -1019,7 +1030,11 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
 
     pre_start = cfg.history_origin - timedelta(days=_PRELOAD_LOOKBACK_DAYS)
     risk_bench = getattr(risk.policy, "market_regime_code", None) or bench
-    preload_codes = sorted({*codes, bench, risk_bench})
+    # 指标基准解析结果(供 build_manifest 闭包;final 前的 partial checkpoint
+    # 用默认值,formal 段确定后更新)
+    metrics_bench_cand = cfg.metrics_benchmark_code or f"{bench}_tr"
+    metrics_bench_code, bench_basis, bench_note = bench, "price", None
+    preload_codes = sorted({*codes, bench, risk_bench, metrics_bench_cand})
     sctx = _preload_market_range(preload_codes, pre_start, cfg.eval_end)
     div_index = _preload_dividend_events(codes, pre_start, cfg.eval_end)
     fin_index = _preload_financial_reports(codes, cfg.eval_end)
@@ -1468,6 +1483,10 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
             formal_start=formal_dates[0].isoformat() if formal_dates else None,
             first_trade_date=first_trade_date.isoformat() if first_trade_date else None,
             last_trade_date=last_trade_date.isoformat() if last_trade_date else None,
+            # 指标基准实际口径(闭包变量;final 前的 partial 用默认 price)
+            metrics_benchmark_resolved=metrics_bench_code,
+            benchmark_basis=bench_basis,
+            benchmark_fallback_note=bench_note,
             n_trades=len(trades),
             trades_checksum=fingerprint(trades, prefix="v2.trades"),
             recording_schema_version=_RECORDING_SCHEMA_VERSION,
@@ -2130,7 +2149,15 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
 
     # ---- 绩效(formal 段;§15:净值从 formal 起归一)----
     formal_equity = [p for p in equity_curve if p["is_formal"]]
-    formal_bench = _build_benchmark_curve(sctx, bench, [p["date"] for p in formal_equity])
+    formal_dates_list = [p["date"] for p in formal_equity]
+    formal_bench = _build_benchmark_curve(sctx, bench, formal_dates_list)
+    # 指标基准(§0.2 同口径):策略净值 qfq 含分红再投 → 对照曲线优先用全收益
+    # 孪生;回退价格指数时 excess 系统性高估约等于基准股息率(~2%/年),
+    # manifest.benchmark_basis 记录实际口径。
+    if formal_dates_list:
+        (
+            formal_bench, metrics_bench_code, bench_basis, bench_note,
+        ) = _resolve_metrics_benchmark(sctx, cfg, bench, formal_dates_list)
 
     days = len(formal_equity)
     final_as_of = actual_last_completed or (dates_all[-1] if dates_all else cfg.eval_end)
@@ -2185,6 +2212,36 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
         holding_periods=holding_periods,
         open_holding_periods=open_holding_periods,
     )
+
+
+def _resolve_metrics_benchmark(
+    sctx, cfg, bench: str, formal_dates: list[date],
+) -> tuple[list[dict], str, str, str | None]:
+    """解析指标基准曲线 → (curve, code, basis, fallback_note)。
+
+    - 显式 ``cfg.metrics_benchmark_code``：按用户指定（即使与 bench 相同也尊重，
+      basis="price"；缺失时曲线为空，与旧行为一致，note="explicit_missing"）。
+    - 默认自动：候选 ``{bench}_tr``（全收益孪生）。曲线存在且**覆盖 formal 起点**
+      （首点 == formal_dates[0]）才采用 basis="total_return"——起点靠后会让
+      excess 的分子分母窗口错位（审查低危 #7），宁可直接回退。
+    - 回退：价格指数 basis="price"，note 说明原因（"tr_missing" / "tr_late_start"）。
+
+    只决定绩效对照曲线；交易行为（风险 overlay、MA regime）始终走
+    ``benchmark_code``/``market_regime_code`` 的价格指数，不受此影响。
+    """
+    if cfg.metrics_benchmark_code is not None:
+        cand = cfg.metrics_benchmark_code
+        curve = _build_benchmark_curve(sctx, cand, formal_dates)
+        basis = "price" if cand == bench else "custom"
+        note = "explicit_missing" if (not curve and cand != bench) else None
+        return curve, cand, basis, note
+    cand = f"{bench}_tr"
+    curve = _build_benchmark_curve(sctx, cand, formal_dates)
+    if curve and curve[0]["date"] == formal_dates[0]:
+        return curve, cand, "total_return", None
+    note = "tr_late_start" if curve else "tr_missing"
+    price_curve = _build_benchmark_curve(sctx, bench, formal_dates)
+    return price_curve, bench, "price", note
 
 
 def _build_benchmark_curve(sctx, bench_code: str, formal_dates: list[date]) -> list[dict]:
