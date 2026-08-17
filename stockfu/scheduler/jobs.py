@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import os
+
 from datetime import date, timedelta
 
 from sqlmodel import select
@@ -44,13 +46,21 @@ def _is_cn_stock(code: str) -> bool:
     return detect_market(code) == Market.CN
 
 
-def _fetch_today_via_baostock(code: str, end_date, days: int = 15) -> bool:
+def _fetch_today_via_baostock(code: str, end_date, days: int = 15,
+                              budget_s: float | None = None) -> bool:
     """A 股个股当日:全局 baostock session 拉近 N 天三复权 → _apply_and_upsert。
 
     end_date 为抓取窗口上界(目标交易日,已校验)。写 qfq+raw+hfq(顺带刷新当日
     close_raw,红利分母用)。baostock 全失败(代理池+直连兜底)→ 返回 False;调用方
     据此放弃该票当日(**不降级东财/腾讯**,避免残缺 OHLCV 冒充完整数据)。
+
+    同步执行(2026-08-17 审查 H1 修复):不再由外层 _call_timeout 子线程包裹——
+    外层 35s < 内层 fetch_timeout 60s,超时留下的孤儿线程会与下一只票并发共用
+    全局裸 TCP socket(响应交错可写错数据)。时长上界改由 budget_s
+    (env STOCKFU_BS_FETCH_BUDGET,默认 150s)经 run(deadline=...) 约束:坏代理
+    时旋转在预算内进行,超预算即放弃该票、留给重试。
     """
+    import time as _time
     from datetime import timedelta as _td
     from stockfu.data.baostock_proxy import ensure_baostock_login, get_global_session
     from stockfu.scheduler.backfill_adj_prices import _apply_and_upsert
@@ -61,11 +71,14 @@ def _fetch_today_via_baostock(code: str, end_date, days: int = 15) -> bool:
     sess = get_global_session()
     if sess is None:
         return False
+    if budget_s is None:
+        budget_s = float(os.environ.get("STOCKFU_BS_FETCH_BUDGET", "150"))
+    deadline = _time.monotonic() + budget_s
     end_d = _coerce_date(end_date)
     start = (end_d - _td(days=days + 5)).isoformat()
     end = end_d.isoformat()
     try:
-        triple = sess.fetch_kline_triple(code, start, end)
+        triple = sess.fetch_kline_triple(code, start, end, deadline=deadline)
     except Exception:  # noqa: BLE001
         return False
     if not any(triple.values()):
@@ -185,23 +198,43 @@ def fetch_universe_quotes(target_date, *, index_codes=None, progress_every: int 
 
 
 def _upsert_quote(code: str, target_date=None, timeout: float = 35) -> bool:
-    """拉最近交易日行情落 quote_snapshot(按市场路由)。
+    """拉最近交易日行情落库(按行情表路由:个股/ETF/指数全覆盖)。
 
     target_date: 目标交易日(已校验)——baostock 抓取窗口上界 + manager 写入 cap。
                  None（读路径按需触发）→ 用今天；quote_date 仍取源 bar.date。
     A 股个股 → baostock 三复权(_fetch_today_via_baostock):全字段,顺带 close_raw。
                baostock 全失败即放弃该票当日,**不降级东财/腾讯**(它们缺 pe/pb/
                状态,残缺 OHLCV 会冒充完整数据)。
-    指数/港美股 → _upsert_quote_via_manager(多源,baostock 不覆盖/无需三复权)。
-    ETF 已在 _batch_fetch_today 分流到 update_etf_benchmark(akshare),不进此函数。
-    timeout: 单个标的超时秒数。
+    ETF/指数 → update_etf_benchmark / update_index_benchmark(各自 canonical 表)。
+               2026-08-17 修复:此前 ETF/指数漏到 manager 路径会写 quote_snapshot
+               错表(DB 曾留 510300/510500 孤儿行),指数还可能被 normalize 成
+               000001 拿到平安银行行情。本函数是读路径(portfolio/snapshot)与
+               Web ensure(routes.ensure_stock_data_and_index)的公共入口,在此
+               分流可一处收口三条触发链。
+    港美股/黄金 → _upsert_quote_via_manager(多源)。
+    timeout: manager 路径单个标的超时秒数(baostock 路径同步串行,由内层
+              fetch_timeout/deadline 兜底,不再套线程超时——防孤儿线程与
+              全局 socket 并发,见 _fetch_today_via_baostock)。
     """
+    from stockfu.models import EtfQuoteDaily, IndexQuoteDaily
+    from stockfu.services.factors import quote_model_for
+
+    model = quote_model_for(code)
+    if model is EtfQuoteDaily:
+        try:
+            update_etf_benchmark(code, target_date or date.today())
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+    if model is IndexQuoteDaily:
+        try:
+            update_index_benchmark(code, target_date or date.today())
+            return True
+        except Exception:  # noqa: BLE001
+            return False
     if _is_cn_stock(code):
         end = target_date or date.today()
-        return _call_timeout(
-            lambda: _fetch_today_via_baostock(code, end), timeout,
-            f"bs_today:{code}", default=False,
-        )
+        return _fetch_today_via_baostock(code, end)
     return _upsert_quote_via_manager(code, target_date, timeout)
 
 
@@ -286,20 +319,44 @@ def _upsert_quote_via_manager(code: str, target_date=None, timeout: float = 35) 
 
 
 def clean_quote_snapshots() -> dict:
-    """删除 quote_snapshot 里 quote_date 不在 A 股交易日历的记录（周末/节假日错标）。
+    """清理 quote_snapshot 的两类脏行，删除安全（真实数据保留在他表/他日）：
 
-    这些是「非交易日抓取、被错标为抓取日」产生的重复数据，删除安全（真实交易日记录保留）。
+    1. quote_date 不在 A 股交易日历（周末/节假日错标，非交易日抓取产物）；
+    2. 代码路由不属于本表的孤儿行——ETF/指数代码（2026-08-17 审查：读路径
+       _upsert_quote 曾把 ETF 写进 quote_snapshot，510300/510500 各留 15 行；
+       这些日期在 etf_quote_daily/index_quote_daily 均有正主数据）。
     """
+    from stockfu.models import EtfQuoteDaily, IndexQuoteDaily
+    from stockfu.services.factors import quote_model_for
     from stockfu.services.snapshot import _trade_calendar
     cal = _trade_calendar()
     if not cal:
         return {"deleted": 0, "note": "交易日历不可用，跳过"}
     deleted = 0
     with session_scope() as s:
+        # 错表孤儿行的安全护栏：同 (code, date) 在正确表已有正主数据才删。
+        covered: dict[type, set] = {}
+        orphans = [r for r in s.exec(select(QuoteSnapshot)).all()
+                   if quote_model_for(r.asset_code) is not QuoteSnapshot]
+        for model in (EtfQuoteDaily, IndexQuoteDaily):
+            codes = {r.asset_code for r in orphans
+                     if quote_model_for(r.asset_code) is model}
+            if codes:
+                covered[model] = {
+                    (row.asset_code, row.quote_date)
+                    for row in s.exec(select(model).where(
+                        model.asset_code.in_(codes))).all()
+                }
         for r in s.exec(select(QuoteSnapshot)).all():
-            if r.quote_date not in cal:
-                s.delete(r)
-                deleted += 1
+            model = quote_model_for(r.asset_code)
+            wrong_table = model is not QuoteSnapshot
+            if wrong_table:
+                if (r.asset_code, r.quote_date) not in covered.get(model, set()):
+                    continue   # 正确表缺该日数据 → 保留，不冒险删唯一记录
+            elif r.quote_date in cal:
+                continue       # 正常行
+            s.delete(r)
+            deleted += 1
         s.commit()
     return {"deleted": deleted}
 
@@ -782,19 +839,14 @@ def ensure_stock_data_and_index(code: str, days: int = 1825, target_date=None) -
 
 
 def _batch_fetch_today(codes: list[str], target_date=None) -> tuple[list[str], list[str]]:
-    """对 codes 逐个抓行情(截至 target_date),按表路由:ETF→update_etf_benchmark,
-    其余→_upsert_quote(quote_snapshot)。否则 ETF 走个股 get_kline 接口会漏抓
-    (今天自选里 562500/588870/515650/515450/512710 五只 ETF 即因此失败)。"""
-    from stockfu.services.factors import quote_model_for
-    from stockfu.models import EtfQuoteDaily
+    """对 codes 逐个抓行情(截至 target_date)。路由全部由 _upsert_quote 收口:
+    ETF→etf_quote_daily、指数→index_quote_daily、A股个股→baostock 三复权、
+    其余→manager 多源。ETF 源失败返回 False → 进 fail 列表参与重试
+    (2026-08-17 修复:此前 ETF 分支无条件计 ok,源失败被静默吞掉)。"""
     ok, fail = [], []
     for c in codes:
         try:
-            if quote_model_for(c) is EtfQuoteDaily:
-                update_etf_benchmark(c, target_date)   # 幂等:已补返回 0 不报错
-                ok.append(c)
-            else:
-                (ok if _upsert_quote(c, target_date) else fail).append(c)
+            (ok if _upsert_quote(c, target_date) else fail).append(c)
         except Exception:  # noqa: BLE001
             fail.append(c)
     return ok, fail
@@ -856,7 +908,8 @@ def run_scheduled_fetch(target_date) -> dict:
     td = validate_ingest_date(target_date)   # 唯一日期权威：非法即报错
     t_all = _t.time()
     # 预热 baostock 免费代理池（PE/分红/状态等依赖；直连已黑名单）
-    # 行情主路径走东财/腾讯（直连）；baostock 代理延后到分红/情绪，避免全局污染
+    # 行情主路径：A股个股走 baostock 三复权（同步串行）；baostock 代理池在第
+    # 4/6 步才主动 warm，避免东财/腾讯等直连源被代理环境污染
     codes = _current_watch_codes()
     targets = list(dict.fromkeys(codes + INDEX_ETFS))
 
