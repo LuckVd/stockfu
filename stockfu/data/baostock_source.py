@@ -317,6 +317,7 @@ class BaostockSource(DataSource):
 
         this_year = date.today().year
         events: list[DividendEventDTO] = []
+        failed_years: list[int] = []
         for y in range(this_year - years + 1, this_year + 1):
             try:
                 from stockfu.data.baostock_proxy import run_baostock_query
@@ -325,6 +326,7 @@ class BaostockSource(DataSource):
                     label=f"dividend:{code}:{y}",
                 )
             except Exception:  # noqa: BLE001
+                failed_years.append(y)
                 continue
             while rs.next():
                 row = rs.get_row_data()
@@ -350,6 +352,14 @@ class BaostockSource(DataSource):
                     currency="CNY",
                     source=f"baostock:dividend/{y}",
                 ))
+        # 按年查询部分失败必须可见（2026-08-17 审查 M6）：静默丢年会低估 TTM
+        # 分红 → 股息率因子失真且无从审计。部分数据仍可用（其余年照常返回）。
+        if failed_years:
+            print(
+                f"  [warn] dividend {code}: {len(failed_years)}/{years} 年查询失败 "
+                f"{failed_years}——TTM 口径可能低估,建议重跑 --backfill-dividend",
+                flush=True,
+            )
         if not events:
             return None
         # TTM 近 365 天每股现金分红(算子层会按 as_of 重算,此处仅展示用)

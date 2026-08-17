@@ -27,7 +27,7 @@ V2_ALPHA_BRIEFS: dict[str, tuple[str, str, str]] = {
     ),
     "dividend_income_history45_v2": (
         "高股息", "股息率历史分位",
-        "TTM 股息率近 45 期历史相对排名,红利现金流因子。",
+        "TTM 股息率混合评分:绝对水平 0.40+市场横截面历史 0.45+自身历史 0.15。",
     ),
     "multi_factor_value_tilt_v2": (
         "多因子", "价值倾斜复合",
@@ -35,8 +35,8 @@ V2_ALPHA_BRIEFS: dict[str, tuple[str, str, str]] = {
     ),
     "multi_factor_quality_v2": (
         "质量增强", "多因子 + 质量极",
-        "价值/动量/低波/红利复合 + 质量极(Roe 水平与稳定/毛利率/资产负债率,财务三表 PIT),"
-        "2020+ 近期增强。",
+        "价值(EP+BP 0.35)+动量 0.25+低波 0.20 复合 + 质量极 0.20"
+        "(Roe 水平与稳定/毛利率/资产负债率,财务三表 PIT),2020+ 近期增强。",
     ),
     "earnings_momentum_offense_v2": (
         "盈利进攻", "盈利动量进攻",
@@ -57,8 +57,8 @@ V2_ALPHA_BRIEFS: dict[str, tuple[str, str, str]] = {
         "近 12 月税前股息率,红利现金流因子。",
     ),
     "low_volatility_pure_v2": (
-        "低波", "20 日下行波动",
-        "20 日下行波动率,低波防御因子。",
+        "低波", "20日总波动+60日下行波动",
+        "20 日已实现波动 0.6 + 60 日下行波动 0.4,低波防御因子。",
     ),
     "defensive_low_beta_v2": (
         "低β防御", "低贝塔红利",
