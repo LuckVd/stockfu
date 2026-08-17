@@ -119,6 +119,62 @@ def _get_index_daily_akshare(symbol: str, start: str, end: str) -> list[dict]:
     return results
 
 
+def get_csindex_daily(csindex_symbol: str, start: str, end: str,
+                      *, asset_code: str) -> list[dict]:
+    """中证官网指数日线（stock_zh_index_hist_csindex）——全收益/策略指数专用。
+
+    H00300(沪深300全收益) 等只在 CSI 官网发布,东财 index_zh_a_hist 没有。
+    ``csindex_symbol``: CSI 官网代码(如 "H00300");``asset_code``: StockFu 内部
+    完整代码(如 "sh000300_tr",按 'sh' 前缀路由进 index_quote_daily)。
+    csindex 接口偶发限流(空响应→akshare 列赋值 ValueError):带 2 次退避重试;
+    仍失败 → [](调用方据此判定未更新,引擎自动回退价格基准 basis=price)。
+    """
+    import time as _time
+
+    df = None
+    with direct_connection():
+        try:
+            import akshare as ak
+        except Exception:
+            return []
+        for attempt in range(3):
+            try:
+                df = ak.stock_zh_index_hist_csindex(
+                    symbol=csindex_symbol, start_date=start, end_date=end)
+                if df is not None and not df.empty:
+                    break
+            except Exception:  # noqa: BLE001
+                df = None                 # 限流/网络失败 → 退避后重试
+            if attempt < 2:
+                _time.sleep(2.0 * (attempt + 1))
+    if df is None or df.empty:
+        return []
+    results: list[dict] = []
+    for _, r in df.iterrows():
+        try:
+            ts = pd.to_datetime(r["日期"])
+            if pd.isna(ts):          # csindex 尾部偶带空行(NaT 日期)
+                continue
+            d = ts.date()
+            if d.weekday() >= 5:      # 过滤 csindex 基期行(如 2005-01-01 周六)
+                continue
+            close_val = float(r["收盘"])
+            results.append({
+                "asset_code": asset_code,
+                "quote_date": d,
+                "open": float(r["开盘"]) if pd.notna(r.get("开盘")) else None,
+                "high": float(r["最高"]) if pd.notna(r.get("最高")) else None,
+                "low": float(r["最低"]) if pd.notna(r.get("最低")) else None,
+                "close": close_val,
+                "pct_chg": float(r["涨跌幅"]) if pd.notna(r.get("涨跌幅")) else None,
+                "volume": float(r["成交量"]) if pd.notna(r.get("成交量")) else None,
+                "amount": float(r["成交金额"]) if pd.notna(r.get("成交金额")) else None,
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    return results
+
+
 def _get_index_daily_sina(symbol: str, start: str, end: str) -> list[dict]:
     """akshare 新浪指数日线(stock_zh_index_daily):东财/baostock 无数据时的末级兜底。
 

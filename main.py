@@ -144,6 +144,14 @@ def run_backfill_benchmark() -> None:
     print("回补回测基准 sh000001 历史日线…")
     print(f"✓ {_run()}")
 
+def run_backfill_benchmark_tr() -> None:
+    from stockfu.db import init_db
+    init_db()
+    from stockfu.scheduler.jobs import backfill_benchmark_tr as _run
+
+    print("回补沪深300全收益指数 H00300 → index_quote_daily(sh000300_tr)…")
+    print(f"✓ {_run()}")
+
 def run_backfill_sw(*, refresh: bool = False) -> None:
     from stockfu.scheduler.jobs import backfill_sw_index as _run
 
@@ -1130,6 +1138,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="回补 连板/涨停历史（默认365天，限速，慢，建议后台）")
     p.add_argument("--backfill-benchmark", action="store_true",
                    help="回补回测基准 sh000001 历史日线（首次部署用）")
+    p.add_argument("--backfill-benchmark-tr", action="store_true",
+                   help="回补沪深300全收益指数 H00300→sh000300_tr(V2 指标基准同口径;增量,cap=已收盘交易日)")
     p.add_argument("--backfill-sw", action="store_true",
                    help="回补 31 个申万一级行业指数历史日线(akshare index_hist_sw;行业情绪/轮动前置)")
     p.add_argument("--backfill-sw-refresh", action="store_true",
@@ -1375,6 +1385,8 @@ def main() -> None:
         run_backfill_limit(args.backfill_limit)
     elif args.backfill_benchmark:
         run_backfill_benchmark()
+    elif args.backfill_benchmark_tr:
+        run_backfill_benchmark_tr()
     elif args.backfill_sw:
         run_backfill_sw(refresh=args.backfill_sw_refresh)
     elif args.backfill_lhb:
