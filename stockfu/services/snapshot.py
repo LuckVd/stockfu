@@ -147,14 +147,22 @@ def latest_snapshot(code: str, allow_fetch: bool = True) -> LatestSnapshot | Non
 
 
 def _trade_calendar() -> set[date] | None:
-    """A 股交易日历（akshare tool_trade_date_hist_sina），进程级缓存。失败返回 None。"""
+    """A 股交易日历（akshare tool_trade_date_hist_sina），进程级缓存。失败返回 None。
+
+    国内源必须走 direct_connection（清代理 env）：代理环境下新浪接口常被拒，
+    失败回退「只判周末」会把节假日误判为交易日 → stamp 表错盖非交易日章
+    （2026-08-17 审查 M5）。
+    """
     global _TRADE_CAL
     if _TRADE_CAL is not None:
         return _TRADE_CAL
     try:
         import pandas as pd
-        from akshare import tool_trade_date_hist_sina
-        _TRADE_CAL = {pd.Timestamp(t).date() for t in tool_trade_date_hist_sina()["trade_date"]}
+        from stockfu.data.base import direct_connection
+        with direct_connection():
+            from akshare import tool_trade_date_hist_sina
+            _TRADE_CAL = {pd.Timestamp(t).date()
+                          for t in tool_trade_date_hist_sina()["trade_date"]}
         return _TRADE_CAL
     except Exception:  # noqa: BLE001
         return None

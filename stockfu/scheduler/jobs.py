@@ -516,9 +516,10 @@ def update_index_benchmark(code: str = "sh000001", target_date=None) -> int:
     akshare 指数日线（index_zh_a_hist）走国内直连（no_proxy）。
     返回新增行数。
     """
-    from stockfu.services.quote_writer import _coerce_date
+    from stockfu.services.quote_writer import _coerce_date, latest_closed_trade_day
     akshare_symbol = code[2:]  # sh000001 → 000001
-    end_d = _coerce_date(target_date) if target_date else date.today()
+    # None→已收盘最近交易日(原裸 today:盘中跑会拉当日 partial,审查 M2)
+    end_d = _coerce_date(target_date) if target_date else latest_closed_trade_day()
     with session_scope() as s:
         last_row = s.exec(
             select(IndexQuoteDaily).where(
@@ -550,8 +551,9 @@ def update_etf_benchmark(code: str, target_date=None) -> int:
     etf_quote_daily(非 quote_snapshot)。返回新增+覆盖行数。
     """
     from stockfu.data.akshare_source import get_etf_daily
-    from stockfu.services.quote_writer import _coerce_date
-    end_d = _coerce_date(target_date) if target_date else date.today()
+    from stockfu.services.quote_writer import _coerce_date, latest_closed_trade_day
+    # None→已收盘最近交易日(原裸 today:盘中跑会拉当日 partial,审查 M2)
+    end_d = _coerce_date(target_date) if target_date else latest_closed_trade_day()
     with session_scope() as s:
         last_row = s.exec(select(EtfQuoteDaily).where(
             EtfQuoteDaily.asset_code == code
@@ -606,7 +608,7 @@ def backfill_benchmark_tr(*, csi_symbol: str = "H00300",
 
 
 def run_backfill_benchmark(code: str = "sh000001") -> dict:
-    """一次性回补整个指数历史（从最早日期到今天），首次部署用。"""
+    """一次性回补整个指数历史（从最早日期到已收盘最近交易日），首次部署用。"""
     from stockfu.data.akshare_source import get_index_daily
     n = 0
     with session_scope() as s:
@@ -614,12 +616,12 @@ def run_backfill_benchmark(code: str = "sh000001") -> dict:
             IndexQuoteDaily.asset_code == code
         )).all()
         have_dates = {r.quote_date for r in existing}
-    # 全量拉取（1990 至今）
-    from stockfu.services.quote_writer import upsert_index_daily
-    today = date.today()
-    rows = get_index_daily(code[2:], "1990-01-01", today.isoformat())
+    # 全量拉取（1990 至已收盘最近交易日;盘中不写当日 partial,审查 M2）
+    from stockfu.services.quote_writer import latest_closed_trade_day, upsert_index_daily
+    cap_day = latest_closed_trade_day()
+    rows = get_index_daily(code[2:], "1990-01-01", cap_day.isoformat())
     with session_scope() as s:
-        n = upsert_index_daily(s, code, rows, cap_date=today, overwrite=False)
+        n = upsert_index_daily(s, code, rows, cap_date=cap_day, overwrite=False)
         s.commit()
     return {"code": code, "total": len(rows), "new": n, "have_before": len(have_dates)}
 
@@ -1421,8 +1423,12 @@ def backfill_lhb(*, start: str | None = None, end: str | None = None,
     from stockfu.services.backfill_checkpoint import mark_item, pending_items
     from stockfu.services.lhb_writer import upsert_lhb_event
 
+    # 榜单盘后披露:终点/默认截到已收盘最近交易日(盘中本就拿不到当日榜,审查 M2)
+    from stockfu.services.quote_writer import latest_closed_trade_day
+
+    cap = latest_closed_trade_day()
     start_d = date.fromisoformat(start) if start else date(2013, 1, 1)
-    end_d = date.fromisoformat(end) if end else date.today()
+    end_d = min(date.fromisoformat(end) if end else cap, cap)
     days: list[str] = []
     d = start_d
     while d <= end_d:
