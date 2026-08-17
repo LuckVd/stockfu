@@ -570,6 +570,41 @@ def update_etf_benchmark(code: str, target_date=None) -> int:
     return _upsert_etf_rows(code, rows, cap_date=end_d)
 
 
+def backfill_benchmark_tr(*, csi_symbol: str = "H00300",
+                          internal_code: str = "sh000300_tr") -> dict:
+    """回补沪深300全收益指数(H00300)→ index_quote_daily(内部码 sh000300_tr)。
+
+    指标基准同口径用(2026-08-17 审查 #5):策略净值 qfq 含分红再投,对照价格
+    指数会把 excess 系统性高估约基准股息率(~2%/年)。V2 引擎按
+    ``{benchmark_code}_tr`` 约定自动取本表数据,basis 记入 manifest。
+    增量更新(查最新日→拉 gap);cap=已收盘最近交易日(盘中不写当日,防 partial)。
+    """
+    from stockfu.data.akshare_source import get_csindex_daily
+    from stockfu.services.quote_writer import (
+        latest_closed_trade_day, upsert_index_daily,
+    )
+
+    cap = latest_closed_trade_day()
+    with session_scope() as s:
+        last_row = s.exec(select(IndexQuoteDaily).where(
+            IndexQuoteDaily.asset_code == internal_code
+        ).order_by(IndexQuoteDaily.quote_date.desc()).limit(1)).first()
+    last_date = last_row.quote_date if last_row else None
+    if last_date and last_date >= cap:
+        return {"upserted": 0, "up_to": last_date.isoformat(), "note": "已是最新"}
+    start = (last_date + timedelta(days=1)).isoformat() if last_date else "2005-01-01"
+    rows = get_csindex_daily(csi_symbol, start, cap.isoformat(),
+                             asset_code=internal_code)
+    if not rows:
+        return {"upserted": 0, "up_to": last_date.isoformat() if last_date else "无",
+                "note": "源无数据(网络/接口失败?)"}
+    with session_scope() as s:
+        n = upsert_index_daily(s, internal_code, rows, cap_date=cap, overwrite=False)
+        s.commit()
+    return {"upserted": n, "up_to": cap.isoformat(),
+            "range": [start, cap.isoformat()]}
+
+
 def run_backfill_benchmark(code: str = "sh000001") -> dict:
     """一次性回补整个指数历史（从最早日期到今天），首次部署用。"""
     from stockfu.data.akshare_source import get_index_daily
