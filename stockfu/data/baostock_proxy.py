@@ -499,50 +499,70 @@ class BaostockProxySession:
         empty_is_fail: bool = False,
         is_empty: Callable[[T], bool] | None = None,
         label: str = "",
+        deadline: float | None = None,
     ) -> T:
         """串行执行 fn；失败/空结果则换代理重试。
+
+        进程级 ``_QUERY_LOCK`` 串行化所有 baostock 查询（2026-08-17 审查 H1）：
+        baostock 全局 socket 是单条裸 TCP，两个线程并发查询会让响应交错——
+        外层调用方（jobs._call_timeout 等）超时留下的孤儿线程可能与下一只票
+        并发共用同一 socket，direct 模式下同一 default_socket 的交错响应甚至
+        可能静默写错数据。锁放在 run() 内层，覆盖 fetch_kline_triple 与
+        run_baostock_query 全部调用方；_login / mark_bad_and_rotate /
+        _switch_to_next 均不经此锁，与 _global_lock 无环（不 deadlock）。
+
+        deadline: ``time.monotonic()`` 绝对秒。超过后不再开始新的代理尝试
+        （已开始的单次尝试仍受 fetch_timeout 硬超时约束）；无任何成功值则
+        raise，有则返回最后成功值。
 
         empty_is_fail: True 时若结果判空则视为需要切换（用于「必有数据」场景）。
         """
         last_exc: Exception | None = None
         last_val: T | None = None
-        for attempt in range(1, self.max_rotate_per_call + 1):
-            try:
-                val = self._call_with_timeout(fn, label)
-                last_val = val
-                if empty_is_fail and is_empty and is_empty(val):
-                    self.fail_streak += 1
-                    reason = f"empty#{self.fail_streak} {label}"
-                    if self.fail_streak >= self.max_fail_streak:
-                        if not self.mark_bad_and_rotate(reason):
-                            return val
+        with _QUERY_LOCK:
+            for attempt in range(1, self.max_rotate_per_call + 1):
+                if deadline is not None and time.monotonic() >= deadline:
+                    if last_val is not None:
+                        return last_val
+                    raise RuntimeError(
+                        f"baostock query deadline exceeded (label={label})")
+                try:
+                    val = self._call_with_timeout(fn, label)
+                    last_val = val
+                    if empty_is_fail and is_empty and is_empty(val):
+                        self.fail_streak += 1
+                        reason = f"empty#{self.fail_streak} {label}"
+                        if self.fail_streak >= self.max_fail_streak:
+                            if not self.mark_bad_and_rotate(reason):
+                                return val
+                            continue
+                        # 先尝试同代理 re-login
+                        if not self._login():
+                            if not self.mark_bad_and_rotate(reason + "+relogin_fail"):
+                                return val
                         continue
-                    # 先尝试同代理 re-login
-                    if not self._login():
-                        if not self.mark_bad_and_rotate(reason + "+relogin_fail"):
-                            return val
-                    continue
-                # 成功
-                self.fail_streak = 0
-                return val
-            except Exception as e:  # noqa: BLE001
-                last_exc = e
-                self.fail_streak += 1
-                reason = f"{type(e).__name__}: {e}"
-                print(
-                    f"  [fetch err] {label} attempt={attempt} {reason}",
-                    flush=True,
-                )
-                if not self.mark_bad_and_rotate(reason[:120]):
-                    break
+                    # 成功
+                    self.fail_streak = 0
+                    return val
+                except Exception as e:  # noqa: BLE001
+                    last_exc = e
+                    self.fail_streak += 1
+                    reason = f"{type(e).__name__}: {e}"
+                    print(
+                        f"  [fetch err] {label} attempt={attempt} {reason}",
+                        flush=True,
+                    )
+                    if not self.mark_bad_and_rotate(reason[:120]):
+                        break
         if last_exc is not None and last_val is None:
             raise last_exc
         return last_val  # type: ignore[return-value]
 
     def fetch_kline_triple(
         self, code: str, start: str, end: str | None = None,
+        *, deadline: float | None = None,
     ) -> dict[str, list]:
-        """拉三复权；空结果 / 异常自动换代理。"""
+        """拉三复权；空结果 / 异常自动换代理。deadline 透传 run() 限总时长。"""
         from stockfu.data.baostock_source import BaostockSource
 
         def _once() -> dict[str, list]:
@@ -565,6 +585,7 @@ class BaostockProxySession:
             empty_is_fail=True,
             is_empty=_empty,
             label=f"triple:{code}",
+            deadline=deadline,
         )
 
 
@@ -624,6 +645,13 @@ def make_session_from_env() -> BaostockProxySession:
 import threading
 
 _global_lock = threading.RLock()
+# 进程级 baostock 查询锁：串行化所有实际查询（run() 内层持有）。
+# baostock 经 monkeypatch 共享一条全局裸 TCP socket（ctx.default_socket），
+# 并发查询会让响应交错；孤儿线程（外层超时未杀）也在此排队而非互踩。
+# 锁序：_QUERY_LOCK 只在 run() 内层获取，其失败链（mark_bad_and_rotate /
+# _switch_to_next / _login / rebootstrap）不取 _global_lock；反之
+# ensure_baostock_login 持 _global_lock 时不会进入 run() → 无环。
+_QUERY_LOCK = threading.RLock()
 _global_session: BaostockProxySession | None = None
 # session 内部 raw login 时置位，避免 _ensure_login ↔ ensure_baostock_login 递归
 _raw_login_depth: int = 0
@@ -708,13 +736,15 @@ def rotate_baostock_proxy(reason: str = "query_fail") -> bool:
 
 def run_baostock_query(
     fn: Callable[[], T], *, label: str = "", ensure_login: bool = True,
+    deadline: float | None = None,
 ) -> T:
     """经进程级代理会话执行任意 Baostock 查询。
 
     所有 Baostock 读请求都应走此入口，而不是只在登录时接入代理池。它复用
     :meth:`BaostockProxySession.run` 的线程硬超时、坏代理剔除、自动轮换、重拉
     与直连兜底闭环；Baostock 以 ``error_code`` 返回的失败也会转换为异常，从而
-    触发轮换。显式 ``BAOSTOCK_PROXY_MODE=direct`` 时仍保留直连语义。
+    触发轮换。显式 ``BAOSTOCK_PROXY_MODE=direct`` 时仍保留直连语义
+    （同样经 ``_QUERY_LOCK`` 串行化，防并发 socket 交错）。
     """
     if ensure_login and not ensure_baostock_login():
         raise RuntimeError("baostock login failed")
@@ -729,9 +759,10 @@ def run_baostock_query(
 
     sess = get_global_session()
     if sess is not None and sess.active:
-        return sess.run(_query, label=label)
+        return sess.run(_query, label=label, deadline=deadline)
     # direct 模式明确关闭代理池；仍已由 ensure_baostock_login 完成登录。
-    return _query()
+    with _QUERY_LOCK:
+        return _query()
 
 
 def warm_baostock_channel() -> bool:
