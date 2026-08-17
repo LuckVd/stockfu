@@ -4,7 +4,10 @@ profile_id: dividend_yield_ttm_v1
 version: 1
 raw_metric:
   id: dividend_yield_ttm
-  params: {price_basis: raw, trailing_days: 365}
+  # no_dividend_policy 必须显式声明：compute_dividend_yield_ttm 的指纹恒含该键
+  # （默认 zero），缺省会让声明指纹≠观测指纹 → V2 回测 fail-closed（同 4c4bbc7
+  # momentum metric_id 修复一类的回归，由 test_profile_fingerprint_consistency 守护）。
+  params: {price_basis: raw, trailing_days: 365, no_dividend_policy: zero}
 direction: higher_is_better
 raw_unit: percent
 mapping:

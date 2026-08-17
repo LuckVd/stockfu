@@ -142,12 +142,16 @@ class V2SignalScorer:
         self.history_years = history_years
 
         # ---- 装配:加载 alpha + 取 profile/raw_computer 并集 ----
+        # raw 计算键 = metric|指纹前缀（同 metric 不同参数各自成键）：单一 metric 键
+        # 会让「先注册者胜」——TEN_RESEARCH_ALPHAS 里 reversal_20d_v2(momentum,20d)
+        # 曾被静默算成 momentum_252d_skip21_v2 的 12 个月动量（2026-08-17 审查）。
         self.alphas: dict[str, AlphaDefinition] = {}
         self.aggregators: dict[str, AlphaAggregator] = {}
         self.profiles: dict[str, FactorProfile] = {}
         self.raw_computers: dict[str, Any] = {}
         self.raw_params: dict[str, dict] = {}
         self.raw_fingerprints: dict[str, str] = {}
+        self.raw_key_metric: dict[str, str] = {}
         self.metric_units: dict[str, str] = {}
         self.alpha_names: dict[str, str] = {}
 
@@ -165,8 +169,8 @@ class V2SignalScorer:
         self.alpha_profile_ids: dict[str, list[str]] = {
             aid: [f.profile_id for f in self.alphas[aid].factors] for aid in self.alpha_ids
         }
-        self.pid_to_metric = {
-            pid: p.raw_metric_id for pid, p in self.profiles.items()
+        self.pid_to_raw_key: dict[str, str] = {
+            pid: self._raw_key(p) for pid, p in self.profiles.items()
         }
         self.market_scope = next(
             (a.market_scope for a in self.alphas.values()), "cn_equity"
@@ -178,17 +182,31 @@ class V2SignalScorer:
         self.universe_rules = universe_rules
         self.codes = list(codes) if codes is not None else historical_full_universe()
 
+    @staticmethod
+    def _raw_key(p: FactorProfile) -> str:
+        """profile → 唯一 raw 计算键：metric + 声明指纹前缀（参数进指纹）。"""
+        from stockfu.backtest.v2_run import RAW_COMPUTERS as _RC
+        fp = raw_fingerprint(p.raw_metric_id, _RC[p.raw_metric_id].algo,
+                             dict(p.raw_metric_params))
+        return f"{p.raw_metric_id}|{fp[:12]}"
+
     def _register_raw(self, p: FactorProfile) -> None:
         metric = p.raw_metric_id
         if metric not in RAW_COMPUTERS:
             raise KeyError(f"raw_metric_id {metric} 未在 RAW_COMPUTERS 登记")
-        if metric not in self.raw_computers:
+        key = self._raw_key(p)
+        if key not in self.raw_computers:
             spec = RAW_COMPUTERS[metric]
-            self.raw_computers[metric] = spec.fn
-            self.raw_params[metric] = dict(p.raw_metric_params)
-            self.raw_fingerprints[metric] = raw_fingerprint(
-                metric, spec.algo, self.raw_params[metric]
+            self.raw_computers[key] = spec.fn
+            self.raw_params[key] = dict(p.raw_metric_params)
+            self.raw_fingerprints[key] = raw_fingerprint(
+                metric, spec.algo, self.raw_params[key]
             )
+            self.raw_key_metric[key] = metric
+        elif self.raw_params[key] != dict(p.raw_metric_params):  # pragma: no cover
+            # 指纹含全部 params，同 key 异参理论上不可达；防御性兜底
+            raise ValueError(
+                f"同一 raw key={key} 出现不同参数，配置装配异常")
         # 单位一致性(同一 metric 只允许一个 raw_unit)
         old = self.metric_units.get(metric)
         if old is not None and old != p.raw_unit:
@@ -269,19 +287,21 @@ class V2SignalScorer:
                     history.update(t, {}, industry, self.market_scope, {})
                     continue
 
-                # 当日原始值(逐 metric × eligible code)
+                # 当日原始值(逐 raw key × eligible code；raw key=metric|指纹，
+                # 同 metric 不同参数各自计算，不再「先注册者胜」)
                 raw_by_metric: dict[str, dict[str, Any]] = {}
-                for metric, computer in self.raw_computers.items():
+                for key, computer in self.raw_computers.items():
+                    metric = self.raw_key_metric[key]
                     m: dict[str, Any] = {}
-                    params = self.raw_params.get(metric, {})
+                    params = self.raw_params.get(key, {})
                     for c in sorted(eligible):
                         obs = computer(c, t, **params) if params else computer(c, t)
                         _validate_raw_observation(
                             obs, metric, t, self.metric_units[metric], c,
-                            self.raw_fingerprints.get(metric, ""),
+                            self.raw_fingerprints.get(key, ""),
                         )
                         m[c] = obs
-                    raw_by_metric[metric] = m
+                    raw_by_metric[key] = m
 
                 # 评分(仅 as_of 当日;读 cutoff<as_of 的历史)
                 if is_target:
@@ -295,9 +315,9 @@ class V2SignalScorer:
                         for c in sorted(eligible):
                             fs = {}
                             for pid in pids:
-                                metric = self.pid_to_metric[pid]
+                                raw_key = self.pid_to_raw_key[pid]
                                 fs[pid] = scorers[pid].score(
-                                    raw_by_metric[metric][c], history,
+                                    raw_by_metric[raw_key][c], history,
                                     industry.get(c), self.market_scope, cutoff,
                                 )
                             per_code[c] = agg.aggregate(
@@ -321,8 +341,13 @@ class V2SignalScorer:
         for p in self.profiles.values():
             m = p.raw_metric_id
             if m not in metric_values:
+                # 历史 ECDF 池按 metric 存储：同 metric 不同参数的 profile 共用
+                # 同一池（先注册者的观测），且要求 sampling 一致——现有配置满足；
+                # 若未来拆不同采样节奏，需把 HistoryState 键也升级为 raw key。
                 metric_values[m] = {
-                    c: obs.raw_value for c, obs in raw_by_metric.get(m, {}).items()
+                    c: obs.raw_value
+                    for c, obs in raw_by_metric.get(
+                        self.pid_to_raw_key[p.profile_id], {}).items()
                 }
                 flags: dict[str, bool] = {}
                 for comp, spec in p.history_specs.items():
