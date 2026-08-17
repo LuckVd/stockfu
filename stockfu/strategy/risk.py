@@ -308,7 +308,12 @@ class RiskOverlay:
                 seg = benchmark_closes[-(n + 1):]
                 returns = [seg[i] / seg[i - 1] - 1.0
                            for i in range(1, len(seg)) if seg[i - 1] > 0]
-                if len(returns) >= max(10, n // 2):
+                # 样本门槛：长窗(≥10)取 max(10, n//2)（统计下限+至少半窗）；
+                # 短窗(<10)取满窗——vol6/vol10 等 5 日「危机响应」设计本就是
+                # 尖峰检测而非精确估计，旧公式 max(10, n//2) 对 n<10 恒不可达
+                # → volatility_target 静默失效（2026-08-17 审查 #6）。
+                min_required = max(10, n // 2) if n >= 10 else n
+                if len(returns) >= min_required:
                     mean = sum(returns) / len(returns)
                     variance = sum((r - mean) ** 2 for r in returns) / len(returns)
                     realized = variance ** 0.5 * (252.0 ** 0.5)

@@ -105,8 +105,10 @@ def _make_session(
 def _complete_codes(start: str, end: str) -> set[str]:
     """断点续传用:返回 [start,end] 内 raw/hfq 已覆盖 qfq 的 code 集合(可跳过)。
 
-    判定:该 code 在区间内有 qfq,且 raw 行数 ≥ qfq 行数、hfq 行数 ≥ qfq 行数
-    (raw/hfq 至少补齐了 qfq 的每一天)。全新无 qfq 的 code 不在集合 → 会被抓。
+    判定(2026-08-17 审查 M4 改按**日期集合**对齐):该 code 在区间内有 qfq 的
+    每一天,同一天 raw 与 hfq 都非空。旧实现比行数(raw≥qfq 且 hfq≥qfq)在
+    「日期错位」时会误判完整——raw 的行落在别的日期、行数照样够,真实缺口
+    永久跳过。全新无 qfq 的 code 不在集合 → 会被抓。
     """
     from sqlalchemy import text
 
@@ -115,16 +117,15 @@ def _complete_codes(start: str, end: str) -> set[str]:
     sql = text(
         "SELECT asset_code, "
         "SUM(CASE WHEN close_qfq IS NOT NULL OR close IS NOT NULL THEN 1 ELSE 0 END), "
-        "SUM(CASE WHEN close_raw IS NOT NULL THEN 1 ELSE 0 END), "
-        "SUM(CASE WHEN close_hfq IS NOT NULL THEN 1 ELSE 0 END) "
+        "SUM(CASE WHEN (close_qfq IS NOT NULL OR close IS NOT NULL) "
+        "          AND (close_raw IS NULL OR close_hfq IS NULL) THEN 1 ELSE 0 END) "
         "FROM quote_snapshot WHERE quote_date BETWEEN :s AND :e "
         "GROUP BY asset_code"
     )
     out: set[str] = set()
     with engine.connect() as conn:
-        for code, q, r, h in conn.execute(sql, {"s": start, "e": end}):
-            q, r, h = int(q or 0), int(r or 0), int(h or 0)
-            if q > 0 and r >= q and h >= q:
+        for code, q, missing in conn.execute(sql, {"s": start, "e": end}):
+            if int(q or 0) > 0 and int(missing or 0) == 0:
                 out.add(code)
     return out
 
@@ -165,7 +166,17 @@ def backfill_adj_prices(
         pass  # 默认 free 已含 clash 种子
 
     codes = list(codes or _default_codes())
-    end = end or date.today().isoformat()
+    # 终点截到已收盘最近交易日(2026-08-17 审查 M2):盘中跑 --backfill-adj-prices
+    # 若用裸 today/当日 --end,baostock 会返回当日未收盘 partial bar 并写进
+    # raw/hfq 列(残值留存周期长)。cap 语义不 raise,断点续传兼容。
+    from stockfu.services.quote_writer import latest_closed_trade_day
+
+    cap = latest_closed_trade_day()
+    end = end or cap.isoformat()
+    if date.fromisoformat(end) > cap:
+        print(f"  [cap] end {end} > 已收盘最近交易日 {cap},截到 {cap}(防盘中 partial)",
+              flush=True)
+        end = cap.isoformat()
     t0 = time.time()
     ok = fail = rows = skip = 0
     errors: list[tuple[str, str]] = []
