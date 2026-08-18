@@ -46,7 +46,19 @@ from stockfu.factors.raw.sector_sentiment import (
     compute_sector_heat,
 )
 from stockfu.factors.raw.bollinger_pctb import compute_bollinger_pctb
+from stockfu.factors.raw.earnings_event import (
+    compute_jor,
+    compute_rec_acc_rev,
+    compute_sue_rw,
+)
 from stockfu.factors.raw.lhb import compute_lhb_inst_net, compute_lhb_net_buy
+from stockfu.factors.raw.price_micro import (
+    compute_amihud,
+    compute_cgo,
+    compute_intraday_ret,
+    compute_overnight_ret,
+    compute_wsplit_rev,
+)
 from stockfu.factors.raw.trend_linearity import compute_trend_linearity
 from stockfu.factors.raw.turnover import compute_turnover_20d
 from stockfu.factors.raw.value import compute_value
@@ -115,6 +127,16 @@ RAW_COMPUTERS = {
         "lhb_inst_net": RawComputerSpec(compute_lhb_inst_net, "sum_last_n_days"),
         # —— 换手/注意力因子 raw（2026-08-16，见 turnover-attention-ic.md）——
         "turnover_20d": RawComputerSpec(compute_turnover_20d, "mean_turnover_pct"),
+        # —— 量价微观结构因子 raw（2026-08-18，见 price-micro IC 快验）——
+        "overnight_ret_20d": RawComputerSpec(compute_overnight_ret, "mean_overnight_pct"),
+        "intraday_ret_20d": RawComputerSpec(compute_intraday_ret, "mean_intraday_pct"),
+        "cgo_60d": RawComputerSpec(compute_cgo, "turnover_weighted_reference_price"),
+        "amihud_20d": RawComputerSpec(compute_amihud, "mean_absret_over_amount"),
+        "wsplit_rev_20d": RawComputerSpec(compute_wsplit_rev, "w_split_by_amount_per_volume"),
+        # —— 财报事件因子 raw（2026-08-18，PEAD/JOR，见 earnings_event IC 快验）——
+        "sue_rw": RawComputerSpec(compute_sue_rw, "delta_ttm_zscore"),
+        "jor": RawComputerSpec(compute_jor, "gap_after_earnings_pub"),
+        "rec_acc_rev": RawComputerSpec(compute_rec_acc_rev, "neg_cum_ret_since_earnings"),
     }
 
 # alpha 的默认 deployment。显式传入 --portfolio-v2/--risk-v2 仍可做对照实验；
@@ -161,6 +183,19 @@ DEFAULT_V2_DEPLOYMENTS = {
     "attention_momentum_v2": {
         "portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1",
     },
+    # —— 行为金融/微观结构研究线（2026-08-18，price-micro/earnings IC 快验）——
+    # CGO 处置效应/理想反转/财报错杀/SUE+质量/行为多因子;月度持有(min_hold=21)
+    # 与既有月频策略族对齐;事件因子(earnings_dip)窗内调仓受限,同为 slow21。
+    "cgo_disposition_v2":       {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "cgo_lowvol_v2":            {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "cgo_value_v2":             {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "cgo_quality_v2":           {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "cgo_value_top10_v2":       {"portfolio_id": "pf_daily_top10_slow21_v2", "risk_id": "no_overlay_v1"},
+    "micro_reversal_v2":        {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "micro_reversal_lowvol_v2": {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "earnings_dip_v2":          {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "sue_quality_v2":           {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
+    "behavior_multi_v2":        {"portfolio_id": "pf_daily_top15_slow21_v2", "risk_id": "no_overlay_v1"},
 }
 
 

@@ -1,0 +1,31 @@
+# 理想反转 W 切割(东吴"订单簿的温度"):高单笔金额日收益和-低单笔金额日收益和,
+# 低 → 高分。高 D(聪明钱)推的涨幅是假反转会回吐。IC:2020+ -0.032@5d(ICIR -3.0)、
+# 2013-19 弱(-0.005)→ 近年才显著,权重低于 cgo。
+profile_id: wsplit_rev_20d_low_v2
+version: 1
+raw_metric:
+  id: wsplit_rev_20d
+  params: {window: 20, basis: raw, D: amount/volume}
+direction: lower_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-20, 100], [-10, 82], [-4, 65], [0, 50], [4, 35], [10, 18], [20, 0]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2013-01-01

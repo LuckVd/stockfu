@@ -1,0 +1,11 @@
+# 策略6:盈余改善 + 质量(SUE 主 + ROE 稳定性辅)。2013-19 段 PEAD 强,
+# 2020+ 衰减 → 质量因子补稳(quality_roe 已有三段验证)。
+alpha_id: sue_quality_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: sue_rw_high_v2, weight: 1.0, critical: true}
+  - {profile_id: quality_roe_v1, weight: 0.6, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

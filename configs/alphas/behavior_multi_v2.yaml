@@ -1,0 +1,13 @@
+# 策略7:行为金融多因子(cgo + wsplit + intraday + amihud)。
+# 四个微观/行为维度等权散布,对照单因子策略看分散效果。
+alpha_id: behavior_multi_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: cgo_60d_low_v2, weight: 1.0, critical: true}
+  - {profile_id: wsplit_rev_20d_low_v2, weight: 0.8, critical: false}
+  - {profile_id: intraday_ret_20d_low_v2, weight: 0.6, critical: false}
+  - {profile_id: amihud_20d_high_v2, weight: 0.4, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 2
+formal_maturity_policy: force_mature_after_observation

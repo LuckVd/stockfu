@@ -1,0 +1,10 @@
+# 策略1:CGO 处置效应纯因子(行为金融)。低 CGO=深套卖压出尽,两子段 IC 一致。
+# 风格:行为金融/筹码结构,与价值/低波/动量均不同源。
+alpha_id: cgo_disposition_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: cgo_60d_low_v2, weight: 1.0, critical: true}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

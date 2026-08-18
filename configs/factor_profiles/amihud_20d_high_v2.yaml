@@ -1,0 +1,31 @@
+# Amihud 非流动性(20 日):高 → 高分(流动性溢价,东方证券十四:A股最佳流动性度量)。
+# IC:2013-19 +0.033~+0.046 强;2020+ 衰减至 0(大盘池机构定价)→ 权重放低、
+# 只作组合次要分量,不单独成策略。
+profile_id: amihud_20d_high_v2
+version: 1
+raw_metric:
+  id: amihud_20d
+  params: {window: 20, basis: raw, amount_unit: 1e8}
+direction: higher_is_better
+raw_unit: per_1e8_cny_x1000
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.4
+      knots: [[0, 0], [0.5, 20], [1, 40], [2, 60], [4, 80], [8, 100]]
+    market_history:
+      weight: 0.4
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2013-01-01
