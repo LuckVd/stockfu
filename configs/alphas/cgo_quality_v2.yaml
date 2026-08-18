@@ -1,0 +1,11 @@
+# 策略9:CGO 处置效应 + 质量锚(ROE 稳定性)。深套+好公司=黄金坑,
+# 防 CGO 选到基本面恶化的价值陷阱。
+alpha_id: cgo_quality_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: cgo_60d_low_v2, weight: 1.0, critical: true}
+  - {profile_id: quality_roe_v1, weight: 0.8, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

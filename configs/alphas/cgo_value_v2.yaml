@@ -1,0 +1,11 @@
+# 策略8:CGO 处置效应 + 价值锚(E/P)。深套卖压出尽 + 便宜 = 错杀修复,
+# 压 CGO 纯因子的回撤(39.8%);与 cgo_lowvol(低波反而选阴跌票)对比。
+alpha_id: cgo_value_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: cgo_60d_low_v2, weight: 1.0, critical: true}
+  - {profile_id: earnings_yield_v2, weight: 0.8, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

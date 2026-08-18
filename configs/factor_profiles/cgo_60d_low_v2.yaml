@@ -1,0 +1,33 @@
+# CGO 处置效应(资本利得突出量,换手加权参考价):低 CGO(深套、卖压出尽)→ 高分。
+# IC 快验(2026-08-18,hs300 月频):full -0.052@5d(ICIR -3.0)/-0.021@20d,
+# 2013-19 与 2020-26 两子段一致负 → 稳定。广发 2017《资本利得突出量CGO与风险偏好》
+# A股实证同向(低 CGO 组合跑赢)。
+# knots 按 cgo_60d 分布:深套 -20% 以下 100 分,浮盈 +20% 以上 0 分。
+profile_id: cgo_60d_low_v2
+version: 1
+raw_metric:
+  id: cgo_60d
+  params: {span: 60, basis: qfq_close_raw_turnover}
+direction: lower_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-25, 100], [-15, 85], [-8, 70], [0, 50], [8, 30], [15, 15], [25, 0]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2013-01-01

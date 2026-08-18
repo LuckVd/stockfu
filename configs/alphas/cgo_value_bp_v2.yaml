@@ -1,0 +1,9 @@
+alpha_id: cgo_value_bp_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: cgo_60d_low_v2, weight: 1.0, critical: true}
+  - {profile_id: book_to_price_v2, weight: 0.8, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation
