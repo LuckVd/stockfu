@@ -4,6 +4,9 @@
 """
 from __future__ import annotations
 
+import threading
+
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, UploadFile
@@ -54,11 +57,51 @@ def watchlist():
 
 # ---------- P1：市场情绪 / 资金流 ----------
 
+# 网络型读端点的超时兜底(2026-08-24 审查修复):上游数据源挂起时请求线程
+# 不应被长期占住(/indices/stock 最坏 ~100s、/sectors/flow 直连 akshare 无超时)。
+# 超时返回 503;底层线程自然结束后结果丢弃。有界信号量防排队任务无限堆积。
+_NET_EXEC = ThreadPoolExecutor(max_workers=4, thread_name_prefix="net-api")
+_NET_GATE = threading.BoundedSemaphore(8)
+
+
+def _net_call(fn, timeout_s: float, label: str):
+    from concurrent.futures import TimeoutError as FutTimeout
+
+    if not _NET_GATE.acquire(timeout=0.1):
+        raise HTTPException(status_code=503, detail=f"{label} 繁忙,请稍后重试")
+    try:
+        fut = _NET_EXEC.submit(fn)
+        try:
+            return fut.result(timeout=timeout_s)
+        except FutTimeout:
+            raise HTTPException(
+                status_code=503,
+                detail=f"{label} 上游响应超时(>{timeout_s:.0f}s),请稍后重试") from None
+    finally:
+        _NET_GATE.release()
+
+
 @router.get("/indices/stock/{code}")
 def indices_stock(code: str):
     """个股层 fear/greed/heat。"""
     from stockfu.services import composite
-    return composite.compute_stock(code)
+    return _net_call(lambda: composite.compute_stock(code), 45.0, "个股情绪")
+
+
+@router.get("/sectors/flow")
+def sector_flow_today_api(top_n: int = Query(10, ge=1, le=90)):
+    """板块当日主力资金流即时排名（同花顺，列全且不受东财限流；按净额降序）。
+
+    只读实时；历史落库由每日 `--fetch --date` 负责（`backfill_sector_flow`）。
+    """
+    def _fetch():
+        rows = get_manager().get_sector_flow_today()
+        return sorted(rows, key=lambda x: x.get("net_inflow") or 0, reverse=True)
+
+    rows = _net_call(_fetch, 20.0, "板块资金流")
+    return {"count": len(rows),
+            "top": rows[:top_n],
+            "bottom": list(reversed(rows[-top_n:])) if len(rows) > top_n else []}
 
 
 @router.get("/indices/quotes")
@@ -68,11 +111,14 @@ def index_quotes():
     return {"trade_date": latest_trade_date(), **index_quotes_view()}
 
 @router.get("/indices/history")
-def indices_history(level: str = "market", scope: str = "MARKET", days: int = 30):
+def indices_history(level: str = "market", scope: str = "MARKET",
+                    days: int = Query(30, ge=5, le=750)):
     """某层某 scope 的指数历史序列。"""
-    from datetime import date, timedelta
+    from datetime import timedelta
+
     from stockfu.models import IndexSnapshot
-    start = date.today() - timedelta(days=days + 5)
+    from stockfu.services.snapshot import beijing_today
+    start = beijing_today() - timedelta(days=days + 5)
     with session_scope() as s:
         rows = s.exec(select(IndexSnapshot).where(
             IndexSnapshot.level == level, IndexSnapshot.scope == scope,
@@ -81,19 +127,6 @@ def indices_history(level: str = "market", scope: str = "MARKET", days: int = 30
     for r in rows:
         out.setdefault(r.index_key, []).append({"date": r.snap_date.isoformat(), "value": r.value})
     return out
-
-
-@router.get("/sectors/flow")
-def sector_flow_today_api(top_n: int = Query(10, ge=1, le=90)):
-    """板块当日主力资金流即时排名（同花顺，列全且不受东财限流；按净额降序）。
-
-    只读实时；历史落库由每日 `--fetch --date` 负责（`backfill_sector_flow`）。
-    """
-    rows = get_manager().get_sector_flow_today()
-    rows = sorted(rows, key=lambda x: x.get("net_inflow") or 0, reverse=True)
-    return {"count": len(rows),
-            "top": rows[:top_n],
-            "bottom": list(reversed(rows[-top_n:])) if len(rows) > top_n else []}
 
 
 # ---------- 交易录入（前端买卖）----------
@@ -111,12 +144,24 @@ def clear_holdings_api():
     return {"ok": True}
 
 
+_BG_ENSURE_RUNNING: set[str] = set()          # 去重:同股后台补数进行中不重入
+_BG_ENSURE_LOCK = threading.Lock()
+
+
 def _trigger_bg_ensure(code: str, target_date=None) -> None:
-    """后台补该股历史K线 + 算情绪指数（买入/加自选/CSV 导入新代码后触发）。"""
+    """后台补该股历史K线 + 算情绪指数（买入/加自选/CSV 导入新代码后触发）。
+
+    同股去重:进行中的补数不重复起线程(2026-08-24 审查修复:反复刷新
+    会堆积 daemon 线程并反复触达外部数据源)。
+    """
     import logging
-    import threading
 
     from stockfu.scheduler.jobs import ensure_stock_data_and_index
+
+    with _BG_ENSURE_LOCK:
+        if code in _BG_ENSURE_RUNNING:
+            return
+        _BG_ENSURE_RUNNING.add(code)
 
     def _run():
         try:
@@ -124,6 +169,9 @@ def _trigger_bg_ensure(code: str, target_date=None) -> None:
         except Exception as exc:  # noqa: BLE001
             logging.getLogger("stockfu").warning(
                 "ensure_stock_data(%s) 失败: %s", code, exc)
+        finally:
+            with _BG_ENSURE_LOCK:
+                _BG_ENSURE_RUNNING.discard(code)
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -142,8 +190,12 @@ def ensure_stock_data(code: str, background: bool = True, date: str | None = Non
         _trigger_bg_ensure(code, target_date=date)
         return {"ok": True, "code": code, "status": "started",
                 "detail": "后台补K线+算指数中，约几十秒，完成后自动刷新"}
-    return {"ok": True, "code": code,
-            "result": ensure_stock_data_and_index(code, target_date=date)}
+    try:
+        result = ensure_stock_data_and_index(code, target_date=date)
+    except ValueError as exc:
+        # 目标日期非法(未来/未收盘/非交易日)属请求错误,给 400 而非 500
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "code": code, "result": result}
 
 
 @router.post("/trade")
@@ -386,11 +438,11 @@ def _ai_key(code: str) -> str:
 def _set_ai_pending(code: str) -> None:
     """标记该股票正在分析中。刷新后前端据此恢复 loading 态,避免重复点击。"""
     import json
-    from datetime import datetime
     from stockfu.db import set_app_config
+    from stockfu.services.snapshot import beijing_now
     set_app_config(_ai_key(code), json.dumps({
         "status": "pending",
-        "pending_since": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "pending_since": beijing_now().strftime("%Y-%m-%d %H:%M:%S"),
     }, ensure_ascii=False))
 
 
@@ -398,14 +450,14 @@ def _set_ai_done(code: str, result) -> None:
     """分析完成(成功带 result / 异常或全降级带 None)。写最终状态、清除 pending。
     signal 一并存,让前端 AiButton done 态零请求上色。"""
     import json
-    from datetime import datetime
     from stockfu.db import set_app_config
+    from stockfu.services.snapshot import beijing_now
     signal = (result or {}).get("aggregate", {}).get("final_signal") if result else None
     set_app_config(_ai_key(code), json.dumps({
         "status": "done",
         "result": result,
         "signal": signal,
-        "analyzed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "analyzed_at": beijing_now().strftime("%Y-%m-%d %H:%M"),
     }, ensure_ascii=False))
 
 
@@ -459,9 +511,10 @@ def get_ai_result(code: str):
 @router.get("/quote/kline/{code}")
 def quote_kline(code: str, days: int = Query(30, ge=5, le=120)):
     """个股收盘价序列（读 quote_snapshot；AI 报告 30 日迷你图用）。"""
-    from datetime import date, timedelta
+    from datetime import timedelta
     from stockfu.models import QuoteSnapshot
-    start = date.today() - timedelta(days=days + 15)  # +15 缓冲跳过周末/节假日
+    from stockfu.services.snapshot import beijing_today
+    start = beijing_today() - timedelta(days=days + 15)  # +15 缓冲跳过周末/节假日
     with session_scope() as s:
         rows = s.exec(select(QuoteSnapshot).where(
             QuoteSnapshot.asset_code == code,

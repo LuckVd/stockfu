@@ -281,7 +281,11 @@ def build_v2_config(
 
     if history_origin is None:
         # 默认预热 5 年:覆盖 low_vol/dividend 的 self 历史窗口到 mature
-        history_origin = date(eval_start.year - 5, eval_start.month, eval_start.day)
+        # (2/29 起点回退到非闰年时取 2/28,预热窗少 1 天无影响)
+        try:
+            history_origin = date(eval_start.year - 5, eval_start.month, eval_start.day)
+        except ValueError:
+            history_origin = date(eval_start.year - 5, eval_start.month, 28)
 
     kw: dict = dict(
         alpha=alpha, portfolio=portfolio, risk=risk, profiles=profiles,

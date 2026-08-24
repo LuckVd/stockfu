@@ -35,3 +35,6 @@ docs/jq-api/
 .pi-subagents/
 # 龙虎榜 IC 快验缓存(可再生成)
 data/lhb_events.json
+
+# 交易日历持久化缓存(联网成功时自动再生,断网兜底用)
+data/trade_calendar.json

@@ -139,9 +139,10 @@ class CompiledStrategy:
     def _ensure_op_meta(self, temperature: float = 0.0):
         """算子元信息预算(每策略算一次,缓存于实例):[(spec, cls, fp, version)]。
 
-        指纹纳入算子源码 hash(sha1(inspect.getsource(cls))[:8]) → 改算子代码自动失效缓存
-        (治 P2-5:不再依赖人工 bump version)。回测侧 LLM 已下线,只剩 math 算子;
-        Operator.version 降级为人工强制失效开关,日常失效靠 source hash。"""
+        指纹纳入算子源码 hash(含辅助函数依赖,见 _operator_source_hash)→
+        改算子代码自动失效缓存(治 P2-5:不再依赖人工 bump version)。回测侧
+        LLM 已下线,只剩 math 算子;Operator.version 降级为人工强制失效开关,
+        日常失效靠 source hash。"""
         cache = getattr(self, "_op_meta_cache", None)
         if cache is None:
             cache = {}
@@ -156,7 +157,7 @@ class CompiledStrategy:
                 raise ValueError(f"未知算子 '{spec['id']}'(策略 {self.strategy_id})")
             params = dict(spec.get("params") or {})
             version = _load_operator_meta(cls.operator_id)
-            source = hashlib.sha1(inspect.getsource(cls).encode("utf-8")).hexdigest()[:8]
+            source = _operator_source_hash(cls)
             fp = compute_fingerprint(version=version, params=params, source=source)
             meta.append((spec, cls, fp, version))
         cache[temperature] = meta
@@ -484,19 +485,69 @@ class CompiledStrategy:
         return self.debounce_params.to_dict()
 
 
+def _operator_source_hash(cls) -> str:
+    """算子源码指纹:类源码 + 其引用的 stockfu 内部辅助函数源码。
+
+    2026-08-24 审查修复(L2):旧指纹只含类自身源码,算子调用的模块级辅助函数
+    (如 daily_bollinger 调 monthly_bollinger._calc_bollinger、trend_linearity 调
+    services.factors.linreg_r2)改动不会改变指纹 → operator_result 缓存静默
+    复用旧结果。现把源码中按名引用、定义于 stockfu 包内的函数一并纳入
+    (类 → 辅助 → 辅助的辅助,两层追踪);函数在其**自身所属模块**的命名空间
+    里解析名字,跨模块引用也能追到。
+    """
+    import ast as _ast
+    import sys
+
+    h = hashlib.sha1()
+    cls_src = inspect.getsource(cls)
+    h.update(cls_src.encode("utf-8"))
+    seen: set[tuple[str, str]] = set()
+    frontier: list[tuple[str, str, str]] = [(cls.__module__, "<class>", cls_src)]
+    for _depth in range(2):
+        next_frontier: list[tuple[str, str, str]] = []
+        for mod_name, label, src in frontier:
+            owner = sys.modules.get(mod_name)
+            try:
+                tree = _ast.parse(src)
+            except SyntaxError:
+                continue
+            names = {n.id for n in _ast.walk(tree) if isinstance(n, _ast.Name)}
+            for name in sorted(names):
+                fn = getattr(owner, name, None) if owner is not None else None
+                if not (inspect.isfunction(fn) and fn.__module__
+                        and fn.__module__.startswith("stockfu")):
+                    continue
+                key = (fn.__module__, fn.__name__)
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    fn_src = inspect.getsource(fn)
+                except (OSError, TypeError):
+                    continue
+                h.update(f"\n#dep:{fn.__module__}.{fn.__name__}\n".encode("utf-8"))
+                h.update(fn_src.encode("utf-8"))
+                next_frontier.append((fn.__module__, key, fn_src))
+        frontier = next_frontier
+        if not frontier:
+            break
+    return h.hexdigest()[:8]
+
+
 def single_operator_fingerprint(operator_id: str, params: dict | None = None) -> str:
     """单算子输入指纹 = hash(version + params + source),复用 _ensure_op_meta 同款算法。
 
     供 factor_diag 等单算子场景读/写回测算子缓存(operator_result)——指纹与回测逐字一致 →
     跨场景命中复用(回测算过的(code,as_of),因子诊断直接读缓存,反之亦然)。
-    source=算子类源码 hash(改算子代码自动失效,治 P2-5,与 _ensure_op_meta 同源)。
+    source=算子源码 hash(含辅助函数依赖,改算子/辅助代码自动失效,治 P2-5,
+    与 _ensure_op_meta 同源)。
     """
     cls = get_operator_class(operator_id)
     if cls is None:
         raise ValueError(f"未知算子 '{operator_id}'(不在注册表)")
     from stockfu.ai.operator_cache import compute_fingerprint
     version = _load_operator_meta(operator_id)
-    source = hashlib.sha1(inspect.getsource(cls).encode("utf-8")).hexdigest()[:8]
+    source = _operator_source_hash(cls)
     return compute_fingerprint(version=version, params=params or {}, source=source)
 
 

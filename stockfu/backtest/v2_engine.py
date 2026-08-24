@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -2163,8 +2164,15 @@ def _run_v2_backtest_body(cfg: V2RunConfig, run_meta: dict) -> V2Result:
     final_as_of = actual_last_completed or (dates_all[-1] if dates_all else cfg.eval_end)
     open_holding_periods = _open_holding_periods(
         acct, final_as_of, day_index_by_date)
+    # 基准实际覆盖窗口:起点晚于 formal 起点时 _metrics 按交集窗口算 excess
+    # (2026-08-24 审查修复,与 V1 engine._metrics 同语义)。
+    _bench_window = (
+        {"start": str(formal_bench[0]["date"]), "end": str(formal_bench[-1]["date"])}
+        if formal_bench else None
+    )
     base_metrics = (
-        _metrics(formal_equity, formal_bench, cfg.initial_cash, days)
+        _metrics(formal_equity, formal_bench, cfg.initial_cash, days,
+                 bench_window=_bench_window)
         if formal_equity else {}
     )
     metrics = _v2_recording_metrics(
@@ -2234,6 +2242,14 @@ def _resolve_metrics_benchmark(
         curve = _build_benchmark_curve(sctx, cand, formal_dates)
         basis = "price" if cand == bench else "custom"
         note = "explicit_missing" if (not curve and cand != bench) else None
+        # 显式基准起点晚于 formal 起点 → excess 窗口错位风险(2026-08-24 审查):
+        # 尊重用户指定不回退,但记 note 供 manifest 审计,并交给 _metrics 的
+        # 交集窗口逻辑对齐(见调用点 bench_window 构造)。
+        if curve and curve[0]["date"] != formal_dates[0]:
+            note = "explicit_late_start"
+            logging.getLogger("stockfu").warning(
+                "v2 指标基准 %s 首点 %s 晚于 formal 起点 %s,excess 按交集窗口对齐",
+                cand, curve[0]["date"], formal_dates[0])
         return curve, cand, basis, note
     cand = f"{bench}_tr"
     curve = _build_benchmark_curve(sctx, cand, formal_dates)
@@ -2241,6 +2257,8 @@ def _resolve_metrics_benchmark(
         return curve, cand, "total_return", None
     note = "tr_late_start" if curve else "tr_missing"
     price_curve = _build_benchmark_curve(sctx, bench, formal_dates)
+    if price_curve and price_curve[0]["date"] != formal_dates[0]:
+        note = "price_late_start"
     return price_curve, bench, "price", note
 
 
@@ -2250,7 +2268,8 @@ def _build_benchmark_curve(sctx, bench_code: str, formal_dates: list[date]) -> l
     缺失日(无列式索引或 NaN)沿用上一有效收盘前向填充，保证曲线与 formal 段等长、
     连续无洞——与 V1 ``_benchmark_curve`` 一致；否则基准前缀缺数据会让归一起点
     漂移、``_metrics`` 的 benchmark_return/excess 口径错位。前缀全缺则从首个有效
-    日起算(base 即该日收盘)。
+    日起算(base 即该日收盘)。中途缺洞超过阈值(>max(5, 2%))时打 warning
+    (2026-08-24 审查:ffill 会无声拉长停滞净值,excess 失真需可见)。
     """
     if sctx is None or not formal_dates:
         return []
@@ -2262,17 +2281,28 @@ def _build_benchmark_curve(sctx, bench_code: str, formal_dates: list[date]) -> l
         return []
     out: list[dict] = []
     last = base = None
+    n_filled = 0                                   # 前缀确定后 ffill 的缺日数
     for d in formal_dates:
         di = sctx.date_idx.get(d)
         if di is not None:
             v = closes[di]
             if not math.isnan(v):
                 last = v
+            elif base is not None:
+                n_filled += 1                 # 内部缺日(NaN,前向填充)
+        elif base is not None:
+            n_filled += 1                     # 日期不在预载索引(前向填充)
         if last is None:
             continue                       # 前缀全缺：跳到首个有效日再定 base
         if base is None:
             base = last
         out.append({"date": d, "equity": last / base})
+    # 缺洞告警(2026-08-24 审查):基准中途大量缺日被 ffill 会无声拉长停滞净值,
+    # excess/benchmark_return 失真。超过阈值只告警不中止(回测仍可对照)。
+    if out and n_filled > max(5, len(formal_dates) // 50):
+        logging.getLogger("stockfu").warning(
+            "v2 基准 %s 在 formal 段缺 %d/%d 日(前向填充),excess 可能失真",
+            bench_code, n_filled, len(formal_dates))
     return out
 
 

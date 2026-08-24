@@ -395,17 +395,24 @@ def backfill_kline(code: str, days: int = 90) -> int:
       - **最新一根 bar**:始终全量覆盖(OHLCV+状态+估值)
     """
     from stockfu.services.factors import quote_model_for
+    # cap 锚点统一为「已收盘交易日」：抓取源盘中会返回当日未收盘 partial bar，
+    # 以数据自身最大日当 cap 会把它当完整收盘行入库（2026-08-24 审查 H1）。
+    from stockfu.services.quote_writer import latest_closed_trade_day
+    cap = latest_closed_trade_day()
     if quote_model_for(code) is EtfQuoteDaily:
         from stockfu.data.akshare_source import get_etf_daily
         start = (date.today() - timedelta(days=days + 40)).isoformat()
-        rows = get_etf_daily(code, start, date.today().isoformat())
-        return _upsert_etf_rows(code, rows)
+        rows = get_etf_daily(code, start, cap.isoformat())
+        return _upsert_etf_rows(code, rows, cap_date=cap)
 
     from stockfu.data.manager import get_manager
     from stockfu.services.quote_writer import (
         QuotePayload, WritePolicy, upsert_quote_snapshot,
     )
     bars = sorted(get_manager().get_kline(code, days), key=lambda b: b.date)
+    if not bars:
+        return 0
+    bars = [b for b in bars if b.date <= cap]
     if not bars:
         return 0
     latest_d = bars[-1].date
@@ -419,7 +426,7 @@ def backfill_kline(code: str, days: int = 90) -> int:
     }
     with session_scope() as s:
         n = upsert_quote_snapshot(
-            s, code, payload, policy=WritePolicy.PATCH_STATUS, cap_date=latest_d)
+            s, code, payload, policy=WritePolicy.PATCH_STATUS, cap_date=cap)
         s.commit()
     return n
 
@@ -463,6 +470,15 @@ def backfill_quote_status(codes: list[str] | None = None, days: int = 2000,
             mark_item("quote_status", scope, code, success=False, error="empty bars")
             continue
         bars = sorted(bars, key=lambda b: b.date)
+        # 盘中源可能带当日 partial bar：统一按已收盘交易日截断（审查 H1）。
+        from stockfu.services.quote_writer import latest_closed_trade_day as _lctd
+        _cap = _lctd()
+        bars = [b for b in bars if b.date <= _cap]
+        if not bars:
+            errors += 1
+            mark_item("quote_status", scope, code, success=False,
+                      error="no closed-day bars")
+            continue
         by_d = {b.date: b for b in bars}
         last = bars[-1]
         latest_dates.append(last.date)
@@ -484,7 +500,7 @@ def backfill_quote_status(codes: list[str] | None = None, days: int = 2000,
                 elif d in have:
                     payload[d] = QuotePayload(qfq=b, policy=WritePolicy.PATCH_STATUS)
             written = upsert_quote_snapshot(
-                s, code, payload, policy=WritePolicy.PATCH_STATUS, cap_date=last.date)
+                s, code, payload, policy=WritePolicy.PATCH_STATUS, cap_date=_cap)
             latest_upserted += 1
             patched += max(0, written - 1)
             s.commit()
@@ -766,8 +782,12 @@ def backfill_etf_quotes(
     import time as _t
     from stockfu.data.akshare_source import get_etf_daily
     from stockfu.services.backfill_checkpoint import mark_item, pending_items
+    from stockfu.services.quote_writer import latest_closed_trade_day
 
     today = date.today()
+    # cap 锚点=已收盘交易日：东财盘中返回当日 partial 日线，行内最大日当 cap
+    # 会把半截 OHLC 当完整收盘行入库（2026-08-24 审查 H1）。
+    cap = latest_closed_trade_day()
     pool = codes if codes is not None else etf_universe_codes()
     scope = f"v1:{start}:{today.isoformat()}"
     pending, skipped = pending_items("etf_quotes", scope, pool, refresh=refresh)
@@ -775,10 +795,10 @@ def backfill_etf_quotes(
     summary: dict[str, dict] = {}
     for i, code in enumerate(pending):
         try:
-            rows = get_etf_daily(code, start, today.isoformat())
+            rows = get_etf_daily(code, start, cap.isoformat())
             if not rows:
                 raise RuntimeError("empty rows")
-            written = _upsert_etf_rows(code, rows)
+            written = _upsert_etf_rows(code, rows, cap_date=cap)
             mark_item("etf_quotes", scope, code, success=True)
         except Exception as exc:  # noqa: BLE001
             mark_item("etf_quotes", scope, code, success=False,
