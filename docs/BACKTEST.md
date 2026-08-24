@@ -37,6 +37,12 @@ operator → strategy YAML → rebalancer → execution engine → artifacts
 
 - 主库 `data/stockfu.db` 保存行情、分红和历史宇宙；算子结果位于独立的 `operator_cache.db`。
 - 算子缓存可再生，指纹包含算子源码 hash；回测不得把缓存写回行情主库。
+- **指纹口径（2026-08-24 起）**：V1 算子源码 hash 除算子类自身外，还纳入其引用的
+  stockfu 模块级辅助函数源码（两层依赖追踪，`runner._operator_source_hash`）。此前只
+  hash 类源码，改辅助函数实现（如 `_calc_bollinger`/`linreg_r2`/`factors.percentile`）
+  指纹不变 → 缓存静默复用旧结果。**升级影响**：指纹算法变更使 `operator_result`
+  旧缓存全量 miss 一次，首次 `--update-backtests` / `--recommend` / factor_diag 会自动
+  重算并回填（预期行为，非 bug；只慢一次，不需要手工清库）。
 - 长窗回测使用 `CompiledStrategy.begin_run_cache()` 的滚动窗口预载，避免一次把全周期算子结果全部读进内存。
 - 研究产物写入 `data/backtest/`，是可删除、可重算的本地工件，不纳入 Git。
 
