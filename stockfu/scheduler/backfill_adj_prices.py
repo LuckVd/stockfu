@@ -224,14 +224,22 @@ def backfill_adj_prices(
                     fail += 1
                     errors.append((code, "empty"))
                 else:
-                    n = _apply_and_upsert(code, triple, preserve_qfq=preserve_qfq,
-                                          cap_date=end)
-                    ok += 1
-                    rows += n
+                    # 落库与网络抓取分离(2026-08-24 审查修复):DB 提交失败
+                    # (SQLITE_BUSY/唯一键冲突等)是本地问题,换代理无济于事,
+                    # 只会白白消耗代理池;仅网络类异常才 mark_bad_and_rotate。
+                    try:
+                        n = _apply_and_upsert(code, triple, preserve_qfq=preserve_qfq,
+                                              cap_date=end)
+                    except Exception as db_exc:  # noqa: BLE001
+                        fail += 1
+                        errors.append((code, f"db: {type(db_exc).__name__}: {db_exc}"))
+                    else:
+                        ok += 1
+                        rows += n
             except Exception as e:  # noqa: BLE001
                 fail += 1
                 errors.append((code, f"{type(e).__name__}: {e}"))
-                # 会话级再尝试换代理，避免整批卡死
+                # 会话级再尝试换代理，避免整批卡死（仅网络类错误）
                 try:
                     if not sess.mark_bad_and_rotate(f"code_exc:{code}"):
                         print("  [abort] baostock all exhausted (proxy pool + direct fallback)", flush=True)

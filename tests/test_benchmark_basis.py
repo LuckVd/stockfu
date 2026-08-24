@@ -78,6 +78,26 @@ class TestResolveMetricsBenchmark(unittest.TestCase):
         self.assertEqual(curve, [])
         self.assertEqual((code, basis, note), ("my_index", "custom", "explicit_missing"))
 
+    # ---- 2026-08-24 审查修复:显式/回退基准的起点错位不再无声 ----
+
+    def test_explicit_late_start_flags_note(self):
+        """显式基准首点晚于 formal 起点:尊重用户但记 explicit_late_start。"""
+        sctx = _sctx({"my_index": [None, None, 100, 101, 102]}, self.dates)
+        curve, code, basis, note = _resolve_metrics_benchmark(
+            sctx, _Cfg(metrics_benchmark_code="my_index"), "sh000300", self.dates)
+        self.assertEqual((code, basis, note), ("my_index", "custom", "explicit_late_start"))
+        self.assertEqual(curve[0]["date"], self.dates[2])   # 曲线从首个有效日起
+
+    def test_price_fallback_late_start_flags_note(self):
+        """TR 与价格指数都晚于 formal 起点:回退价格指数并记 price_late_start。"""
+        sctx = _sctx({
+            "sh000300_tr": [None, None, 100, 101, 102],
+            "sh000300": [None, None, 10, 10.5, 11],
+        }, self.dates)
+        curve, code, basis, note = _resolve_metrics_benchmark(
+            sctx, _Cfg(), "sh000300", self.dates)
+        self.assertEqual((code, basis, note), ("sh000300", "price", "price_late_start"))
+
 
 if __name__ == "__main__":
     unittest.main()

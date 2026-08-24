@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import json
+import logging
+
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -102,7 +104,7 @@ _ALPHA_LABELS = {
     "dividend_income_history45_v2": "高股息",
     "multi_factor_value_tilt_v2": "多因子",
     "multi_factor_quality_v2": "质量增强",
-    "earnings_momentum_offense_v2": "盈利进攻",
+    "earnings_momentum_offense_v2": "盈利动量进攻",
 }
 
 
@@ -112,22 +114,33 @@ def _short_alpha(alpha_id: str) -> str:
 
 
 def _rank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """增加荐股视图字段；保留每个策略原始 0–100 分。"""
+    """增加荐股视图字段；保留每个策略原始 0–100 分。
+
+    mean_score 统计**全部有分数的单元格**（含 not_tradable 的收缩分）：
+    只算 tradable 会让覆盖不全的股票（如 4 套 not_tradable≈50 + 1 套 95）
+    均分虚高登顶综合榜，对全覆盖的股票不公平（2026-08-24 审查修复）。
+    """
     out: list[dict[str, Any]] = []
     for row in rows:
         scores = row.get("scores") or {}
+        scored = [
+            float(cell["score"])
+            for cell in scores.values()
+            if cell.get("score") is not None
+        ]
         tradable = [
             float(cell["score"])
             for cell in scores.values()
             if cell.get("status") == "tradable" and cell.get("score") is not None
         ]
-        mean_score = round(sum(tradable) / len(tradable), 2) if tradable else None
+        mean_score = round(sum(scored) / len(scored), 2) if scored else None
         out.append({
             **row,
             "mean_score": mean_score,
-            "n_scored": len(tradable),
-            "n_bullish": sum(score >= 60.0 for score in tradable),
-            "n_bearish": sum(score <= 40.0 for score in tradable),
+            "n_scored": len(scored),
+            "n_tradable": len(tradable),
+            "n_bullish": sum(score >= 60.0 for score in scored),
+            "n_bearish": sum(score <= 40.0 for score in scored),
         })
     out.sort(key=lambda row: (
         -(row["mean_score"] if row["mean_score"] is not None else -1.0),
@@ -167,7 +180,9 @@ def _build_recommend_list(
         for row in rows:
             cell = (row.get("scores") or {}).get(aid) or {}
             value = cell.get("score")
-            if value is not None:
+            # 策略前 5 只在 tradable 单元格中选:not_tradable(关键因子缺失,
+            # 分数已收缩)不应以「XX前5」标签进推荐榜(2026-08-24 审查修复)。
+            if value is not None and cell.get("status") == "tradable":
                 scored.append((float(value), row["code"]))
         scored.sort(key=lambda t: (-t[0], t[1]))
         for _, code in scored[: max(0, per_strategy_top)]:
@@ -206,14 +221,24 @@ def run_v2_watchlist_recommendation(
         raise ValueError("自选股为空（或没有有效的 A 股股票）")
 
     coverage = quote_coverage(codes, as_of)
+    excluded: list[str] = []
     if coverage["missing"]:
-        missing = ",".join(coverage["missing"][:20])
-        suffix = "…" if len(coverage["missing"]) > 20 else ""
-        raise ValueError(
-            f"{as_of.isoformat()} 自选股行情不完整: "
-            f"{coverage['present']}/{coverage['expected']}，缺失 {missing}{suffix}；"
-            "请先运行每日抓取"
-        )
+        # 长尾停牌/未抓取股只剔除并记录,不再让整个荐股任务失败
+        # (2026-08-24 审查修复:对单只停牌股过度严格);全部缺失仍 fail-closed。
+        excluded = list(coverage["missing"])
+        present_codes = [c for c in codes if c not in set(excluded)]
+        if not present_codes:
+            missing = ",".join(excluded[:20])
+            suffix = "…" if len(excluded) > 20 else ""
+            raise ValueError(
+                f"{as_of.isoformat()} 自选股行情不完整: "
+                f"{coverage['present']}/{coverage['expected']}，缺失 {missing}{suffix}；"
+                "请先运行每日抓取"
+            )
+        logging.getLogger("stockfu").warning(
+            "v2_watchlist_recommendation: %d 只自选股无 %s 行情(停牌/未抓取),"
+            "已剔除出荐股池: %s", len(excluded), as_of, ",".join(excluded[:20]))
+        codes = present_codes
 
     selected = list(alpha_ids or RECOMMENDATION_ALPHA_IDS)
     scorer = V2SignalScorer(
@@ -236,6 +261,7 @@ def run_v2_watchlist_recommendation(
         "as_of": report.as_of.isoformat(),
         "pool": "watchlist_stock",
         "pool_size": len(codes),
+        "excluded_no_quote": excluded,
         "scored_size": report.n_scored,
         "quote_coverage": coverage,
         "strategy_selection": {

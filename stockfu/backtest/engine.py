@@ -368,8 +368,8 @@ def _get_trade_price(code: str, open_prices: dict[str, float],
 
 
 # 紧凑 bar 下标:(qfq OHLC, pct, st, status, amount, raw OHLC, pe, pb, hfq close/open)。
-# 信号使用 qfq；成交现实层(涨跌停/费用/整手)用 raw；账户估值层默认 hfq(总收益)，
-# raw 口径下另以公司行为账本补回总回报；正式迁移计划见 docs/BACKTEST.md。
+# 信号使用 qfq；成交现实层(涨跌停/费用/整手)用 raw；账户估值层默认 qfq(涨跌幅
+# 复权,含分红再投,§0.1);hfq 仅作对账。正式口径见 docs/BACKTEST.md。
 (_BI_O, _BI_H, _BI_L, _BI_C, _BI_PCT, _BI_ST, _BI_TS, _BI_AMT,
  _BI_O_RAW, _BI_H_RAW, _BI_L_RAW, _BI_C_RAW, _BI_PE, _BI_PB,
  _BI_C_HFQ, _BI_O_HFQ) = range(16)
@@ -1409,11 +1409,27 @@ def _metrics(equity_curve: list[dict], benchmark: list[dict],
             out["sharpe"] = None
             out["sortino"] = None
 
-    # 基准:按交集窗口算 excess（total_return 已在上方设置，此处只引用，不重算）
+    # 基准:按交集窗口算 excess(2026-08-24 修复:此前用 total_return(全窗口) -
+    # benchmark_return(基准自身窗口)直接相减,基准首点晚于回测起点时分子分母
+    # 窗口错位 → excess 系统性偏差)。交集语义:策略收益从基准窗口首日当日的
+    # equity 起算,与基准同窗对比;基准覆盖全窗口时基期=首日 equity。
     out["benchmark_window"] = bench_window
     if bm and bm[0] > 0:
         out["benchmark_return"] = round((bm[-1] / bm[0] - 1) * 100, 2)
-        out["excess"] = round((out.get("total_return") or 0.0) - out["benchmark_return"], 2)
+        strat_ret = total_r
+        if bench_window and equity_curve:
+            bstart = str(bench_window.get("start") or "")
+            if bstart:
+                base_pt = next(
+                    (p for p in equity_curve
+                     if str(p.get("date", "")) >= bstart),
+                    None,
+                )
+                if base_pt is not None and base_pt["equity"] > 0:
+                    strat_ret = (eq[-1] / base_pt["equity"] - 1) * 100
+        out["excess"] = round(
+            (strat_ret if strat_ret is not None else 0.0)
+            - out["benchmark_return"], 2)
     else:
         out["benchmark_return"] = None
         out["excess"] = None
