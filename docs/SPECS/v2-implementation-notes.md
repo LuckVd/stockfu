@@ -945,3 +945,30 @@ offset/文件大小、2.1 GiB 快照 SHA/只读位以及快照中 939 只沪深3
 剩余单个 worker 的峰值仍来自列式行情预载和订单/风险事件等完整可追溯记录；正式矩阵
 恢复前仍需用 `/usr/bin/time -v`/宿主进程表实测 RSS，并视结果继续做按需列预载或事件
 delta/流式记录。当前机器无 swap，不应在未完成该实测前盲目恢复十策略矩阵。
+
+## 7 估值负值语义对齐设计 §11.1（2026-08-24，PR #15）
+
+2026-08-24 全项目审查发现两处 raw 计算器偏离设计稿 §11.1「盈利为负时保留负的
+盈利收益率，代表差的盈利支撑，不再当缺失」：
+
+- `earnings_yield`（PE≤0 → `raw_value=None`，亏损被当缺失收缩到中性 50）
+- `book_to_price`（PB≤0 同病）
+
+**偏差成因**：落地时选择了「不伪造负 yield」口径，未按设计保留负证据。后果是
+亏损股的价值腿拿 50 中性分而非低分——`value_ep_bp_equal_v2` 中 earnings_yield
+权重 0.5 且非 critical，亏损股 alpha 仍 tradable 且价值腿被垫高，**价值类荐股
+排名系统性虚高（亏损股混入价值榜）**。
+
+**修复口径（PR #15）**：
+
+- `PE<0` → `raw_value=100/PE`（负值，valid）；`PE=None/0` 才缺失。
+  `PB<0` → `raw_value=1/PB`（负值，valid）；`PB=None/0` 才缺失。
+- profile `earnings_yield_v2` / `book_to_price_v2` knots 增加负锚点
+  （`-10%→0` / `-0.5→0`），version 1→2 留痕；正常正值段锚点不变。
+- 回归测试 `tests/test_valuation_negative_earnings.py`（5 例，含 knots 映射验证）。
+
+**与旧工件对比须知**：本变更前生成的 V2 回测工件 / 荐股报告中，亏损股的
+earnings_yield、book_to_price 及含价值腿的 alpha 分数口径不同（旧=缺失收缩 50，
+新=负值贴地 0 附近）。跨版本对比同一策略结果时须注意这一语义差异；profile
+version=2 与 raw computer 源码指纹（`fn_source_fingerprint`）会自动区分新旧工件，
+checkpoint resume 到旧工件会 fail-closed 拒绝，属预期防护。
