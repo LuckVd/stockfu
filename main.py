@@ -256,14 +256,31 @@ def run_vacuum() -> None:
     print("  (下次连接自动重建 -wal/-shm 并恢复 WAL 模式)")
 
 
-def run_test_mail() -> None:
+def _wait_embedded_server(timeout_s: float = 30.0) -> None:
+    """轮询等待内嵌 web 端口就绪(替代固定 sleep;未就绪出图必失败)。"""
+    import socket
     import time
 
+    from stockfu.config import settings
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(
+                    (settings.api_host, settings.api_port), timeout=1.0):
+                return
+        except OSError:
+            time.sleep(0.25)
+    print(f"⚠ 内嵌服务器 {settings.api_host}:{settings.api_port} {timeout_s}s 内未就绪,继续尝试…",
+          flush=True)
+
+
+def run_test_mail() -> None:
     from stockfu.scheduler.jobs import start_embedded_server
     from stockfu.services.mail import run_mail_job
 
     start_embedded_server()          # 内嵌 web：--test-mail 自包含，无需另开 --serve
-    time.sleep(2.5)                  # 等 serve 就绪再渲染
+    _wait_embedded_server()          # 端口就绪再渲染
     print(f"✓ 邮件任务结果: {run_mail_job()}")
 
 
@@ -285,13 +302,11 @@ def run_signal_scan_cli(date_str: str | None, strategies: str | None) -> None:
 
 
 def run_test_signal_mail() -> None:
-    import time
-
     from stockfu.scheduler.jobs import start_embedded_server
     from stockfu.services.signal_mail import run_signal_mail_job
 
     start_embedded_server()
-    time.sleep(2.5)
+    _wait_embedded_server()
     print(f"✓ 推荐邮件任务结果: {run_signal_mail_job(force=True)}")
 
 

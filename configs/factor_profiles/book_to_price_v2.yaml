@@ -1,7 +1,8 @@
 # 账面市值比 B/P = 1/PB(Fama-French HML 价值因子核心)。
-# PB<=0(负净资产)按缺失;PB>0 → raw=B/P。
+# PB<0(负净资产)保留负 B/P 作负证据(spec §11.1):负锚点 -0.5→0 分;
+# PB 为 None/0 才按缺失收缩。PB>0 → raw=B/P。
 profile_id: book_to_price_v2
-version: 1
+version: 2
 raw_metric:
   id: book_to_price
   params: {price_basis: raw}
@@ -12,7 +13,7 @@ mapping:
   components:
     absolute:
       weight: 0.5
-      knots: [[0, 0], [0.2, 30], [0.4, 45], [0.6, 55], [0.8, 65], [1.0, 72], [2.0, 90], [3.0, 100]]
+      knots: [[-0.5, 0], [0, 0], [0.2, 30], [0.4, 45], [0.6, 55], [0.8, 65], [1.0, 72], [2.0, 90], [3.0, 100]]
     market_history:
       weight: 0.3
       state: rolling

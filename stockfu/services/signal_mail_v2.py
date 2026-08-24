@@ -39,7 +39,7 @@ V2_ALPHA_BRIEFS: dict[str, tuple[str, str, str]] = {
         "(Roe 水平与稳定/毛利率/资产负债率,财务三表 PIT),2020+ 近期增强。",
     ),
     "earnings_momentum_offense_v2": (
-        "盈利进攻", "盈利动量进攻",
+        "盈利动量进攻", "盈利动量进攻",
         "盈利加速(Growth Accel)50%+价格动量 20%+低波 30% 复合,进攻腿;"
         "2026-08 纳入第五套正式荐股(vol8 配置)。",
     ),
@@ -286,6 +286,9 @@ def run_v2_signal_mail_job(
     scored_date = report.as_of
     if report.n_scored == 0:
         return {"ok": False, "detail": "无可评分股票", "as_of": str(scored_date), "pages": 0}
+    # 数据新鲜度告警(2026-08-24 审查修复):评分日明显滞后于请求日(行情停更/
+    # 未抓取)时在主题与结果中显式标记,避免调度场景被误读为当日评分。
+    stale_days = (as_of - scored_date).days if scored_date < as_of else 0
 
     # 推荐榜单 = 综合均分前 top_n ∪ 每策略各自前 5，去重后按均分排序（与自选股荐股同规则）。
     ranked = _rank_rows(report.rows)
@@ -302,6 +305,8 @@ def run_v2_signal_mail_job(
 
     result: dict = {
         "as_of": str(scored_date),
+        "requested_as_of": str(as_of),
+        "stale_days": stale_days,
         "universe_size": report.universe_size,
         "n_scored": report.n_scored,
         "pages": len(images),
@@ -321,13 +326,15 @@ def run_v2_signal_mail_job(
         result["detail"] = "邮件未配置完整(账号/授权码/收件人)"
         return result
 
+    stale_note = (f" [数据滞后{stale_days}天,请检查每日抓取]" if stale_days else "")
     mail = send_card_email(
         images,
-        subject=f"StockFu V2 策略评分 · {scored_date.isoformat()}",
+        subject=f"StockFu V2 策略评分 · {scored_date.isoformat()}{stale_note}",
         title=f"StockFu V2 策略评分 · {scored_date.isoformat()}",
         description=(
             f"推荐榜单 {len(list_rows)} 只（综合前 {top_n} ∪ 各策略前 5） · "
             f"全宇宙 {report.universe_size} 只 · 各策略独立 0–100 分 · 50 为中性"
+            + (f" · ⚠ 数据滞后 {stale_days} 天(评分基于 {scored_date.isoformat()})" if stale_days else "")
         ),
         filename_prefix="stockfu-v2-signal",
         include_attachments=False,

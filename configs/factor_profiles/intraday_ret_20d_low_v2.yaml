@@ -1,0 +1,30 @@
+# 日内收益均值(20 日,raw):低 → 高分。T+1 制度下日内涨幅=散户追涨,
+# 两段 IC 一致负(full -0.026/-0.031@1d/5d)。"昼夜分离"(华安)的日内反转极。
+profile_id: intraday_ret_20d_low_v2
+version: 1
+raw_metric:
+  id: intraday_ret_20d
+  params: {window: 20, basis: raw}
+direction: lower_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-8, 100], [-4, 82], [-1.5, 65], [0, 50], [1.5, 35], [4, 18], [8, 0]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2013-01-01

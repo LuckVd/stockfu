@@ -1,0 +1,11 @@
+# 策略4:微观结构反转 + 低波防守。
+alpha_id: micro_reversal_lowvol_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: wsplit_rev_20d_low_v2, weight: 1.0, critical: true}
+  - {profile_id: intraday_ret_20d_low_v2, weight: 0.7, critical: false}
+  - {profile_id: low_volatility_20d_v2, weight: 0.7, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

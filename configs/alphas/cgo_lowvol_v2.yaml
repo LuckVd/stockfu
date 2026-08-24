@@ -1,0 +1,12 @@
+# 策略2:CGO 处置效应 + 低波防守(cgo 主 + 低波辅)。
+# cgo 两段稳但纯因子波动大 → 低波压舱;与现有 dividend_low_vol/low_volatility_pure
+# 的差异在主因子是行为维度而非股息/波动。
+alpha_id: cgo_lowvol_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: cgo_60d_low_v2, weight: 1.0, critical: true}
+  - {profile_id: low_volatility_20d_v2, weight: 0.6, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

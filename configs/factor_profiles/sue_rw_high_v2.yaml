@@ -1,0 +1,30 @@
+# SUE 随机游走(PEAD):ΔTTM 净利 z 分,高 → 高分。IC:2013-19 +0.037@20d(ICIR 2.6)
+# 强、2020+ 衰减 → 组合分量,配质量/低波防守。
+profile_id: sue_rw_high_v2
+version: 1
+raw_metric:
+  id: sue_rw
+  params: {lookback: 8, basis: net_profit_ttm}
+direction: higher_is_better
+raw_unit: z_score
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.4
+      knots: [[-3, 0], [-1.5, 20], [-0.5, 40], [0, 50], [0.5, 60], [1.5, 80], [3, 100]]
+    market_history:
+      weight: 0.4
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2013-01-01

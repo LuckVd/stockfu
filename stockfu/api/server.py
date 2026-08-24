@@ -40,17 +40,20 @@ def create_app() -> FastAPI:
     if spa:
         app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="frontend-assets")
 
+    # 进程级缓存 index.html:每请求 read_text 读盘无谓(2026-08-24 审查修复)。
+    _index_html = (_FRONTEND_DIST if spa else _WEB_DIR).joinpath(
+        "index.html").read_text(encoding="utf-8")
+
     @app.get("/", include_in_schema=False)
     def _index() -> HTMLResponse:
         """前端入口:Vue dist(若已 build)否则旧单页。"""
-        path = (_FRONTEND_DIST / "index.html") if spa else (_WEB_DIR / "index.html")
-        return HTMLResponse(path.read_text(encoding="utf-8"))
+        return HTMLResponse(_index_html)
 
     if spa:
         @app.get("/{full:path}", include_in_schema=False)
         def _spa_fallback(full: str) -> HTMLResponse:
             """前端路由 fallback:未命中 API/静态的 GET 回 SPA。"""
-            return HTMLResponse((_FRONTEND_DIST / "index.html").read_text(encoding="utf-8"))
+            return HTMLResponse(_index_html)
 
     return app
 

@@ -1,0 +1,30 @@
+# 公告后累积漂移取负:公告后跌了(错杀)→ 高分。IC 两段强负
+# (full -0.051@5d):A 股 PEAD 短、公告后已涨的继续跑输。事件因子,窗外缺失。
+profile_id: rec_acc_rev_v2
+version: 1
+raw_metric:
+  id: rec_acc_rev
+  params: {hold_days: 63, basis: qfq}
+direction: higher_is_better
+raw_unit: percent
+mapping:
+  mode: hybrid
+  components:
+    absolute:
+      weight: 0.5
+      knots: [[-20, 0], [-10, 18], [-4, 35], [0, 50], [4, 65], [10, 82], [20, 100]]
+    market_history:
+      weight: 0.3
+      state: rolling
+      years: 3
+      sampling: weekend_cross_section
+      min_observations: 3000
+    self_history:
+      weight: 0.2
+      state: rolling
+      years: 3
+      sampling: month_end
+      min_observations: 24
+formal_requires_mature: true
+missing_policy: shrink_to_50_and_block_if_critical
+valid_from: 2013-01-01
