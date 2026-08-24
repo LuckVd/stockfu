@@ -1,0 +1,11 @@
+# 策略3:微观结构反转复合(理想反转 W 切割 + 日内收益反向)。
+# 两者都吃"散户追涨/聪明钱推高"的反转:2020+ 段 IC -0.032/-0.021 一致。
+alpha_id: micro_reversal_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: wsplit_rev_20d_low_v2, weight: 1.0, critical: true}
+  - {profile_id: intraday_ret_20d_low_v2, weight: 0.7, critical: false}
+minimum_coverage: 0.70
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

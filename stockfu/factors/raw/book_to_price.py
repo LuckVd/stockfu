@@ -1,8 +1,10 @@
-"""book_to_price:账面市值比 B/P = 1/PB(点时正 PB)。
+"""book_to_price:账面市值比 B/P = 1/PB(点时 PB)。
 
-Fama-French HML 价值因子的核心(B/M):B/P 高 = 相对净资产便宜。PB≤0(负净资产/异常)
-按缺失处理,由 profile 收缩 + 门禁;PB>0 时 raw=1/pb。direction=higher_is_better,
-本层只产 raw。PB 来自 baostock 全字段 backfill 落入 quote_snapshot.pb。
+Fama-French HML 价值因子的核心(B/M):B/P 高 = 相对净资产便宜。PB<0(负净资产)
+保留负 B/P 作为有效负证据(spec §11.1,profile 负锚点映射到 0 分附近);
+PB 为 None/0(数据缺失/异常)才按缺失处理,由 profile 收缩 + 门禁;PB>0 时
+raw=1/pb。direction=higher_is_better,本层只产 raw。
+PB 来自 baostock 全字段 backfill 落入 quote_snapshot.pb。
 """
 from __future__ import annotations
 
@@ -23,13 +25,14 @@ def compute_book_to_price(code: str, as_of: date,
     from stockfu.services.valuation import pe_pb_at
 
     _pe, pb = pe_pb_at(code, as_of)
-    if pb is None or pb <= 0:
+    if pb is None or pb == 0:
         return RawFactorObservation(
             asset_code=code, as_of=as_of, raw_metric_id=METRIC_ID,
             raw_value=None, raw_unit="ratio", source_max_date=as_of,
             available_at=as_of, valid=False,
             missing_reason=MissingReason.NONPOSITIVE_DENOMINATOR, raw_fingerprint=fp,
             diagnostics={"pb": pb})
+    # pb<0(负净资产)→ 负 B/P 是有效负证据(spec §11.1),不再当缺失
     return RawFactorObservation(
         asset_code=code, as_of=as_of, raw_metric_id=METRIC_ID,
         raw_value=float(1.0 / pb), raw_unit="ratio",

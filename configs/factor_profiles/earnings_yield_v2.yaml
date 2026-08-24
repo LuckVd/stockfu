@@ -1,7 +1,8 @@
 # 盈利收益率 E/P = 100/PE_TTM(价值因子:Graham/AQR)。
-# PE<=0(亏损)按缺失收缩,不伪造负 yield;PE>0 → raw=E/P%。
+# PE<0(亏损)保留负 yield 作负证据(spec §11.1):负锚点 -10%→0 分,
+# 亏损股拿 0 分而非缺失中性 50;PE 为 None/0 才按缺失收缩。PE>0 → raw=E/P%。
 profile_id: earnings_yield_v2
-version: 1
+version: 2
 raw_metric:
   id: earnings_yield
   params: {price_basis: raw}
@@ -12,7 +13,7 @@ mapping:
   components:
     absolute:
       weight: 0.5
-      knots: [[0, 0], [2, 30], [4, 45], [6, 55], [8, 65], [12, 80], [20, 100]]
+      knots: [[-10, 0], [0, 0], [2, 30], [4, 45], [6, 55], [8, 65], [12, 80], [20, 100]]
     market_history:
       weight: 0.3
       state: rolling

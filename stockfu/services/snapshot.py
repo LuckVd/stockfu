@@ -147,25 +147,55 @@ def latest_snapshot(code: str, allow_fetch: bool = True) -> LatestSnapshot | Non
 
 
 def _trade_calendar() -> set[date] | None:
-    """A 股交易日历（akshare tool_trade_date_hist_sina），进程级缓存。失败返回 None。
+    """A 股交易日历（akshare tool_trade_date_hist_sina）。
 
-    国内源必须走 direct_connection（清代理 env）：代理环境下新浪接口常被拒，
-    失败回退「只判周末」会把节假日误判为交易日 → stamp 表错盖非交易日章
-    （2026-08-17 审查 M5）。
+    层级：进程缓存（覆盖到今天才有效）→ 联网拉取 → 本地持久化缓存兜底。
+    国内源必须走 direct_connection（清代理 env）：代理环境下新浪接口常被拒。
+    网络失败时回读 ``data/trade_calendar.json``（上次成功拉取的快照），
+    避免退化为「只判周末」把节假日误判为交易日 → stamp 表错盖非交易日章
+    （2026-08-17 审查 M5；2026-08-24 加持久化兜底）。三层全空才返回 None。
+    进程缓存的最晚日期早于今天（跨年/缓存过期）时重新拉取，不直接复用。
     """
     global _TRADE_CAL
-    if _TRADE_CAL is not None:
+    today = beijing_today()
+    if _TRADE_CAL is not None and max(_TRADE_CAL) >= today:
         return _TRADE_CAL
     try:
+        import json
+
         import pandas as pd
+        from stockfu.config import DATA_DIR
         from stockfu.data.base import direct_connection
         with direct_connection():
             from akshare import tool_trade_date_hist_sina
-            _TRADE_CAL = {pd.Timestamp(t).date()
-                          for t in tool_trade_date_hist_sina()["trade_date"]}
-        return _TRADE_CAL
+            cal = {pd.Timestamp(t).date()
+                   for t in tool_trade_date_hist_sina()["trade_date"]}
+        if cal:
+            _TRADE_CAL = cal
+            try:                                   # 持久化供断网兜底（尽力而为）
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+                (DATA_DIR / "trade_calendar.json").write_text(json.dumps({
+                    "fetched_at": beijing_now().isoformat(),
+                    "dates": sorted(d.isoformat() for d in cal),
+                }), encoding="utf-8")
+            except OSError:
+                pass
+            return cal
     except Exception:  # noqa: BLE001
-        return None
+        pass
+    # 网络失败 → 本地持久化缓存兜底（曾成功拉取过即可用）
+    try:
+        import json
+
+        from stockfu.config import DATA_DIR
+        raw = json.loads((DATA_DIR / "trade_calendar.json").read_text(encoding="utf-8"))
+        cal = {date.fromisoformat(s) for s in raw["dates"]}
+        if cal:
+            _TRADE_CAL = cal
+            return cal
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def latest_trade_date() -> date:

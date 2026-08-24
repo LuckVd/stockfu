@@ -1,0 +1,11 @@
+# 策略5:财报错杀(JOR 低 + 公告漂移反向)。"公告后不涨反跌"的错杀票,
+# 事件因子组合,与 PEAD 追涨方向相反(A 股实证 PEAD 短、追高跑输)。
+alpha_id: earnings_dip_v2
+version: 1
+market_scope: cn_equity
+factors:
+  - {profile_id: jor_low_v2, weight: 0.8, critical: false}
+  - {profile_id: rec_acc_rev_v2, weight: 1.0, critical: true}
+minimum_coverage: 0.50
+minimum_valid_factor_count: 1
+formal_maturity_policy: force_mature_after_observation

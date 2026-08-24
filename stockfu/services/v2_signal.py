@@ -13,6 +13,8 @@ HistoryState 喂满(评分读 cutoff<as_of 的历史,防未来函数)。
 """
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -218,9 +220,14 @@ class V2SignalScorer:
     # ----------------------------------------------------------------- 评分
 
     def score(self, as_of: date) -> V2SignalReport:
-        history_origin = date(
-            as_of.year - self.history_years, as_of.month, as_of.day
-        )
+        try:
+            history_origin = date(
+                as_of.year - self.history_years, as_of.month, as_of.day
+            )
+        except ValueError:
+            # 2/29 回退年非闰(如 2028-02-29 → 2023):取 2/28,预热窗少 1 天无影响
+            # (2026-08-24 审查修复:此前 ValueError 会让发信日整链崩溃)。
+            history_origin = date(as_of.year - self.history_years, as_of.month, 28)
         pre_start = history_origin - timedelta(days=_PRELOAD_LOOKBACK_DAYS)
         preload_codes = sorted({*self.codes, self.benchmark_code})
 
@@ -290,18 +297,36 @@ class V2SignalScorer:
                 # 当日原始值(逐 raw key × eligible code；raw key=metric|指纹，
                 # 同 metric 不同参数各自计算，不再「先注册者胜」)
                 raw_by_metric: dict[str, dict[str, Any]] = {}
+                dropped: set[str] = set()
                 for key, computer in self.raw_computers.items():
                     metric = self.raw_key_metric[key]
                     m: dict[str, Any] = {}
                     params = self.raw_params.get(key, {})
                     for c in sorted(eligible):
-                        obs = computer(c, t, **params) if params else computer(c, t)
-                        _validate_raw_observation(
-                            obs, metric, t, self.metric_units[metric], c,
-                            self.raw_fingerprints.get(key, ""),
-                        )
+                        try:
+                            obs = computer(c, t, **params) if params else computer(c, t)
+                            _validate_raw_observation(
+                                obs, metric, t, self.metric_units[metric], c,
+                                self.raw_fingerprints.get(key, ""),
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            # 单股坏数据只跳过该股当日观测,不阻断整链
+                            # (2026-08-24 审查修复;系统性比例熔断见下方)。
+                            logging.getLogger("stockfu").warning(
+                                "v2_signal raw %s/%s@%s 失败,跳过该股当日: %s",
+                                metric, c, t, exc)
+                            dropped.add(c)
+                            continue
                         m[c] = obs
                     raw_by_metric[key] = m
+                if dropped:
+                    # 熔断:过半股票坏数据多半是系统性问题(源/库污染),fail-closed
+                    if len(dropped) * 2 > len(eligible):
+                        raise RuntimeError(
+                            f"v2_signal {t}: {len(dropped)}/{len(eligible)} 只股票"
+                            " raw 观测校验失败,疑似系统性数据问题,中止(样本:"
+                            f"{sorted(dropped)[:5]})")
+                    eligible -= dropped
 
                 # 评分(仅 as_of 当日;读 cutoff<as_of 的历史)
                 if is_target:
@@ -407,7 +432,10 @@ class V2SignalScorer:
                 if obs.score_status == ScoreStatus.TRADABLE:
                     cal_tradable[aid] += 1
                     cal_arrays[aid].append(float(obs.strategy_score))
-                    mean_vals.append(float(obs.strategy_score))
+                # 均分统计全部有分数的单元格(含 not_tradable 的收缩分):
+                # 只算 tradable 会让覆盖不全的股票(4 套 not_tradable+1 套高分)
+                # 均分虚高登顶,对全覆盖股票不公平(2026-08-24 审查修复)。
+                mean_vals.append(float(obs.strategy_score))
             if not scores:
                 continue
             rows.append({
@@ -417,7 +445,7 @@ class V2SignalScorer:
                 "_mean": sum(mean_vals) / len(mean_vals) if mean_vals else 0.0,
             })
 
-        # 排序:可交易均分降序,再按 code
+        # 排序:全单元格均分降序,再按 code
         rows.sort(key=lambda r: (-r["_mean"], r["code"]))
         for r in rows:
             r.pop("_mean", None)
