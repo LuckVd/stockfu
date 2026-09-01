@@ -43,11 +43,19 @@ def create_app() -> FastAPI:
     # 进程级缓存 index.html:每请求 read_text 读盘无谓(2026-08-24 审查修复)。
     _index_html = (_FRONTEND_DIST if spa else _WEB_DIR).joinpath(
         "index.html").read_text(encoding="utf-8")
+    # 邮件渲染专用页:旧单页自包含 openShare/share-card 实现,Vue 版尚未移植。
+    # dist 存在时 / 被 SPA 遮蔽,渲染链改走此固定路由(见 mail.render_share_images)。
+    _legacy_render_html = _WEB_DIR.joinpath("index.html").read_text(encoding="utf-8")
 
     @app.get("/", include_in_schema=False)
     def _index() -> HTMLResponse:
         """前端入口:Vue dist(若已 build)否则旧单页。"""
         return HTMLResponse(_index_html)
+
+    @app.get("/legacy-render", include_in_schema=False)
+    def _legacy_render() -> HTMLResponse:
+        """旧单页(邮件出图专用):openShare + .sc-page 渲染契约在此实现。"""
+        return HTMLResponse(_legacy_render_html)
 
     if spa:
         @app.get("/{full:path}", include_in_schema=False)
