@@ -40,11 +40,20 @@ def render_share_images(base_url: str = DEFAULT_BASE_URL, executable_path: str |
         browser = p.chromium.launch(executable_path=exe)
         try:
             page = browser.new_page(viewport={"width": 1280, "height": 1500}, device_scale_factor=2)
+            # 拦截外部域名:出图只用 chromium 原生截图,不需要外部字体/html2canvas;
+            # 被墙环境下这些请求会挂起并阻塞页面脚本执行(2026-09-01 实测)。
+            for _pattern in ("**://fonts.googleapis.com/**",
+                             "**://fonts.gstatic.com/**",
+                             "**://cdn.jsdelivr.net/**"):
+                page.route(_pattern, lambda route: route.abort())
             # 注入标记头：/share 据此放宽到只校验指数（邮件不渲染个股持仓页）。
             page.set_extra_http_headers({"X-Mail-Render": "1"})
             # 邮件模式跳过首页 loadAll()；截图只依赖随后 openShare() 请求的 /share。
             # 否则首页各看板的按需补数会把 ETF/个股抓取重新带进邮件链路。
-            page.goto(f"{base_url}/?mail_render=1", wait_until="domcontentloaded", timeout=30000)
+            # Vue dist 部署后 / 被 SPA 遮蔽(openShare 契约只在旧单页),渲染固定走
+            # /legacy-render(server.py 专用路由)。
+            page.goto(f"{base_url}/legacy-render?mail_render=1",
+                      wait_until="domcontentloaded", timeout=30000)
             # 不等主页 loadAll（慢且与本任务无关）；openShare 自取 /share
             page.wait_for_function("typeof openShare === 'function'", timeout=15000)
             page.evaluate("""async () => {
