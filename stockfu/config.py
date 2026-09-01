@@ -286,94 +286,37 @@ def is_mail_ready() -> bool:
     return bool(get_smtp_user() and get_smtp_pass() and get_mail_to())
 
 
-# ---------- 策略信号扫描与推荐邮件 ----------
+# ---------- V2 策略评分邮件（每日调度；V1 信号扫描链已移除）----------
 _SIGNAL_CACHE: dict[str, str] = {}
 
 
-def _signal_cfg(key: str, default: str) -> str:
-    if key in _SIGNAL_CACHE:
-        return _SIGNAL_CACHE[key]
+def get_v2_signal_mail_enabled() -> bool:
+    """每日调度是否发送 V2 五套评分邮件；默认开启（发送仍需 is_mail_ready）。"""
+    if "v2_signal_mail_enabled" in _SIGNAL_CACHE:
+        return _SIGNAL_CACHE["v2_signal_mail_enabled"] == "1"
     from stockfu.db import get_app_config, has_app_config
-    value = get_app_config(key, default) if has_app_config(key) else default
-    _SIGNAL_CACHE[key] = value
-    return value
+    v = get_app_config("v2_signal_mail_enabled", "1") if has_app_config("v2_signal_mail_enabled") else "1"
+    _SIGNAL_CACHE["v2_signal_mail_enabled"] = v
+    return v == "1"
 
 
-def _set_signal_cfg(key: str, value: str) -> None:
+def set_v2_signal_mail_enabled(enabled: bool) -> None:
+    """开关 V2 评分邮件的每日调度发送。"""
     from stockfu.db import set_app_config
-    set_app_config(key, value)
+    set_app_config("v2_signal_mail_enabled", "1" if enabled else "0")
     _SIGNAL_CACHE.clear()
 
 
-def get_signal_factor_enabled() -> bool:
-    """是否运行全指数成分因子扫描；默认开启。"""
-    return _signal_cfg("signal_factor_enabled", "1") == "1"
-
-
-def get_signal_llm_enabled() -> bool:
-    """是否允许逐股 LLM 分析；仍需逐股订阅开启。"""
-    return _signal_cfg("signal_llm_enabled", "0") == "1"
-
-
-def get_signal_mail_enabled() -> bool:
-    """是否发送推荐专用邮件；默认关闭。"""
-    return _signal_cfg("signal_mail_enabled", "0") == "1"
-
-
-def get_signal_scan_time() -> str:
-    value = _signal_cfg("signal_scan_time", "16:10")
-    return value if _TIME_RE.match(value) else "16:10"
-
-
-def get_signal_strategy_ids() -> list[str]:
-    """动态启用策略；未配置时使用正式全周期目录。"""
-    import json
-    from stockfu.backtest.full_cycle_update import catalog_ids
-
-    raw = _signal_cfg("signal_strategy_ids", "")
-    if not raw:
-        return catalog_ids()
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        parsed = raw.split(",")
-    if not isinstance(parsed, list):
-        return catalog_ids()
-    return list(dict.fromkeys(
-        str(value).strip() for value in parsed if str(value).strip()
-    ))
-
-
-def set_signal_config(data: dict) -> None:
-    """保存信号扫描全局配置；逐股开关由 subscription 表管理。"""
-    import json
-
-    for key in ("factor_enabled", "llm_enabled", "mail_enabled"):
-        if key in data:
-            _set_signal_cfg(f"signal_{key}", "1" if data[key] else "0")
-    if "scan_time" in data:
-        value = str(data["scan_time"] or "").strip()
-        _set_signal_cfg("signal_scan_time", value if _TIME_RE.match(value) else "16:10")
-    if "strategy_ids" in data:
-        raw = data["strategy_ids"]
-        if not isinstance(raw, list):
-            raise ValueError("strategy_ids 必须是数组")
-        ids = list(dict.fromkeys(
-            str(value).strip() for value in raw if str(value).strip()
-        ))
-        if not ids:
-            raise ValueError("至少选择一个策略")
-        _set_signal_cfg("signal_strategy_ids", json.dumps(ids, ensure_ascii=False))
-
-
-def get_signal_config() -> dict:
-    return {
-        "factor_enabled": get_signal_factor_enabled(),
-        "llm_enabled": get_signal_llm_enabled(),
-        "mail_enabled": get_signal_mail_enabled(),
-        "scan_time": get_signal_scan_time(),
-        "strategy_ids": get_signal_strategy_ids(),
-    }
+def get_v2_signal_mail_time() -> str:
+    """V2 评分邮件的每日调度时间（北京 HH:MM，默认 16:30）。"""
+    if "v2_signal_mail_time" in _SIGNAL_CACHE:
+        return _SIGNAL_CACHE["v2_signal_mail_time"]
+    from stockfu.db import get_app_config, has_app_config
+    v = get_app_config("v2_signal_mail_time", "16:30") if has_app_config("v2_signal_mail_time") else "16:30"
+    if not _TIME_RE.match(v):
+        v = "16:30"
+    _SIGNAL_CACHE["v2_signal_mail_time"] = v
+    return v
 
 
 # ---------- LLM 配置（web 设置面板写入，AI 顾问用；回落 .env）----------

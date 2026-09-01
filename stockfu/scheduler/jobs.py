@@ -1163,150 +1163,6 @@ def run_mail_fetch(target_date) -> dict:
     return summary
 
 
-def run_signal_pipeline(target_date, *, strategy_ids: list[str] | None = None) -> dict:
-    """刷新信号日指数成分行情，运行全量因子和逐股 LLM，并返回扫描报告。
-
-    与 ``run_mail_fetch`` 的市场/行业日报链路相互独立。已更新到目标日的股票跳过
-    网络请求；停牌或抓取失败的股票仍使用不晚于信号日的最近行情评分，并在刷新
-    摘要中明确列出，不能阻断其他股票。
-    """
-    import time as _t
-    from sqlalchemy import func
-
-    from stockfu.config import (
-        get_fetch_retry_count,
-        get_fetch_retry_interval,
-        get_signal_factor_enabled,
-        get_signal_llm_enabled,
-        get_signal_strategy_ids,
-    )
-    from stockfu.services.index_universe import current_member_codes
-    from stockfu.services.quote_writer import validate_ingest_date
-    from stockfu.services.signal_scan import (
-        run_signal_scan, strategy_operator_ids,
-    )
-
-    init_db()
-    td = validate_ingest_date(target_date)
-    if not get_signal_factor_enabled() and not get_signal_llm_enabled():
-        return {"skipped": "因子扫描与 LLM 均未启用", "signal_date": td.isoformat()}
-
-    started = _t.time()
-    codes = current_member_codes(td)
-    effective_strategy_ids = list(strategy_ids or get_signal_strategy_ids())
-
-    # low_beta / residual_reversal 等动态策略共用沪深300基准；单次失败由算子按
-    # 数据不足降级，不应跳过其余纯个股策略。
-    try:
-        benchmark_updated = update_index_benchmark("sh000300", td)
-    except Exception as exc:  # noqa: BLE001
-        benchmark_updated = -1
-        print(f"  [warn] signal benchmark sh000300: {type(exc).__name__}: {exc}", flush=True)
-    with session_scope() as s:
-        latest_rows = s.exec(select(
-            QuoteSnapshot.asset_code, func.max(QuoteSnapshot.quote_date)
-        ).where(
-            QuoteSnapshot.asset_code.in_(codes)
-        ).group_by(QuoteSnapshot.asset_code)).all()
-    latest = {code: day for code, day in latest_rows}
-    pending = [code for code in codes if latest.get(code) != td]
-
-    print(
-        f"=== [signal] 1/2 refresh universe={len(codes)} pending={len(pending)} as_of={td} ===",
-        flush=True,
-    )
-    ok, fail = _batch_fetch_today(pending, td) if pending else ([], [])
-    retries = get_fetch_retry_count()
-    retry_sleep = min(30, max(1, int(get_fetch_retry_interval()) * 5))
-    for attempt in range(retries):
-        if not fail:
-            break
-        print(
-            f"  signal retry {attempt + 1}/{retries} fail={len(fail)} sleep={retry_sleep}s",
-            flush=True,
-        )
-        _t.sleep(retry_sleep)
-        ok_more, fail = _batch_fetch_today(fail, td)
-        ok.extend(ok_more)
-
-    # 允许停牌股沿用最近行情，但若超过 10 天的严重陈旧票达到全池 2%（至少 8 只），
-    # 说明大概率是数据源整体失败；此时拒绝生成一封看似正常的当日评分邮件。
-    with session_scope() as s:
-        after_rows = s.exec(select(
-            QuoteSnapshot.asset_code, func.max(QuoteSnapshot.quote_date)
-        ).where(
-            QuoteSnapshot.asset_code.in_(codes)
-        ).group_by(QuoteSnapshot.asset_code)).all()
-    latest_after = {code: day for code, day in after_rows}
-    stale_cutoff = td - timedelta(days=10)
-    seriously_stale = [
-        code for code in codes
-        if latest_after.get(code) is None or latest_after[code] < stale_cutoff
-    ]
-    stale_limit = max(8, int(len(codes) * 0.02))
-    if len(seriously_stale) > stale_limit:
-        raise RuntimeError(
-            f"信号池行情严重陈旧 {len(seriously_stale)}/{len(codes)}，"
-            f"超过门限 {stale_limit}，拒绝评分；示例 {seriously_stale[:10]}"
-        )
-
-    # 分红类策略需要公司行为。全量 800 只每天联网代价过高，按日期轮转 50 只，
-    # 且给本次任务 90 秒总预算；起点每日轮转，新增事件会在后续交易日逐步收敛。
-    dependencies = strategy_operator_ids(effective_strategy_ids)
-    dividend_attempted = dividend_updates = dividend_failures = 0
-    if dependencies & {"dividend_yield", "graham_value"}:
-        from stockfu.services import dividend as dividend_service
-
-        batch_size = min(50, len(codes))
-        # 53 与典型 800 只池互质；即使预算常在批次中途耗尽，下一日也不会总从
-        # 同一批次边界开始而永久饿死尾部股票。
-        start = (td.toordinal() * 53) % len(codes) if codes else 0
-        candidates = (codes[start:] + codes[:start])[:batch_size]
-        dividend_started = _t.time()
-        for code in candidates:
-            if _t.time() - dividend_started > 90:
-                break
-            dividend_attempted += 1
-            result = _call_timeout(
-                lambda stock_code=code: dividend_service.persist_dividends(
-                    stock_code, years=2, timeout=20.0,
-                ),
-                25,
-                f"signal-div:{code}",
-                default=None,
-            )
-            if result is None:
-                dividend_failures += 1
-            else:
-                dividend_updates += int(result)
-
-    print("=== [signal] 2/2 factor + optional LLM ===", flush=True)
-    report = run_signal_scan(td, strategy_ids=effective_strategy_ids)
-    summary = {
-        "signal_date": td.isoformat(),
-        "universe_size": len(codes),
-        "quotes_already_fresh": len(codes) - len(pending),
-        "quotes_refreshed": len(ok),
-        "quote_failures": len(fail),
-        "quote_failure_codes": fail[:50],
-        "seriously_stale_quotes": len(seriously_stale),
-        "seriously_stale_codes": seriously_stale[:50],
-        "benchmark_updated": benchmark_updated,
-        "dividend_attempted": dividend_attempted,
-        "dividend_updates": dividend_updates,
-        "dividend_failures": dividend_failures,
-        "run_id": report.get("run_id"),
-        "scan_status": report.get("status"),
-        "factor_completed": report.get("factor_completed"),
-        "factor_expected": report.get("factor_expected"),
-        "llm_completed": report.get("llm_completed"),
-        "llm_requested": report.get("llm_requested"),
-        "elapsed_sec": round(_t.time() - started, 1),
-    }
-    print(f"=== [signal] done {summary} ===", flush=True)
-    return summary
-
-
 def start_embedded_server() -> str:
     """后台线程起 uvicorn（daemon，随主进程退出），供 playwright 渲染本进程页面 →
     单进程即可出图发信，无需另开 --serve。--schedule / --test-mail 复用。返回 base_url。"""
@@ -1337,8 +1193,8 @@ def run_schedule() -> None:
         get_daily_fetch_time,
         get_mail_days,
         get_mail_enabled,
-        get_signal_mail_enabled,
-        get_signal_scan_time,
+        get_v2_signal_mail_enabled,
+        get_v2_signal_mail_time,
         is_mail_ready,
     )
 
@@ -1347,7 +1203,7 @@ def run_schedule() -> None:
 
     # 内嵌 web（mail job 渲染分享卡片时需要本进程的页面）
 
-    if (get_mail_enabled() or get_signal_mail_enabled()) and is_mail_ready():
+    if (get_mail_enabled() or get_v2_signal_mail_enabled()) and is_mail_ready():
         start_embedded_server()
         print("✓ 内嵌 web 已启动（供 playwright 渲染分享卡片）")
     else:
@@ -1390,39 +1246,34 @@ def run_schedule() -> None:
     )
     print(f"✓ 抓取任务：工作日 {hhmm}（北京）抓行情 + 算指数 → 自动发邮件")
 
-    def _run_signals() -> dict:
-        from stockfu.config import get_signal_mail_enabled
-        from stockfu.services.quote_writer import (
-            latest_closed_trade_day, validate_ingest_date,
-        )
-        try:
-            td = validate_ingest_date(latest_closed_trade_day())
-        except ValueError as exc:
-            return {"skipped": str(exc)}
-        try:
-            result = run_signal_pipeline(td)
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "detail": f"信号流水线失败: {type(exc).__name__}: {exc}"}
-        if get_signal_mail_enabled() and is_mail_ready() and result.get("run_id"):
-            from stockfu.services.signal_mail import run_signal_mail_job
-            result["mail"] = run_signal_mail_job(result["run_id"])
-        return result
+    def _run_v2_signal_mail() -> dict:
+        """V2 五套策略评分 → 出图 → 发信（as_of=None 内部取最近已收盘交易日）。"""
+        from stockfu.config import get_v2_signal_mail_enabled
+        from stockfu.services.signal_mail_v2 import run_v2_signal_mail_job
 
-    signal_hhmm = get_signal_scan_time()
+        if not get_v2_signal_mail_enabled():
+            return {"skipped": "V2 评分邮件未启用"}
+        try:
+            # SMTP 未就绪时任务内部自行降级为只出图并返回原因，不抛异常。
+            return run_v2_signal_mail_job(None, send=True)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "detail": f"V2 评分邮件失败: {type(exc).__name__}: {exc}"}
+
+    signal_hhmm = get_v2_signal_mail_time()
     signal_h, signal_m = (int(value) for value in signal_hhmm.split(":"))
     sched.add_job(
-        _run_signals,
+        _run_v2_signal_mail,
         CronTrigger(
             hour=signal_h,
             minute=signal_m,
             day_of_week=get_mail_days(),
             timezone="Asia/Shanghai",
         ),
-        id="daily-signals", max_instances=1, coalesce=True,
+        id="daily-v2-signal-mail", max_instances=1, coalesce=True,
     )
     print(
-        f"✓ 策略评分任务：{get_mail_days()} {signal_hhmm}（北京）"
-        "刷新沪深300+中证500 → 因子评分 → 按需 LLM → 推荐邮件"
+        f"✓ V2 策略评分任务：{get_mail_days()} {signal_hhmm}（北京）"
+        "五套正式策略评分 → 出图 → 推荐邮件"
     )
 
     print("调度已启动，Ctrl-C 退出。")
