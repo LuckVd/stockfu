@@ -291,12 +291,6 @@ def backfill_adj_prices(
     return summary
 
 
-def clear_dividend_yield_cache() -> int:
-    """删除错误口径的 dividend_yield 算子缓存。"""
-    from stockfu.ai.operator_cache import clear_operator_cache
-    return clear_operator_cache("dividend_yield")
-
-
 def adj_price_coverage() -> dict:
     """三复权覆盖率快检。"""
     from sqlalchemy import text

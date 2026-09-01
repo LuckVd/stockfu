@@ -22,7 +22,7 @@ from stockfu.backtest.engine import (
     _preload_financial_reports,
     _preload_market_range,
 )
-from stockfu.backtest.factor_diag import (
+from stockfu.backtest.ic import (
     _forward_returns,
     _ic_by_date,
     _quantile_returns,

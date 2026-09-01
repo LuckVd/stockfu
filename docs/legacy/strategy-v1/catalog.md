@@ -3,8 +3,8 @@
 > 依据 docs/SPECS/factor-strategy-score-v2.md §17。V1 的 52 份 YAML 不作为 V2 活跃配置复用；
 > 本目录把配置与结论冻结为可校验产物。删除门禁（§17.3）通过前，V1 代码与缓存不得删除。
 
-- 生成时间：2026-08-07T14:37:12+08:00
-- git commit：`678d548e08b818c8f295d0a9d6d2abb5c5ec030f`（dirty=True）
+- 生成时间：2026-08-24T23:47:03+08:00
+- git commit：`e9c94bf1a6716fc4590d6e6890e29d641ae85a85`（dirty=True）
 - 源文件：52 个基础 YAML（`stockfu/ai/strategies/` 全部收录），seed 选择 29 个，展开后 57 条配置
 - 保留运行 id：31 个（seed._RETAINED_STRATEGY_IDS）
 

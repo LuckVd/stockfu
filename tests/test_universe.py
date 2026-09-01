@@ -13,7 +13,6 @@ from stockfu.services.index_universe import (
     HISTORICAL_INDEX_CODES, _month_starts, member_on, normalize_code,
     fetch_baostock_index_snapshot, parse_sina_corp_index_history,
 )
-from stockfu.ai.rebalancers.top_n_picker import TopNPicker
 
 
 class TestBoardAndLimit(unittest.TestCase):
@@ -162,38 +161,6 @@ class TestIndexMembershipIntervals(unittest.TestCase):
                              {f"{600000 + n:06d}" for n in range(500)})
         self.assertEqual(login.call_args_list[0].args, ())
         self.assertEqual(login.call_args_list[1].kwargs, {"force": True})
-
-
-class TestExitOnlyRebalancing(unittest.TestCase):
-    def test_exit_only_holding_cannot_displace_new_candidate(self):
-        rebalancer = TopNPicker()
-        final = rebalancer.adjust(
-            desired={"OUT": 0.20, "IN": 0.20},
-            current={"OUT": 0.12, "IN": 0.0},
-            meta={
-                "OUT": {"raw": 100.0, "confidence": 1.0, "exit_only": True},
-                "IN": {"raw": 1.0, "confidence": 1.0},
-            },
-            equity=100_000,
-            params={"top_n": 1, "lock_days": 0, "max_replace": 1, "max_w": 0.20},
-        )
-        self.assertEqual(final["OUT"], 0.12)
-        self.assertEqual(final["IN"], 0.20)
-
-    def test_exit_only_sell_signal_is_preserved(self):
-        rebalancer = TopNPicker()
-        final = rebalancer.adjust(
-            desired={"OUT": 0.0, "IN": 0.20},
-            current={"OUT": 0.12, "IN": 0.0},
-            meta={
-                "OUT": {"raw": 100.0, "confidence": 1.0, "exit_only": True},
-                "IN": {"raw": 1.0, "confidence": 1.0},
-            },
-            equity=100_000,
-            params={"top_n": 1, "lock_days": 0, "max_replace": 1, "max_w": 0.20},
-        )
-        self.assertEqual(final["OUT"], 0.0)
-        self.assertEqual(final["IN"], 0.20)
 
 
 if __name__ == "__main__":

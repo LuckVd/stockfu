@@ -1,4 +1,4 @@
-"""AI 策略回测模块:虚拟账户 + 引擎 + LLM 调度。"""
-from stockfu.backtest.engine import run_backtest
+"""V2 回测模块:共享仿真基础层(engine)+ V2 引擎/编排/分段/快照。
 
-__all__ = ["run_backtest"]
+V1 策略回测引擎已于 2026-08 移除,策略配置归档见 docs/legacy/strategy-v1/。
+"""

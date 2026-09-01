@@ -5,18 +5,16 @@ import ProxyTab from './ProxyTab.vue'
 import ScheduleTab from './ScheduleTab.vue'
 import MailTab from './MailTab.vue'
 import LlmTab from './LlmTab.vue'
-import SignalTab from './SignalTab.vue'
 
 defineProps<{ show: boolean }>()
 const emit = defineEmits<{ 'update:show': [boolean] }>()
 
-type TabKey = 'proxy' | 'schedule' | 'mail' | 'llm' | 'signals'
+type TabKey = 'proxy' | 'schedule' | 'mail' | 'llm'
 const tabs: { key: TabKey; label: string }[] = [
   { key: 'proxy', label: '代理' },
   { key: 'schedule', label: '定时' },
   { key: 'mail', label: '邮件' },
   { key: 'llm', label: 'AI模型' },
-  { key: 'signals', label: '策略评分' },
 ]
 const curTab = ref<TabKey>('proxy')
 </script>
@@ -44,6 +42,5 @@ const curTab = ref<TabKey>('proxy')
     <ScheduleTab v-if="curTab === 'schedule'" />
     <MailTab v-if="curTab === 'mail'" />
     <LlmTab v-if="curTab === 'llm'" />
-    <SignalTab v-if="curTab === 'signals'" />
   </NModal>
 </template>
