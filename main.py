@@ -16,20 +16,13 @@
     python main.py --schedule      # 每日定时调度
     python main.py --export-csv [DIR]  # 导出市场数据为 CSV（默认 data/，可入 git）
     python main.py --import-csv [DIR]  # 从 CSV 合并导入回库（换机同步；upsert 不丢数据）
-    python main.py --backtest STRATEGY [--start --end --cash --codes --save]  # 回测（见 docs/BACKTEST.md）
     python main.py --backtest-v2-segments ALPHA_ID|all [--codes --snapshot]  # V2 正式三段回测
-    python main.py --update-backtests [--strategies a,b] [--start --end] [--dry-run] [--list-strategies]
-        # 全周期重跑更新到最新(固化验收口径;不选策略=目录全部)
-    python main.py --factor-diag OPERATOR [--start --end --codes --periods --quantiles --params --save]  # 因子诊断（见 docs/BACKTEST.md）
-    python main.py --recommend --strategies a,b [--as-of] [--cash]  # 空仓重建荐股(次日开盘执行参考)
     python main.py --v2-watchlist-recommend [--as-of] [--top-n]  # V2三策略自选股荐股
-    python main.py --scan-signals --date YYYY-MM-DD [--strategies a,b]  # 800只成分每日0–100评分
-    python main.py --test-signal-mail  # 发送最近一次策略评分推荐邮件
+    python main.py --v2-signal-mail [--as-of] [--top-n] [--no-send]  # 五套正式策略评分邮件
     python main.py --backfill-universe  # 回补 security_master(list_date/board, baostock)
     python main.py --audit-corporate-actions  # 只读审计公司行为覆盖/重复/异常（正式回测前置）
     python main.py --backfill-quote-status  # 补历史状态 + 最新交易日全量(baostock)
     python main.py --backfill-adj-prices [--start] [--end]   # baostock 串行三复权(默认 Clash SOCKS)
-    python main.py --clear-dividend-cache  # 清错误口径 dividend_yield 的 operator_result
 """
 import argparse
 import json
@@ -53,12 +46,7 @@ def run_init_db() -> None:
     init_db()
     seed_samples()
     demo = seed_demo_holdings()
-    # 算子平台种子(operator/strategy 表 + active 指针);幂等,已有库不重复插
-    from stockfu.ai.operators.registry import discover_and_register
-    discover_and_register()
-    from stockfu.ai.operators.seed import seed_operators_and_strategies
-    seed_operators_and_strategies()
-    print(f"✓ 数据库已初始化；种子自选 + 演示持仓 + 算子平台已写入: {demo}")
+    print(f"✓ 数据库已初始化；种子自选 + 演示持仓已写入: {demo}")
 
 
 def run_trade(side: str, code: str, shares: str, price: str, d: str | None) -> None:
@@ -284,30 +272,6 @@ def run_test_mail() -> None:
     print(f"✓ 邮件任务结果: {run_mail_job()}")
 
 
-def run_signal_scan_cli(date_str: str | None, strategies: str | None) -> None:
-    import sys
-
-    if not date_str:
-        print("✗ --scan-signals 必须带 --date YYYY-MM-DD", file=sys.stderr)
-        raise SystemExit(2)
-    from stockfu.services.quote_writer import validate_ingest_date
-    try:
-        signal_date = validate_ingest_date(date_str)
-    except ValueError as exc:
-        print(f"✗ 拒绝扫描：{exc}", file=sys.stderr)
-        raise SystemExit(2) from exc
-    strategy_ids = [value.strip() for value in (strategies or "").split(",") if value.strip()] or None
-    from stockfu.scheduler.jobs import run_signal_pipeline
-    print(f"✓ 策略评分完成: {run_signal_pipeline(signal_date, strategy_ids=strategy_ids)}")
-
-
-def run_test_signal_mail() -> None:
-    from stockfu.scheduler.jobs import start_embedded_server
-    from stockfu.services.signal_mail import run_signal_mail_job
-
-    start_embedded_server()
-    _wait_embedded_server()
-    print(f"✓ 推荐邮件任务结果: {run_signal_mail_job(force=True)}")
 
 
 def run_config() -> None:
@@ -443,7 +407,7 @@ def run_backfill_adj_prices(start: str | None = None, end: str | None = None,
     """
     from stockfu.db import init_db
     from stockfu.scheduler.backfill_adj_prices import (
-        adj_price_coverage, backfill_adj_prices, clear_dividend_yield_cache,
+        adj_price_coverage, backfill_adj_prices,
     )
 
     init_db()
@@ -470,17 +434,7 @@ def run_backfill_adj_prices(start: str | None = None, end: str | None = None,
           f"proxy={r.get('proxy')}")
     if r.get("error_n"):
         print(f"  失败样例: {r['errors'][:5]}")
-    n = clear_dividend_yield_cache()
-    print(f"✓ 已清 dividend_yield 缓存 {n} 行(新口径 price_basis=raw)")
 
-
-def run_clear_dividend_cache() -> None:
-    from stockfu.db import init_db
-    from stockfu.scheduler.backfill_adj_prices import clear_dividend_yield_cache
-
-    init_db()
-    n = clear_dividend_yield_cache()
-    print(f"✓ 已删除 operator_result dividend_yield {n} 行")
 
 
 def run_backfill_dividend(start_year: int | None = None, *, refresh: bool = False) -> None:
@@ -529,44 +483,6 @@ def run_backfill_dividend(start_year: int | None = None, *, refresh: bool = Fals
     print(f"✓ 完成:新增 {new} 条,失败 {errors} 只;dividend_event {before} → {after} 行")
 
 
-def run_update_backtests(
-    strategies: str | None,
-    start: str | None,
-    end: str | None,
-    cash: float,
-    dry_run: bool,
-    list_only: bool,
-) -> None:
-    """全周期策略回测更新到最新:见 stockfu.backtest.full_cycle_update。
-
-    strategies: 逗号分隔 strategy_id;None/空 = 目录全部。
-    """
-    from stockfu.backtest.v1_gate import ensure_v1_backtest_enabled
-    ensure_v1_backtest_enabled()
-    from stockfu.backtest.full_cycle_update import (
-        print_catalog,
-        update_backtests,
-    )
-
-    if list_only:
-        print_catalog()
-        return
-    ids = None
-    if strategies and strategies.strip():
-        ids = [x.strip() for x in strategies.split(",") if x.strip()]
-    try:
-        update_backtests(
-            ids,
-            start=start,
-            end=end,
-            cash=cash,
-            dry_run=dry_run,
-            save_summary=True,
-        )
-    except ValueError as e:
-        print(f"✗ {e}")
-        raise SystemExit(2) from e
-
 
 def run_v2_signal_mail(as_of: str | None, no_send: bool, top_n: int) -> None:
     """V2 三策略单日评分 → 出图 → 发信(默认最新交易日;可 --as-of 指定)。"""
@@ -603,96 +519,6 @@ def run_v2_watchlist_recommend(as_of: str | None, top_n: int) -> None:
     print_v2_watchlist_recommendation(result, top_n=top_n)
 
 
-def run_recommend(
-    strategies: str | None,
-    as_of: str | None,
-    cash: float,
-    slip_bps: float,
-    band_pct: float,
-    max_gross: float | None,
-    min_amount: float | None,
-    with_sentiment: bool,
-    write_cache: bool,
-) -> None:
-    """空仓重建荐股:策略+回测 meta → as_of 信号日 → 次日执行参考价/估值中枢。"""
-    from stockfu.db import init_db
-    from stockfu.services.recommend import (
-        available_strategies,
-        print_report,
-        run_recommend as _run,
-    )
-
-    init_db()
-    if not strategies or not str(strategies).strip():
-        print("✗ --recommend 必须指定 --strategies a,b")
-        print(f"  可选: {', '.join(available_strategies())}")
-        raise SystemExit(2)
-    ids = [x.strip() for x in str(strategies).split(",") if x.strip()]
-    try:
-        report = _run(
-            ids,
-            as_of=as_of,
-            cash=cash,
-            slip_bps=slip_bps,
-            band_pct=band_pct,
-            max_gross=max_gross,
-            min_amount=min_amount,
-            with_sentiment=with_sentiment,
-            write_cache=write_cache,
-            save=True,
-        )
-    except ValueError as e:
-        print(f"✗ {e}")
-        raise SystemExit(2) from e
-    print_report(report)
-
-
-def run_watchlist_review(
-    strategies: str | None,
-    as_of: str | None,
-    pool_spec: str,
-    codes_override: str | None,
-    add: list[str],
-    drop: list[str],
-    with_sentiment: bool,
-    with_llm: bool,
-    write_cache: bool,
-) -> None:
-    """自选股多策略评价矩阵:解耦引擎 evaluate(codes, strategy_ids, as_of)。
-
-    股票池:默认 watchlist;--codes 显式覆盖;--add/--drop 临时增删(不写 DB)。
-    策略:--strategies 任意入库 id(默认 active_strategy_id),不限 catalog。
-    """
-    from stockfu.db import init_db
-    from stockfu.services.evaluator import (
-        available_strategy_ids, run_watchlist_review as _run,
-    )
-    init_db()
-    sids = [s.strip() for s in (strategies or "").split(",") if s.strip()] or None
-    codes_list = (
-        [c.strip() for c in codes_override.split(",") if c.strip()]
-        if codes_override else None
-    )
-    try:
-        _run(
-            pool_spec=pool_spec,
-            codes_override=codes_list,
-            add=add or None,
-            drop=drop or None,
-            strategies=sids,
-            as_of=as_of,
-            with_sentiment=with_sentiment,
-            with_llm=with_llm,
-            write_cache=write_cache,
-            save=True,
-        )
-    except ValueError as e:
-        print(f"✗ {e}")
-        if "未知 strategy_id" in str(e) or "可选" in str(e):
-            pass  # 错误信息已含可选列表
-        else:
-            print(f"  可用策略: {', '.join(available_strategy_ids())}")
-        raise SystemExit(2) from e
 
 
 def run_v2_backtest_cli(alpha_id: str, start: str | None, end: str | None,
@@ -913,199 +739,7 @@ def run_v2_segmented_cli(
         )
 
 
-def run_backtest(strategy: str, start: str | None, end: str | None,
-                 cash: float, codes: str | None, save: bool,
-                 min_amount: float | None = None,
-                 valuation_basis: str = "qfq") -> None:
-    """回测：算子→策略→逐日 T+1 执行，输出绩效指标。
 
-    策略由 app_config('active_strategy_id') 决定;此处 --backtest STRATEGY 设置它。
-    --codes: 省略=沪深300+中证500时点成分宇宙；all/pool=大盘候选池；或逗号列表。
-    估值口径默认 qfq(研究模式主线,已含分红再投);研究模式详见 docs/BACKTEST.md §0。
-    """
-    from stockfu.backtest.v1_gate import ensure_v1_backtest_enabled
-    ensure_v1_backtest_enabled()
-    from datetime import date, timedelta
-
-    from stockfu.db import init_db, set_app_config, session_scope
-    init_db()
-    # 校验策略在 DB(含变体 base#key),避免 set_app_config 后被 get_active_strategy
-    # 静默回落 pure_factor——复合 id 拼写错会无声跑错策略。
-    from sqlmodel import select
-    from stockfu.models import Strategy
-    with session_scope() as s:
-        if s.get(Strategy, strategy) is None:
-            avail = sorted(r for r in s.exec(select(Strategy.strategy_id)).all())
-            raise SystemExit(
-                f"策略 '{strategy}' 不在 DB(先 --init-db / seed)。可用: {avail}"
-            )
-    set_app_config("active_strategy_id", strategy)
-    from stockfu.ai.operators.registry import discover_and_register
-    discover_and_register()
-    from stockfu.backtest.scheduler import run as _run
-    from stockfu.services.index_universe import HISTORICAL_INDEX_CODES, HISTORICAL_UNIVERSE_ID
-    from stockfu.services.universe import UniverseRules, resolve_base_codes
-
-    end_d = end or date.today().isoformat()
-    start_d = start or (date.today() - timedelta(days=365)).isoformat()
-    use_historical_universe = codes is None
-    code_list = resolve_base_codes("historical_indices" if use_historical_universe else codes)
-
-    scope = f"{len(code_list)}只票"
-    print(f"回测 {strategy}  {start_d} → {end_d}  初始资金 {cash:,.0f}  ({scope}, 估值 {valuation_basis}) …")
-    universe_rules = None
-    if use_historical_universe:
-        universe_rules = UniverseRules(
-            universe_id=HISTORICAL_UNIVERSE_ID,
-            index_codes=HISTORICAL_INDEX_CODES,
-            min_amount_ma20=min_amount,
-        )
-    elif min_amount is not None:
-        universe_rules = UniverseRules(min_amount_ma20=min_amount)
-    r = _run(code_list, start_d, end_d, initial_cash=cash,
-             universe_rules=universe_rules, valuation_basis=valuation_basis)
-    m = r["metrics"]
-    bench_ret = m.get("benchmark_return")
-    window = m.get("benchmark_window")
-    if bench_ret is not None:
-        win_str = f" 基准窗口 {window['start']}~{window['end']}" if window else ""
-        bench_str = f" | 基准 {bench_ret}%{win_str}"
-    else:
-        reason = m.get("benchmark_reason", "N/A")
-        bench_str = f" | 基准 {reason}"
-    wr = m.get("win_rate")
-    wr_str = f" | 胜率 {wr}%" if wr is not None else ""
-    excess = m.get("excess")
-    excess_str = f" | 超额 {excess}%" if excess is not None else ""
-    _rec = m.get("max_drawdown_recovery_days")
-    rec_str = f" | 回本 {_rec}d" if _rec is not None else " | 回本 未回本"
-    _slc = m.get("stop_loss_count")
-    sl_str = f" | 止损 {_slc}笔" if _slc else ""
-    _tov = m.get("avg_daily_turnover")
-    tov_str = (f" | 日均换手 {_tov}只/日(年化{m.get('annual_turnover')}遍)"
-               if _tov is not None else "")
-    uni = m.get("config", {}).get("universe") or r.get("universe") or {}
-    uni_str = ""
-    if uni.get("avg_size") is not None:
-        uni_str = (f"\n  宇宙 {uni.get('universe_id')} 日均 {uni['avg_size']} "
-                   f"[{uni.get('min_size')}~{uni.get('max_size')}] "
-                   f"master {uni.get('master_coverage')}/{uni.get('base_size')}")
-    print(f"✓ 总收益 {m.get('total_return')}% | 年化 {m.get('annualized')}% | "
-          f"最大回撤 {m.get('max_drawdown')}% | 夏普 {m.get('sharpe')}{wr_str}{bench_str}{excess_str}{rec_str}{sl_str}\n"
-          f"  交易 {m.get('trade_count')}笔{tov_str} | 期末权益 {m.get('final_equity')}"
-          f" | 涨停拒买 {m.get('limit_reject_buys', 0)} | 跌停拒卖 {m.get('limit_reject_sells', 0)}"
-          f"{uni_str}")
-    if r.get("saved_to"):
-        print(f"  结果已保存: {r['saved_to']}")
-
-
-def _parse_periods(spec: str | None) -> tuple[int, ...] | None:
-    if not spec:
-        return None
-    return tuple(int(p.strip()) for p in spec.split(",") if p.strip())
-
-
-def run_factor_diag(operator: str, start: str | None, end: str | None,
-                    codes: str | None, params: str | None,
-                    periods: tuple[int, ...] | None, quantiles: int,
-                    primary_period: int | None, save: bool) -> None:
-    """因子诊断：单算子连续 score 的 IC / 分位收益 / 换手 / 衰减（alphalens 思路）。
-
-    不搭策略管道，直接量化单个因子在全市场横截面上对前向收益的预测力。
-    score 走回测算子缓存(operator_result)，与回测互通复用。详见 docs/BACKTEST.md。
-    """
-    import json
-    import os
-    from datetime import date, datetime, timedelta
-
-    from stockfu.ai.operators.registry import discover_and_register, get_operator_class
-    from stockfu.backtest.factor_diag import (run_factor_diag as _run,
-                                              DEFAULT_PERIODS)
-
-    discover_and_register()
-    cls = get_operator_class(operator)
-    if cls is None:
-        from stockfu.ai.operators.registry import REGISTRY
-        avail = sorted(k for k, c in REGISTRY.items() if c.type == "math")
-        print(f"✗ 未知算子 '{operator}'；可用 math 算子: {', '.join(avail)}")
-        return
-
-    end_d = end or date.today().isoformat()
-    start_d = start or (date.today() - timedelta(days=365)).isoformat()
-    from stockfu.db import init_db
-    from stockfu.services.universe import resolve_base_codes
-    init_db()
-    # all/pool → 大盘候选 ~800;省略 → 自选;每日再按 U(t) 滤次新/ST/停牌
-    code_list = resolve_base_codes(codes)
-
-    # 默认参数 = 算子 PARAMS_SCHEMA（各算子的默认窗口/周期）
-    if params:
-        try:
-            op_params = json.loads(params)
-        except json.JSONDecodeError as e:
-            print(f"✗ --params JSON 解析失败: {e}")
-            return
-    else:
-        op_params = dict(getattr(cls, "PARAMS_SCHEMA", {})) or {}
-    periods_t = periods or DEFAULT_PERIODS
-    pperiod = primary_period if primary_period is not None else (
-        5 if 5 in periods_t else periods_t[len(periods_t) // 2])
-
-    pstr = ", ".join(f"{k}={v}" for k, v in op_params.items()) or "默认"
-    print(f"因子诊断  {operator}({pstr})  {start_d} → {end_d}  ({len(code_list)}只票) …")
-    rep = _run(operator, op_params, code_list, start_d, end_d,
-               periods=periods_t, n_quantiles=quantiles, primary_period=pperiod,
-               progress=True)
-
-    um = rep.get("universe") or {}
-    print(f"\n标的池 base {rep['universe_size']} 只 | 信号日 {rep['n_signal_days']} | "
-          f"因子观测 {rep['factor_observations']:,}")
-    if um.get("avg_size") is not None:
-        print(f"  时点宇宙日均 {um['avg_size']} [{um.get('min_size')}~{um.get('max_size')}] "
-              f"master {um.get('master_coverage')}/{um.get('base_size')}")
-
-    # IC 衰减表
-    print("\nIC 衰减（横截面 Spearman，前向收益 vs 因子 score）:")
-    print(f"  {'周期':<6}{'mean IC':>10}{'IR':>8}{'t-stat':>9}{'正IC%':>8}{'天数':>7}")
-    for h in rep["periods"]:
-        s = rep["ic"][str(h)]
-        if s["mean_ic"] is None:
-            print(f"  {h}日{'':<3}{'—':>10}")
-            continue
-        print(f"  {h}日{'':<3}{s['mean_ic']:+.4f}{'':<4}"
-              f"{(s['ic_ir'] or 0):+.2f}{'':<4}"
-              f"{(s['t_stat'] or 0):+.1f}{'':<3}"
-              f"{s['pct_positive']:.0f}%{'':<4}{s['n_days']}")
-
-    # 分位收益
-    pp = rep["primary_period"]
-    qr = rep["quantile_returns"]
-    qstr = "  ".join(f"Q{i+1} {(v*1):+.2f}%" for i, v in enumerate(qr))
-    print(f"\n分位收益（前向{pp}日，{rep['n_quantiles']}分位，Q1 最弱→Q{rep['n_quantiles']} 最强）:")
-    print(f"  {qstr}")
-    sp = rep["quantile_spread"]
-    mo = rep["quantile_monotonicity"]
-    print(f"  多空价差(Q{rep['n_quantiles']}−Q1) {sp:+.2f}%   单调性(Spearman) {mo:+.2f}"
-          if sp is not None else "  （分位收益样本不足）")
-
-    # 换手
-    tov = rep["turnover"]
-    nq = rep["n_quantiles"]
-    lo = tov.get("0"); hi = tov.get(str(nq - 1)); ls = rep["long_short_turnover"]
-    print("\n换手（日均成员变动率，0=恒定 1=每日全换）:")
-    print(f"  Q1 {lo}   Q{nq} {hi}   多空≈ {ls}"
-          if lo is not None else "  （换手样本不足）")
-
-    if save:
-        out_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "data", "factor_diag"))
-        os.makedirs(out_dir, exist_ok=True)
-        rid = datetime.now().strftime("diag-%Y%m%d-%H%M%S")
-        out = os.path.join(out_dir, f"{rid}.json")
-        tmp = f"{out}.tmp{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(rep, f, ensure_ascii=False, indent=2, default=str)
-        os.replace(tmp, out)
-        print(f"\n  结果已保存: {out}")
 
 
 def _parse_tables(spec: str | None) -> list[str] | None:
@@ -1232,20 +866,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="等同 --proxy-mode direct（兼容旧参数）")
     p.add_argument("--full", action="store_true",
                    help="--backfill-adj-prices 强制全量重抓(默认断点续传:跳过 raw/hfq 已完成的 code)")
-    p.add_argument("--clear-dividend-cache", action="store_true",
-                   help="仅清 operator_result 中 dividend_yield 错误缓存")
     p.add_argument("--schedule", action="store_true", help="启动每日定时调度")
     p.add_argument("--clean-quotes", action="store_true", help="删除 quote_snapshot 里非交易日的错标记录")
     p.add_argument("--vacuum", action="store_true",
                    help="VACUUM INTO 原子重建主库(先备份 .bak.G09);停 daemon/回测时跑,回收空闲页")
     p.add_argument("--test-mail", action="store_true", help="立即生成多图并发一封测试邮件")
-    p.add_argument("--scan-signals", action="store_true",
-                   help="刷新并扫描信号日沪深300+中证500（必带 --date；策略默认读页面配置）")
-    p.add_argument("--test-signal-mail", action="store_true",
-                   help="立即把最近一次扫描生成推荐卡片并发送测试邮件")
     p.add_argument("--config", action="store_true", help="交互式配置向导：自选/抓取/重试/邮件")
-    p.add_argument("--backtest", metavar="STRATEGY", default=None,
-                   help="已禁用的 V1 回测入口；请使用 --backtest-v2")
     p.add_argument("--backtest-v2", metavar="ALPHA_ID", default=None,
                    help="V2 回测:alpha_id(如 dividend_low_vol_v2);"
                         "--codes hs300 或 historical_indices 使用历史成分；"
@@ -1284,21 +910,6 @@ def build_parser() -> argparse.ArgumentParser:
     # 中途可恢复性由 partial 工件 + append-only audit artifact 保证。
     p.add_argument("--checkpoint-every", type=int, default=20,
                    help="V2 每隔多少个交易日写一次完整断点，默认 20（§4.8.4）")
-    p.add_argument("--update-backtests", action="store_true",
-                   help="已禁用的 V1 全周期回测入口；请使用 --backtest-v2")
-    p.add_argument("--strategies", default=None, metavar="IDS",
-                   help="逗号分隔 strategy_id。"
-                        "--update-backtests:省略=目录全部;"
-                        "--recommend:必填。"
-                        "例: cross_section_factor,dividend_cross_section")
-    p.add_argument("--list-strategies", action="store_true",
-                   help="列出 --update-backtests 可更新的策略目录后退出")
-    p.add_argument("--dry-run", action="store_true",
-                   help="配合 --update-backtests:只打印计划不实际跑回测")
-    p.add_argument("--factor-diag", metavar="OPERATOR", default=None,
-                   help="因子诊断算子ID（如 momentum / macd_cross）；单算子 IC/分位收益/换手/衰减，见 docs/BACKTEST.md")
-    p.add_argument("--recommend", action="store_true",
-                   help="空仓重建荐股(必填 --strategies;可选 --as-of/--cash)")
     p.add_argument("--v2-signal-mail", action="store_true",
                    help="V2 三策略单日评分 → 出图 → 发信(默认最新交易日;可 --as-of 指定)")
     p.add_argument("--v2-watchlist-recommend", action="store_true",
@@ -1307,30 +918,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="--v2-signal-mail:仅出图不发信(本地预览)")
     p.add_argument("--top-n", type=int, default=30,
                    help="--v2-signal-mail:展示 top N 只(默认30)")
-    p.add_argument("--watchlist-review", action="store_true",
-                   help="自选股多策略评价矩阵(默认 watchlist + active 策略;"
-                        "可选 --codes/--add/--drop 临时调池;--strategies 任意入库 id)")
-    p.add_argument("--from-pool", default="watchlist", metavar="POOL",
-                   help="--watchlist-review 的基础池:watchlist(默认)/all/historical_indices"
-                        " 或逗号代码;--codes 非空时被覆盖")
-    p.add_argument("--add", action="append", default=None, metavar="CODE",
-                   help="--watchlist-review:本次临时加入评价池(可多次;不写 DB)")
-    p.add_argument("--drop", action="append", default=None, metavar="CODE",
-                   help="--watchlist-review:本次临时移出评价池(可多次;不写 DB)")
-    p.add_argument("--no-llm", action="store_true",
-                   help="--watchlist-review:跳过 LLM 点评(只出量化评价)")
     p.add_argument("--as-of", default=None, metavar="YYYY-MM-DD",
                    help="信号日(荐股默认库内行情末日;严格 <=as_of 取数)")
-    p.add_argument("--slip-bps", type=float, default=10.0,
-                   help="荐股建议限价滑点(bps,默认10,与回测一致)")
-    p.add_argument("--band-pct", type=float, default=1.0,
-                   help="荐股执行可接受区间%%(默认±1)")
-    p.add_argument("--max-gross", type=float, default=None,
-                   help="荐股覆盖 rebalancer max_gross(默认用 catalog 参数)")
-    p.add_argument("--with-sentiment", action="store_true",
-                   help="荐股附加个股 fear/greed/heat(较慢)")
-    p.add_argument("--write-cache", action="store_true",
-                   help="荐股算子 miss 时写 operator_result(默认不写,防锁)")
     p.add_argument("--start", default=None,
                    help="回测/诊断/全周期更新起始日 YYYY-MM-DD"
                         "（--backtest 默认1年前;--update-backtests 默认 2021-01-01）")
@@ -1340,20 +929,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cash", type=float, default=1_000_000.0, help="回测初始资金（默认100万）")
     p.add_argument("--codes", default=None,
                    help="标的池:省略=自选; all/pool=大盘候选(~800); 或逗号代码列表")
-    p.add_argument("--min-amount", type=float, default=None,
-                   help="宇宙动态池:单日成交额门槛(元,如 50000000=5000万);默认关闭")
-    p.add_argument("--valuation-basis", dest="valuation_basis",
-                   choices=("qfq", "raw", "hfq"), default="qfq",
-                   help="账户估值口径:qfq=前复权(默认,研究模式主线,已含分红再投);"
-                        "raw=不复权+现金分红入账。研究模式详见 docs/BACKTEST.md §0.3")
-    p.add_argument("--save", action="store_true", help="结果落盘（回测→data/backtest/ 诊断→data/factor_diag/）")
-    p.add_argument("--periods", default=None,
-                   help="因子诊断前向收益周期(交易日)，逗号分隔，默认 1,5,10,21")
-    p.add_argument("--quantiles", type=int, default=5, help="因子诊断分位桶数（默认5）")
-    p.add_argument("--params", default=None,
-                   help="算子参数 JSON（如 '{\"window\":10}'）；默认用算子 PARAMS_SCHEMA")
-    p.add_argument("--primary-period", type=int, default=None,
-                   help="因子诊断分位收益/换手主周期(交易日，默认5)")
     p.add_argument("--export-csv", nargs="?", const="data", default=None, metavar="DIR",
                    help="导出市场数据为 CSV 到 DIR（默认 data/）；配合 --tables / --all")
     p.add_argument("--import-csv", nargs="?", const="data", default=None, metavar="DIR",
@@ -1392,8 +967,6 @@ def main() -> None:
             proxy_mode=getattr(args, "proxy_mode", "free"),
             full=getattr(args, "full", False),
         )
-    elif args.clear_dividend_cache:
-        run_clear_dividend_cache()
     elif args.backfill_factors:
         run_backfill_factors()
     elif args.backfill_limit is not None:
@@ -1456,42 +1029,12 @@ def main() -> None:
         run_vacuum()
     elif args.test_mail:
         run_test_mail()
-    elif args.scan_signals:
-        run_signal_scan_cli(args.date, args.strategies)
-    elif args.test_signal_mail:
-        run_test_signal_mail()
     elif args.config:
         run_config()
-    elif args.list_strategies:
-        run_update_backtests(None, None, None, args.cash, False, list_only=True)
-    elif args.update_backtests:
-        run_update_backtests(
-            args.strategies, args.start, args.end, args.cash,
-            dry_run=args.dry_run, list_only=False,
-        )
     elif args.v2_signal_mail:
         run_v2_signal_mail(args.as_of, args.no_send, args.top_n)
     elif args.v2_watchlist_recommend:
         run_v2_watchlist_recommend(args.as_of, args.top_n)
-    elif args.recommend:
-        run_recommend(
-            args.strategies, args.as_of, args.cash,
-            slip_bps=args.slip_bps, band_pct=args.band_pct,
-            max_gross=args.max_gross, min_amount=args.min_amount,
-            with_sentiment=args.with_sentiment, write_cache=args.write_cache,
-        )
-    elif args.watchlist_review:
-        run_watchlist_review(
-            args.strategies, args.as_of, args.from_pool, args.codes,
-            add=args.add or [], drop=args.drop or [],
-            with_sentiment=args.with_sentiment,
-            with_llm=not args.no_llm,
-            write_cache=args.write_cache,
-        )
-    elif args.backtest:
-        run_backtest(args.backtest, args.start, args.end, args.cash, args.codes, args.save,
-                     min_amount=args.min_amount,
-                     valuation_basis=args.valuation_basis)
     elif args.backtest_v2_segments:
         run_v2_segmented_cli(
             args.backtest_v2_segments, args.start, args.end, args.cash,
@@ -1509,10 +1052,6 @@ def main() -> None:
                             args.checkpoint_path, args.resume_from,
                             args.checkpoint_every, args.snapshot_path,
                             args.canonical)
-    elif args.factor_diag:
-        run_factor_diag(args.factor_diag, args.start, args.end, args.codes, args.params,
-                        _parse_periods(args.periods), args.quantiles,
-                        args.primary_period, args.save)
     elif args.export_csv is not None:
         run_export_csv(args.export_csv, _parse_tables(args.tables), args.all)
     elif args.import_csv is not None:

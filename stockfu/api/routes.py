@@ -11,7 +11,7 @@ from datetime import date
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import Response
 from sqlmodel import select
 
 from stockfu.data.manager import get_manager
@@ -319,86 +319,8 @@ def test_mail_api():
 
 
 # ---------- 策略信号扫描 / 逐股订阅 ----------
-
-def _ensure_signal_schema() -> None:
-    from stockfu.services.signal_scan import ensure_signal_schema
-    ensure_signal_schema()
-
-
-@router.get("/signals/config")
-def get_signal_config_api():
-    _ensure_signal_schema()
-    from stockfu.services.signal_scan import signal_config_view
-    return jsonable_encoder(signal_config_view())
-
-
-@router.put("/signals/config")
-def set_signal_config_api(payload: dict = Body(...)):
-    _ensure_signal_schema()
-    from stockfu.services.signal_scan import update_signal_config
-    try:
-        return jsonable_encoder(update_signal_config(payload or {}))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/signals/subscriptions")
-def get_signal_subscriptions_api(as_of: str | None = None):
-    _ensure_signal_schema()
-    from stockfu.services.recommend import default_as_of
-    from stockfu.services.signal_scan import subscription_rows
-    try:
-        signal_date = date.fromisoformat(as_of[:10]) if as_of else default_as_of()
-        return {"as_of": signal_date.isoformat(), "rows": jsonable_encoder(subscription_rows(signal_date))}
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@router.put("/signals/subscriptions")
-def set_signal_subscriptions_api(payload: dict = Body(...)):
-    _ensure_signal_schema()
-    from stockfu.services.signal_scan import set_subscriptions
-    updates = payload.get("updates") if isinstance(payload, dict) else None
-    if not isinstance(updates, list):
-        raise HTTPException(status_code=400, detail="updates 必须是数组")
-    return set_subscriptions(updates)
-
-
-@router.get("/signals/latest")
-def get_latest_signals_api(all_results: bool = False):
-    _ensure_signal_schema()
-    from stockfu.services.signal_scan import signal_report
-    return jsonable_encoder(signal_report(subscribed_only=not all_results))
-
-
-@router.post("/signals/run")
-def run_signal_scan_api(payload: dict | None = Body(default=None)):
-    """手工运行一次扫描；批量网络刷新由 scheduler/CLI 流水线负责。"""
-    _ensure_signal_schema()
-    from stockfu.services.recommend import default_as_of
-    from stockfu.services.signal_scan import run_signal_scan
-    body = payload or {}
-    try:
-        signal_date = date.fromisoformat(str(body["signal_date"])[:10]) if body.get("signal_date") else default_as_of()
-        return jsonable_encoder(run_signal_scan(signal_date))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.post("/signals/mail/test")
-def test_signal_mail_api():
-    _ensure_signal_schema()
-    from stockfu.services.signal_mail import run_signal_mail_job
-    return run_signal_mail_job(force=True)
-
-
-@router.get("/signals/mail-view", response_class=HTMLResponse, include_in_schema=False)
-def signal_mail_view(run_id: int | None = None):
-    _ensure_signal_schema()
-    from stockfu.services.signal_mail import build_signal_mail_html
-    from stockfu.services.signal_scan import signal_report
-    report = signal_report(run_id=run_id, subscribed_only=True)
-    return HTMLResponse(build_signal_mail_html(report))
+# V1 信号扫描链（/signals/*，signal_scan/signal_mail/recommend）已随 V1 引擎移除；
+# V2 五套评分邮件由 --v2-signal-mail / 每日调度发送，无 Web API。
 
 
 @router.get("/config/llm")

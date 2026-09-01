@@ -18,9 +18,6 @@ import type {
   MailTestResult,
   LlmConfig,
   LlmTestResult,
-  SignalConfig,
-  SignalSubscriptionsResp,
-  SignalReport,
   CsvImportResult,
   AiAnalyzeResp,
   AiResultResp,
@@ -83,19 +80,6 @@ export const configApi = {
   setLlm: (b: Partial<{ llm_base_url: string; llm_model: string; llm_api_key: string }>) =>
     doPut<LlmConfig>('/config/llm', b),
   testLlm: () => doPost<LlmTestResult>('/config/llm/test'),
-}
-
-export const signalApi = {
-  getConfig: () => doGet<SignalConfig>('/signals/config'),
-  setConfig: (b: Partial<Pick<SignalConfig,
-    'factor_enabled' | 'llm_enabled' | 'mail_enabled' | 'scan_time' | 'strategy_ids'>>) =>
-    doPut<SignalConfig>('/signals/config', b),
-  subscriptions: () => doGet<SignalSubscriptionsResp>('/signals/subscriptions'),
-  setSubscriptions: (updates: Array<{
-    code: string; factor_mail_enabled?: boolean; llm_enabled?: boolean
-  }>) => doPut<{ updated: number }>('/signals/subscriptions', { updates }),
-  latest: (allResults = false) => doGet<SignalReport>(`/signals/latest?all_results=${allResults ? 'true' : 'false'}`),
-  testMail: () => doPost<MailTestResult>('/signals/mail/test'),
 }
 
 // ---- Phase 3 csv ----

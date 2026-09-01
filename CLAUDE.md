@@ -1,6 +1,6 @@
 # StockFu · 资产管理终端
 
-本地优先的综合资产 + 市场情绪终端:A股/港股/美股/ETF 持仓管理、TTM 股息率、三层(市场/板块/个股)fear-greed-heat 情绪指数、历史回补、AI 4 顾问、天级回测(算子→策略→选股→执行 四层架构)。技术栈:Python + SQLModel/SQLite + FastAPI + Vue3 前端（看板走 Web；TUI 已移除）。
+本地优先的综合资产 + 市场情绪终端:A股/港股/美股/ETF 持仓管理、TTM 股息率、三层(市场/板块/个股)fear-greed-heat 情绪指数、历史回补、AI 4 顾问、天级回测(V2 评分→选股→执行 架构)。技术栈:Python + SQLModel/SQLite + FastAPI + Vue3 前端（看板走 Web；TUI 已移除）。V1 策略引擎(算子/策略 yaml/rebalancer/信号扫描)已于 2026-08 移除,配置归档见 `docs/legacy/strategy-v1/`。
 
 ## 冷启动(新会话先读)
 - **`.local/WORKSTATE.md`** — 当前任务的短交接状态（不存在则按 `docs/WORKSTATE_TEMPLATE.md` 创建）；先确认 `pwd` / 分支 / 未提交改动。Git 分支规矩与跨工具通用规则见 `AGENTS.md`。
@@ -19,17 +19,11 @@ python3 main.py --backfill-adj-prices --start 2020-01-01 --end 2026-07-20
   # baostock 串行三复权;默认 --proxy-mode free（免费代理池+Clash种子，失败自动切换）
   # 默认断点续传(跳过 raw/hfq 已完成的 code);--full 强制全量重抓
 python3 main.py --backfill-benchmark-tr   # 沪深300全收益 H00300→sh000300_tr(V2 指标基准同口径;增量)
-python3 main.py --clear-dividend-cache
-python3 main.py --backtest bollinger_monthly --start 2025-06-01 --end 2026-01-01 --codes 600519,000858 --save
 python3 main.py --backtest-v2 dividend_low_vol_v2 --start 2021-01-01 --end 2026-08-05 --history-origin 2018-01-01 --observation-count 271 --codes hs300  # V2 0-100 评分回测;正式运行另加 --canonical --snapshot;详见 V2 spec
-python3 main.py --update-backtests   # 全周期;可 --strategies a,b
-  # 默认输出 1% 粒度进度日志(每 1% 打印耗时 + as_of;BACKTEST_PROGRESS=0 可关);后台跑用 setsid 脱离会话
-  #   setsid bash -c 'exec python3 -u main.py --update-backtests' > log 2>&1 < /dev/null &
-python3 main.py --list-strategies
-python3 main.py --recommend --strategies cross_section_factor --as-of 2026-07-17
+python3 main.py --backtest-v2-segments all   # V2 正式三段回测(--resume-segment-suite 断点续跑)
 python3 main.py --v2-watchlist-recommend --as-of 2026-08-14   # 五套自选股荐股报告(榜单=综合前30∪各策略前5,按均分排序,中文策略名)
 python3 main.py --v2-signal-mail --as-of 2026-08-14           # 五套评分邮件(同榜单规则;--no-send 仅出图)
-nohup python3 main.py --schedule >> data/schedule.log 2>&1 &   # 常驻:工作日到点 fetch→算指数→出图→发信(内嵌 web 单进程)
+nohup python3 main.py --schedule >> data/schedule.log 2>&1 &   # 常驻:工作日到点 fetch→算指数→出图→发信 + V2 评分邮件(内嵌 web 单进程;评分邮件默认 16:30,开关 v2_signal_mail_enabled/v2_signal_mail_time)
 python3 main.py --test-mail            # 手动出图+发信(需 --serve 在跑;出图必加 BAOSTOCK_PROXY_MODE=direct 防 loadAll 挂死)
 ruff check stockfu/ main.py tests/        # 代码检查(基线 F 类,当前应全绿;详见 pyproject.toml)
 ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
@@ -43,7 +37,7 @@ ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 - **回测防未来函数**:取数 `<= as_of`
 - **回测价格口径(研究模式,2026-07-27 反转,2026-07-28 落地)**(`docs/BACKTEST.md` §0):收益/净值走 **qfq**(涨跌幅复权法,已含分红再投,接受基准漂移);**绝对值逻辑**(股息率分母/PE/PB)坚持 **raw** + 税前分红;红利税用 baostock `dividCashPsAfterTax` 近似;直接用 `dividend_event` 表,**不自建多源仲裁账本**(旧公司行为证据表已删除);hfq 只作数据对账。引擎 `valuation_basis` 三态 `raw`/`qfq`/`hfq`、默认 **qfq**。**指标基准(excess)同口径**(2026-08-17):默认自动用沪深300全收益 H00300(`sh000300_tr`,数据由 `--backfill-benchmark-tr` 维护),缺失/不覆盖 formal 起点回退价格指数并记 `manifest.benchmark_basis`;只影响绩效对比,不影响交易(风控 regime 恒为价格指数)。
 - **新策略验证 · 三跑门禁(防过拟合)**:新增/调参/改算子后、认定结论前**必须** ①全样本 2007–2026 一跑 ②再从 07–26 任取两段、较短段 ≥5 年、且覆盖不同行情的子区间各跑;两轮(三跑)方向一致才认定,否则按 §0.6.4 判过拟合。详见 `docs/BACKTEST.md` §0.6.6
-- **量化四层**:算子(math 连续 score)+策略 yaml+rebalancer+engine;算子缓存 fingerprint 含源码 hash
+- **回测分层(V2)**:factor profile(raw 计算→0-100 评分)+alpha 配置+组合/风控 overlay+`v2_engine`;V1 算子/策略 yaml/rebalancer/信号扫描已移除(2026-08,归档 `docs/legacy/strategy-v1/`)
 - **行情拆表**:QuoteSnapshot / EtfQuoteDaily / IndexQuoteDaily;`quote_model_for` 路由
 - **入库统一收口 + 日期驱动**(`stockfu/services/quote_writer.py`):三张行情表各 1 个 canonical writer(`upsert_quote_snapshot`/`upsert_etf_daily`/`upsert_index_daily`),**严禁别处 `s.add(QuoteSnapshot...)`**;writer 硬保证 `quote_date <= cap_date`(超 cap 的源 bar 一律丢弃)。`--fetch` **必带 `--date YYYY-MM-DD`**,非法(未来/当日未收盘[北京15:30]/非交易日)→ `validate_ingest_date` 报错退出(凌晨不再误判为未开盘的今天);`--schedule` 自动取已收盘最近交易日。stamp 表(资金流/三层情绪/板块资金流)与读窗(composite/fundflow series)统一 `as_of=target_date`
 - **官方 K 回补串行** `backfill_kline`;`--fetch` 只刷自选,不全市场;**A 股个股 `--fetch` 走 baostock 三复权**(全字段 + 当日 `close_raw`,baostock 全失败即放弃、**不降级东财/腾讯**;ETF→akshare、港美股→yfinance、指数→manager)
@@ -51,5 +45,5 @@ ruff check --fix stockfu/ main.py tests/  # 自动修未用 import/变量等
 - **代码检查**:`pyproject.toml [tool.ruff]` 已配,基线只启用 `F`(未用 import/变量/未定义名/无占位符 f-string),专防 6219e10 那类「重构后名字作用域错位」的 NameError 回归;默认规则集另有 16 个 E 类遗留(E741 模糊变量名 `l` / E702 / E701 / E402,均非 bug),清理后再 `select=["E","F"]`。改完代码顺手 `ruff check`
 
 ## 状态
-🚧 MVP。代码:数据层(qfq 硬化)+回测四层+横截面策略族+全周期 CLI+荐股+三复权字段;**V2 评分/回测架构**(`stockfu/scoring` + `stockfu/strategy` + `--backtest-v2`,核心 + 红利低波 vertical slice 已落地,见 `docs/SPECS/factor-strategy-score-v2.md` 与 `docs/SPECS/v2-implementation-notes.md`);**五套正式荐股**(价值/高股息/多因子/质量增强/盈利动量进攻,`RECOMMENDATION_ALPHA_IDS`;榜单=综合前30∪各策略前5,按均分排序,入选理由中文标签,见 `docs/SPECS/signal-recommendation-mail.md`;质量增强与盈利进攻为配置决策转正,非门禁转正)。
+🚧 MVP。代码:数据层(qfq 硬化)+三复权字段;**V2 评分/回测架构**(`stockfu/scoring` + `stockfu/strategy` + `--backtest-v2`,核心 + 红利低波 vertical slice 已落地,见 `docs/SPECS/factor-strategy-score-v2.md` 与 `docs/SPECS/v2-implementation-notes.md`;V1 算子引擎/信号扫描/前端评分 tab 已移除,V2 评分邮件接入每日 schedule);**五套正式荐股**(价值/高股息/多因子/质量增强/盈利动量进攻,`RECOMMENDATION_ALPHA_IDS`;榜单=综合前30∪各策略前5,按均分排序,入选理由中文标签,见 `docs/SPECS/signal-recommendation-mail.md`;质量增强与盈利进攻为配置决策转正,非门禁转正)。
 历史回测产物只作探索记录；在 `docs/BACKTEST.md` 的正式准入门禁通过前，不得据此判断策略优劣。

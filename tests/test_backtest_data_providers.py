@@ -1,4 +1,4 @@
-"""回测数据供给器：MACD 周线与 TTM 分红不得在热路径逐次查库。"""
+"""回测数据供给器：TTM 分红不得在热路径逐次查库。"""
 from __future__ import annotations
 
 import unittest
@@ -26,19 +26,6 @@ def _sctx_with_close(code, close_by_day, *, raw_too=True):
 
 
 class TestBacktestDataProviders(unittest.TestCase):
-    def test_macd_weekly_closes_uses_market_preload(self):
-        from stockfu.ai.operators.factors.macd_cross import _weekly_closes
-        from stockfu.backtest.engine import _backtest_series_ctx
-
-        code = "600001"
-        # 周五收盘应覆盖同周前面的交易日。
-        sctx = _sctx_with_close(code, {
-            date(2024, 1, 4): 10, date(2024, 1, 5): 11,
-            date(2024, 1, 8): 12, date(2024, 1, 12): 13,
-        }, raw_too=False)
-        with _backtest_series_ctx(sctx):
-            self.assertEqual(_weekly_closes(code, date(2024, 1, 12), 30), [11, 13])
-
     def test_dividend_yield_uses_injected_events(self):
         from stockfu.services.dividend import (
             clear_backtest_dividend_provider,
