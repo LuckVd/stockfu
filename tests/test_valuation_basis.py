@@ -57,34 +57,19 @@ class TestPickPx(unittest.TestCase):
         self.assertEqual(_pick_px(bar, "open_hfq", "open_raw", "open", "hfq"), 1485.0)
 
 
-class TestHfqCoverageGate(unittest.TestCase):
-    def test_etf_like_excluded_from_denominator(self):
-        from stockfu.backtest.engine import _hfq_coverage
-        dates = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
-        sctx = _sctx({
-            "600001": {"c_hfq": [10.0, 11.0, 12.0]},          # 股票:全 hfq
-            "510300": {"c_hfq": [float("nan")] * 3},          # ETF:无 hfq → 排除
-        }, dates)
-        cov, hit, tot = _hfq_coverage(sctx, dates[0], dates[-1])
-        self.assertAlmostEqual(cov, 1.0)
-        self.assertEqual((hit, tot), (3, 3))
-
-    def test_partial_coverage_below_threshold(self):
-        from stockfu.backtest.engine import _hfq_coverage
-        dates = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
-        sctx = _sctx({
-            "600001": {"c_hfq": [10.0, float("nan"), 12.0]},  # 3 天缺 1
-        }, dates)
-        cov, hit, tot = _hfq_coverage(sctx, dates[0], dates[-1])
-        self.assertAlmostEqual(cov, 2 / 3, places=3)
-        self.assertEqual((hit, tot), (2, 3))
-
-
-class TestRunBacktestBasisValidation(unittest.TestCase):
+class TestV2BasisValidation(unittest.TestCase):
     def test_invalid_basis_raises_before_any_io(self):
-        from stockfu.backtest.engine import run_backtest
+        # V1 run_backtest 已移除；同一契约由 V2RunConfig.__post_init__ 承接。
+        from unittest.mock import MagicMock
+
+        from stockfu.backtest.v2_engine import V2RunConfig
         with self.assertRaises(ValueError) as cm:
-            run_backtest([], date(2024, 1, 1), date(2024, 1, 2), valuation_basis="bogus")
+            V2RunConfig(
+                alpha=MagicMock(), portfolio=MagicMock(), risk=MagicMock(),
+                profiles={}, raw_computers={}, codes=["600001"],
+                eval_start=date(2024, 1, 1), eval_end=date(2024, 1, 2),
+                history_origin=date(2023, 1, 1), valuation_basis="bogus",
+            )
         self.assertIn("valuation_basis", str(cm.exception))
 
 

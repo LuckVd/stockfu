@@ -32,18 +32,18 @@ StockFu 是日频、A 股多头研究系统，目标是比较策略方向和因�
 ### 0.3 数据与代码边界
 
 ```text
-operator → strategy YAML → rebalancer → execution engine → artifacts
+raw factor → 0–100 profile 评分 → alpha → portfolio/risk overlay → v2_engine → artifacts
 ```
 
-- 主库 `data/stockfu.db` 保存行情、分红和历史宇宙；算子结果位于独立的 `operator_cache.db`。
-- 算子缓存可再生，指纹包含算子源码 hash；回测不得把缓存写回行情主库。
-- **指纹口径（2026-08-24 起）**：V1 算子源码 hash 除算子类自身外，还纳入其引用的
-  stockfu 模块级辅助函数源码（两层依赖追踪，`runner._operator_source_hash`）。此前只
-  hash 类源码，改辅助函数实现（如 `_calc_bollinger`/`linreg_r2`/`factors.percentile`）
-  指纹不变 → 缓存静默复用旧结果。**升级影响**：指纹算法变更使 `operator_result`
-  旧缓存全量 miss 一次，首次 `--update-backtests` / `--recommend` / factor_diag 会自动
-  重算并回填（预期行为，非 bug；只慢一次，不需要手工清库）。
-- 长窗回测使用 `CompiledStrategy.begin_run_cache()` 的滚动窗口预载，避免一次把全周期算子结果全部读进内存。
+> **V1 引擎已移除（2026-08）**：`stockfu/ai/operators|strategies|rebalancers`、
+> `backtest/full_cycle_update|scheduler|v1_gate|factor_diag`、`services/evaluator|
+> recommend|signal_scan|signal_mail` 及 V1 CLI（`--backtest`/`--update-backtests`/
+> `--list-strategies`/`--recommend`/`--factor-diag`/`--scan-signals`/`--test-signal-mail`/
+> `--clear-dividend-cache`）均已删除；`operator_cache.db` 与其指纹口径随之上线作废。
+> 52 份 V1 策略配置与运行时默认值归档于 `docs/legacy/strategy-v1/`（catalog.yaml +
+> checksums.sha256）。本章历史小节中的 V1 命令与缓存说明仅作档案解读用，不再可执行。
+
+- 主库 `data/stockfu.db` 保存行情、分红和历史宇宙。
 - 研究产物写入 `data/backtest/`，是可删除、可重算的本地工件，不纳入 Git。
 
 ### 0.3.1 固定样本区间与产物保留（V2）
@@ -79,12 +79,11 @@ data/backtest/v2-segments/run-<timestamp>/
 
 ## 1. 标准回测流程
 
+V1 流程（`--list-strategies` / `--backtest` / `--factor-diag` / `--update-backtests`）已随 V1 引擎移除，仅存于 Git 历史。当前标准流程走 V2：
+
 ```bash
-python3 main.py --list-strategies
-python3 main.py --backtest STRATEGY --start 2007-01-04 --end 2026-07-21 \
-  --valuation-basis raw --save
-python3 main.py --factor-diag OPERATOR --start 2007-01-04 --end 2026-07-21
-python3 main.py --update-backtests --strategies a,b --start 2007-01-04 --end 2026-07-21
+python3 main.py --backtest-v2 ALPHA_ID --start 2007-01-04 --end 2026-07-21 --codes hs300
+python3 main.py --backtest-v2-segments ALPHA_ID|all   # §0.3.1 固定三段
 ```
 
 ### 0.6.1 标准绩效输出
@@ -172,7 +171,7 @@ python3 main.py --update-backtests --strategies a,b --start 2007-01-04 --end 202
 
 ## 5. V2 因子评分与回测架构（2026-08 起核心落地）
 
-V2 是与 V1 并存的新评分/回测架构，目标是替换 V1 的量纲契约：统一 0–100 因子分、四层解耦（评分 alpha / 组合 portfolio / 风险 risk）、严格点时与 prefix invariance。完整设计见 `docs/SPECS/factor-strategy-score-v2.md`，实现决策与疑难见 `docs/SPECS/v2-implementation-notes.md`。V2 修复前生成的结果不再作为验收依据。
+V2 是替代 V1 的新评分/回测架构（**2026-08 起 V1 引擎已物理移除**，配置归档 `docs/legacy/strategy-v1/`）：统一 0–100 因子分、四层解耦（评分 alpha / 组合 portfolio / 风险 risk）、严格点时与 prefix invariance。完整设计见 `docs/SPECS/factor-strategy-score-v2.md`，实现决策与疑难见 `docs/SPECS/v2-implementation-notes.md`。V2 修复前生成的结果不再作为验收依据。
 
 ### 5.1 范围与口径
 
@@ -184,7 +183,7 @@ V2 是与 V1 并存的新评分/回测架构，目标是替换 V1 的量纲契�
 
 - 已落地：`stockfu/scoring/`（contracts/mappings/profiles/history/scorer）、`stockfu/strategy/`（alpha/portfolio/rebalancer/risk）、`stockfu/factors/raw/`、`stockfu/backtest/v2_engine.py` + `v2_run.py`、V2 参数/成熟门禁/确定性回归测试。当前只绑定 4 个 raw metric；未迁移算子见 `docs/SPECS/v2-unmigrated-operators.md`。
 - canonical 因子档案为 `dividend_yield_ttm_v2`、`low_volatility_20d_v2`（hybrid 映射，当前行业字段不可点时追溯，因此不启用 `industry_history`）；旧的 `_v1` 档案仅保留作兼容复现。
-- 当前不作为 V2 阻塞项：其余旧因子迁移和 V1 物理归档删除；旧实现档案见
+- 当前不作为 V2 阻塞项：其余旧因子迁移（V1 物理归档删除已于 2026-08 完成）；旧实现档案见
   `docs/SPECS/v2-unmigrated-operators.md`。历史沪深300成分已按日生效过滤；行业点时比较、
   全部 V1 风险变体和旧 2007–2026 full 结果另作历史参考；当前正式研究门禁采用 §0.3.1/§0.6.6 固定三段。本阶段已提供 `no_overlay_v1` 基线
   与 `v1_core_v1` V1-inspired 核心风险版。
