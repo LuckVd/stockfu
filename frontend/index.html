@@ -5,9 +5,10 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>StockFu · 资产管理终端</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- 外部字体异步加载（media=print → onload 切换）：阻塞式 <link> 在被墙环境会让
+         CSSOM 挂起、module bundle 延迟执行（邮件渲染 openShare 超时的根因）。失败时静默
+         回退系统字体栈，不阻塞首屏。 -->
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   </head>
   <body>
     <div id="app"></div>
