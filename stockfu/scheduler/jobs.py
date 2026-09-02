@@ -1235,6 +1235,9 @@ def run_schedule() -> None:
                 result["mail"] = {"ok": False, "detail": str(exc)}
         elif get_mail_enabled() and is_mail_ready():
             result["mail"] = {"ok": False, "detail": "分享数据日期不完整，已跳过发信"}
+        if "mail" in result:
+            # 2026-09-02 审查:行情卡发信结果此前不落日志,失败时无迹可查
+            print(f"[mail] 行情卡发信结果: {result['mail']}", flush=True)
         return result
 
     hhmm = get_daily_fetch_time()
@@ -1243,6 +1246,8 @@ def run_schedule() -> None:
         _fetch_then_mail,
         CronTrigger(hour=h, minute=m, day_of_week="mon-fri", timezone="Asia/Shanghai"),
         id="daily", max_instances=1, coalesce=True,
+        # apscheduler 默认 misfire_grace_time=1s,调度晚醒 >1s 即静默跳过当日任务
+        misfire_grace_time=600,
     )
     print(f"✓ 抓取任务：工作日 {hhmm}（北京）抓行情 + 算指数 → 自动发邮件")
 
@@ -1252,12 +1257,16 @@ def run_schedule() -> None:
         from stockfu.services.signal_mail_v2 import run_v2_signal_mail_job
 
         if not get_v2_signal_mail_enabled():
+            print("[v2-mail] 跳过:V2 评分邮件未启用", flush=True)
             return {"skipped": "V2 评分邮件未启用"}
         try:
             # SMTP 未就绪时任务内部自行降级为只出图并返回原因，不抛异常。
-            return run_v2_signal_mail_job(None, send=True)
+            result = run_v2_signal_mail_job(None, send=True)
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "detail": f"V2 评分邮件失败: {type(exc).__name__}: {exc}"}
+            result = {"ok": False, "detail": f"V2 评分邮件失败: {type(exc).__name__}: {exc}"}
+        # 2026-09-02 审查:该链路此前成功/失败均零输出,17:30 静默丢信后无从定位
+        print(f"[v2-mail] 结果: {result}", flush=True)
+        return result
 
     signal_hhmm = get_v2_signal_mail_time()
     signal_h, signal_m = (int(value) for value in signal_hhmm.split(":"))
@@ -1270,6 +1279,7 @@ def run_schedule() -> None:
             timezone="Asia/Shanghai",
         ),
         id="daily-v2-signal-mail", max_instances=1, coalesce=True,
+        misfire_grace_time=600,
     )
     print(
         f"✓ V2 策略评分任务：{get_mail_days()} {signal_hhmm}（北京）"
