@@ -911,7 +911,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--checkpoint-every", type=int, default=20,
                    help="V2 每隔多少个交易日写一次完整断点，默认 20（§4.8.4）")
     p.add_argument("--v2-signal-mail", action="store_true",
-                   help="V2 三策略单日评分 → 出图 → 发信(默认最新交易日;可 --as-of 指定)")
+                   help="V2 五套策略单日评分 → 出图 → 发信(榜单含全部自选股,标「自选」;可 --as-of 指定)")
     p.add_argument("--v2-watchlist-recommend", action="store_true",
                    help="V2 三策略在自选股票范围评分并落盘荐股报告")
     p.add_argument("--no-send", action="store_true",

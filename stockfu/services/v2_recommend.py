@@ -201,6 +201,57 @@ def _build_recommend_list(
     return out
 
 
+# 自选股在推荐榜单中的入选标签（merge_watchlist_into_list 写入 inclusion）。
+WATCHLIST_TAG = "自选"
+
+
+def merge_watchlist_into_list(
+    list_rows: list[dict[str, Any]],
+    watch_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """把自选股行并入推荐榜单，均分混排并打「自选」标签。
+
+    - 已在榜单的自选股（由宇宙池综合前 N/各策略前 5 选出）：保留原宇宙池评分，
+      只在 ``inclusion`` 追加「自选」——同一代码在榜单内只保留一个评分口径。
+    - 未上榜的自选股：整行插入（评分为自选池截面），``inclusion=["自选"]``。
+    - 合并后按综合均分降序重排、重编号 rank（与 _build_recommend_list 同规则）。
+
+    返回 ``(merged_list, stats)``；stats 含 already_listed / inserted 代码清单。
+    输入两侧均须为 ``_rank_rows`` 输出（含 mean_score）。
+    """
+    by_code = {row["code"]: row for row in list_rows}
+    already: list[str] = []
+    inserted: list[str] = []
+    merged = [dict(row) for row in list_rows]
+    merged_by_code = {row["code"]: row for row in merged}
+    for wrow in watch_rows:
+        code = wrow["code"]
+        if code in by_code:
+            row = merged_by_code[code]
+            tags = list(row.get("inclusion") or [])
+            if WATCHLIST_TAG not in tags:
+                tags.append(WATCHLIST_TAG)
+            row["inclusion"] = tags
+            already.append(code)
+            continue
+        row = dict(wrow)
+        row["inclusion"] = [WATCHLIST_TAG]
+        merged.append(row)
+        inserted.append(code)
+    merged.sort(key=lambda row: (
+        -(row["mean_score"] if row["mean_score"] is not None else -1.0),
+        row["code"],
+    ))
+    for rank, row in enumerate(merged, 1):
+        row["rank"] = rank
+    stats = {
+        "watch_total": len(watch_rows),
+        "already_listed": sorted(already),
+        "inserted": sorted(inserted),
+    }
+    return merged, stats
+
+
 def run_v2_watchlist_recommendation(
     as_of: date | str,
     *,

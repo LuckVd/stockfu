@@ -133,3 +133,78 @@ class TestV2WatchlistAssembly(TestCase):
             self.assertEqual(_alpha_display_name(alpha), ALPHA_CN_NAMES[aid])
         # 中文名互不相同
         self.assertEqual(len(set(ALPHA_CN_NAMES.values())), len(ALPHA_CN_NAMES))
+
+    def test_merge_watchlist_tags_listed_and_inserts_rest(self):
+        alphas = ["value_ep_bp_equal_v2", "dividend_income_history45_v2"]
+        list_rows = v2_recommend._build_recommend_list(
+            v2_recommend._rank_rows([
+                self._row("A", {"value_ep_bp_equal_v2": 90.0,
+                                "dividend_income_history45_v2": 10.0}),
+                self._row("B", {"value_ep_bp_equal_v2": 20.0,
+                                "dividend_income_history45_v2": 95.0}),
+            ]),
+            alphas, top_n=2, per_strategy_top=2,
+        )
+        # 自选 C 均分 80 最高 → 插入榜首；A 已在榜单 → 只补「自选」标签、保留原分
+        watch_rows = v2_recommend._rank_rows([
+            self._row("C", {"value_ep_bp_equal_v2": 80.0,
+                            "dividend_income_history45_v2": 80.0}),
+            self._row("A", {"value_ep_bp_equal_v2": 1.0,
+                            "dividend_income_history45_v2": 1.0}),
+        ])
+        merged, stats = v2_recommend.merge_watchlist_into_list(list_rows, watch_rows)
+        self.assertEqual([r["code"] for r in merged], ["C", "B", "A"])
+        self.assertEqual([r["rank"] for r in merged], [1, 2, 3])
+        self.assertEqual(merged[0]["inclusion"], ["自选"])
+        # A 保留宇宙池评分(均分 50),不用自选池的 1.0 分,只追加标签
+        self.assertEqual(merged[2]["mean_score"], 50.0)
+        self.assertIn("自选", merged[2]["inclusion"])
+        self.assertEqual(stats["watch_total"], 2)
+        self.assertEqual(stats["already_listed"], ["A"])
+        self.assertEqual(stats["inserted"], ["C"])
+
+    def test_merge_watchlist_tag_not_duplicated(self):
+        alphas = ["value_ep_bp_equal_v2"]
+        list_rows = v2_recommend._build_recommend_list(
+            v2_recommend._rank_rows([
+                self._row("A", {"value_ep_bp_equal_v2": 90.0}),
+            ]),
+            alphas, top_n=1, per_strategy_top=1,
+        )
+        list_rows[0]["inclusion"] = ["综合前1", "自选"]
+        watch_rows = v2_recommend._rank_rows([
+            self._row("A", {"value_ep_bp_equal_v2": 90.0}),
+        ])
+        merged, stats = v2_recommend.merge_watchlist_into_list(list_rows, watch_rows)
+        self.assertEqual(merged[0]["inclusion"].count("自选"), 1)
+        self.assertEqual(stats["inserted"], [])
+
+    def test_signal_mail_html_marks_watchlist_rows(self):
+        from stockfu.services.signal_mail_v2 import build_v2_signal_mail_html
+        from stockfu.services.v2_signal import V2SignalReport
+
+        report = V2SignalReport(
+            as_of=date(2026, 9, 1),
+            alpha_ids=["value_ep_bp_equal_v2"],
+            alpha_names={"value_ep_bp_equal_v2": "价值"},
+            universe_size=2,
+            n_scored=2,
+            rows=[
+                {"code": "A", "name": "甲",
+                 "scores": {"value_ep_bp_equal_v2": {"score": 90.0, "status": "tradable"}}},
+                {"code": "B", "name": "乙",
+                 "scores": {"value_ep_bp_equal_v2": {"score": 40.0, "status": "tradable"}}},
+            ],
+            calibration={},
+        )
+        list_rows = [
+            {"code": "B", "name": "乙", "rank": 1, "mean_score": 40.0,
+             "inclusion": ["综合前1", "自选"],
+             "scores": {"value_ep_bp_equal_v2": {"score": 40.0, "status": "tradable"}}},
+        ]
+        html_doc = build_v2_signal_mail_html(
+            report, top_n=1, list_rows=list_rows
+        )
+        self.assertIn("watch-tag", html_doc)
+        self.assertIn("自选", html_doc)
+        self.assertIn("∪ 自选 1 只", html_doc)
