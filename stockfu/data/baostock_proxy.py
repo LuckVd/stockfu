@@ -66,6 +66,9 @@ class BaostockProxySession:
 
     # 启动参数
     use_free_pool: bool = True
+    # 重入标志：run() 持 _QUERY_LOCK 期间置位；worker 内的嵌套
+    # run_baostock_query 据此直连执行，避免跨线程二次进锁自死锁。
+    _in_run_worker: bool = False
     seed_local_clash: bool = True
     clash_host: str = "127.0.0.1"
     clash_port: int = 7891
@@ -520,40 +523,47 @@ class BaostockProxySession:
         last_exc: Exception | None = None
         last_val: T | None = None
         with _QUERY_LOCK:
-            for attempt in range(1, self.max_rotate_per_call + 1):
-                if deadline is not None and time.monotonic() >= deadline:
-                    if last_val is not None:
-                        return last_val
-                    raise RuntimeError(
-                        f"baostock query deadline exceeded (label={label})")
-                try:
-                    val = self._call_with_timeout(fn, label)
-                    last_val = val
-                    if empty_is_fail and is_empty and is_empty(val):
-                        self.fail_streak += 1
-                        reason = f"empty#{self.fail_streak} {label}"
-                        if self.fail_streak >= self.max_fail_streak:
-                            if not self.mark_bad_and_rotate(reason):
-                                return val
+            # 置位「正在 run() worker 内执行」标志（持锁期间写，worker 读）：
+            # worker 内再调 run_baostock_query/_klines_range 时据此直连执行，
+            # 避免跨线程二次进 _QUERY_LOCK 自死锁（2026-09-01 修复）。
+            self._in_run_worker = True
+            try:
+                for attempt in range(1, self.max_rotate_per_call + 1):
+                    if deadline is not None and time.monotonic() >= deadline:
+                        if last_val is not None:
+                            return last_val
+                        raise RuntimeError(
+                            f"baostock query deadline exceeded (label={label})")
+                    try:
+                        val = self._call_with_timeout(fn, label)
+                        last_val = val
+                        if empty_is_fail and is_empty and is_empty(val):
+                            self.fail_streak += 1
+                            reason = f"empty#{self.fail_streak} {label}"
+                            if self.fail_streak >= self.max_fail_streak:
+                                if not self.mark_bad_and_rotate(reason):
+                                    return val
+                                continue
+                            # 先尝试同代理 re-login
+                            if not self._login():
+                                if not self.mark_bad_and_rotate(reason + "+relogin_fail"):
+                                    return val
                             continue
-                        # 先尝试同代理 re-login
-                        if not self._login():
-                            if not self.mark_bad_and_rotate(reason + "+relogin_fail"):
-                                return val
-                        continue
-                    # 成功
-                    self.fail_streak = 0
-                    return val
-                except Exception as e:  # noqa: BLE001
-                    last_exc = e
-                    self.fail_streak += 1
-                    reason = f"{type(e).__name__}: {e}"
-                    print(
-                        f"  [fetch err] {label} attempt={attempt} {reason}",
-                        flush=True,
-                    )
-                    if not self.mark_bad_and_rotate(reason[:120]):
-                        break
+                        # 成功
+                        self.fail_streak = 0
+                        return val
+                    except Exception as e:  # noqa: BLE001
+                        last_exc = e
+                        self.fail_streak += 1
+                        reason = f"{type(e).__name__}: {e}"
+                        print(
+                            f"  [fetch err] {label} attempt={attempt} {reason}",
+                            flush=True,
+                        )
+                        if not self.mark_bad_and_rotate(reason[:120]):
+                            break
+            finally:
+                self._in_run_worker = False
         if last_exc is not None and last_val is None:
             raise last_exc
         return last_val  # type: ignore[return-value]
@@ -745,6 +755,14 @@ def run_baostock_query(
     与直连兜底闭环；Baostock 以 ``error_code`` 返回的失败也会转换为异常，从而
     触发轮换。显式 ``BAOSTOCK_PROXY_MODE=direct`` 时仍保留直连语义
     （同样经 ``_QUERY_LOCK`` 串行化，防并发 socket 交错）。
+
+    **重入语义（2026-09-01 修复）**：``fetch_kline_triple`` 等路径已在
+    ``sess.run()`` 的 worker 线程内执行，其间 ``_klines_range`` 会再调本函数；
+    若此时再次 ``sess.run()``，worker 会在 ``_QUERY_LOCK`` 上永久阻塞
+    （RLock 仅同线程可重入，外层持锁者是主线程）→ 外层 join 超时 →
+    表现为每只票 20s/60s 超时的「假性网络故障」。因此以会话级
+    ``_in_run_worker`` 标志识别重入：置位期间直接执行 ``_query``
+    （外层 run 已持锁串行化并负责超时/轮换），不再二次进锁。
     """
     if ensure_login and not ensure_baostock_login():
         raise RuntimeError("baostock login failed")
@@ -759,6 +777,9 @@ def run_baostock_query(
 
     sess = get_global_session()
     if sess is not None and sess.active:
+        if getattr(sess, "_in_run_worker", False):
+            # 重入：外层 sess.run() 已持锁并负责超时/轮换，直接执行避免自死锁。
+            return _query()
         return sess.run(_query, label=label, deadline=deadline)
     # direct 模式明确关闭代理池；仍已由 ensure_baostock_login 完成登录。
     with _QUERY_LOCK:
