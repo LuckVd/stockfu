@@ -308,6 +308,36 @@ def run_v2_signal_mail_job(
     scored_date = report.as_of
     if report.n_scored == 0:
         return {"ok": False, "detail": "无可评分股票", "as_of": str(scored_date), "pages": 0}
+    # 成分覆盖率门禁（2026-09-08）：09-07 baostock 当日日线只发布了 264/800，
+    # 评分自动只留有当日行情的票 → 1/3 宇宙的榜单被当正常发出；而 stale 检查
+    # （看 max(quote_date)）探不到这种部分缺失。发信前对比「时点成分数」，
+    # 覆盖率不足即拒发并发文本告警邮件。阈值可经 STOCKFU_V2_MAIL_MIN_COVERAGE
+    # 覆盖（默认 0.90）。成分快照不可用时跳过门禁（不阻断主流程）。
+    from stockfu.services.index_universe import (
+        HISTORICAL_INDEX_CODES, current_member_codes,
+    )
+    try:
+        member_codes = current_member_codes(scored_date, HISTORICAL_INDEX_CODES)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("stockfu").warning(
+            "[v2-mail] 覆盖率门禁跳过（成分快照不可用）: %s", exc)
+        member_codes = []
+    min_coverage = float(os.environ.get("STOCKFU_V2_MAIL_MIN_COVERAGE", "0.90"))
+    coverage = (report.n_scored / len(member_codes)) if member_codes else 1.0
+    if coverage < min_coverage:
+        detail = (
+            f"成分覆盖率不足拒发: n_scored={report.n_scored}/{len(member_codes)} "
+            f"({coverage:.1%}) < {min_coverage:.0%}, as_of={scored_date}"
+        )
+        logging.getLogger("stockfu").error("[v2-mail] %s", detail)
+        from stockfu.services.mail import send_alert_email
+        alert = send_alert_email(
+            f"StockFu V2 评分邮件拒发 · {scored_date}",
+            f"{detail}\n\n请检查当日行情抓取（data/schedule.log / data/fetch_cron.log），"
+            f"补齐后手动补发: python3 main.py --v2-signal-mail --as-of {scored_date}",
+        )
+        return {"ok": False, "detail": detail, "as_of": str(scored_date), "pages": 0,
+                "coverage": round(coverage, 4), "alert_mail": alert}
     # 数据新鲜度告警(2026-08-24 审查修复):评分日明显滞后于请求日(行情停更/
     # 未抓取)时在主题与结果中显式标记,避免调度场景被误读为当日评分。
     stale_days = (as_of - scored_date).days if scored_date < as_of else 0

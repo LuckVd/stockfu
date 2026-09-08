@@ -83,7 +83,17 @@ def _fetch_today_via_baostock(code: str, end_date, days: int = 15,
         return False
     if not any(triple.values()):
         return False
-    return _apply_and_upsert(code, triple, preserve_qfq=False, cap_date=end) > 0
+    # 2026-09-08 修复:此前只要写入了任意一根 bar(含历史旧 bar)就返回 True,
+    # baostock 当日日线发布不全时 cron 的 ok 会虚报(09-07 实测报 ok=800,
+    # 实际只有 264 只拿到当日 bar,榜单静默缩到 1/3)。必须确认本次写入了
+    # 目标日 bar 才算 ok;旧 bar 照常入库(MERGE_ADJ 幂等)但计入 fail,
+    # 交由上层重试 / 邮件覆盖率门禁兜底。
+    has_target_bar = any(
+        str(getattr(b, "date", ""))[:10] == end
+        for bars in triple.values() for b in (bars or [])
+    )
+    return _apply_and_upsert(code, triple, preserve_qfq=False, cap_date=end) > 0 \
+        and has_target_bar
 
 
 def _current_index_fetch_codes(target_date, index_codes=None) -> list[str]:

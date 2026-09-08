@@ -175,6 +175,39 @@ def send_card_email(
     return {"ok": True, "pages": len(images), "to": to_list, "subject": subject}
 
 
+def send_alert_email(subject: str, text: str) -> dict:
+    """发纯文本告警邮件（评分邮件拒发 / 数据门禁等运维告警），复用卡片 SMTP 配置。
+
+    告警链路失败只返回 ``ok: False``，由调用方决定是否降级，不影响主流程结论。
+    """
+    from stockfu.config import (get_smtp_from, get_smtp_host, get_smtp_pass,
+                                get_smtp_port, get_smtp_user, get_mail_to)
+
+    user, pwd, to_raw = get_smtp_user(), get_smtp_pass(), get_mail_to()
+    if not (user and pwd and to_raw):
+        return {"ok": False, "detail": "未配置完整（账号 / 授权码 / 收件人）"}
+    to_list = [t.strip() for t in to_raw.replace(";", ",").split(",") if t.strip()]
+    sender = get_smtp_from() or user
+    msg = MIMEText(text, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(to_list)
+    msg["Date"] = formatdate(localtime=True)
+    host, port = get_smtp_host(), get_smtp_port()
+    try:
+        if port == 465:
+            smtp = smtplib.SMTP_SSL(host, port, timeout=30)
+        else:
+            smtp = smtplib.SMTP(host, port, timeout=30)
+            smtp.starttls()
+        with smtp:
+            smtp.login(user, pwd)
+            smtp.sendmail(sender, to_list, msg.as_string())
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+    return {"ok": True, "to": to_list, "subject": subject}
+
+
 def run_mail_job() -> dict:
     """出图 + 发信，供 scheduler mail job 与 --test-mail 复用。"""
     from stockfu.config import is_mail_ready
